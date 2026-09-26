@@ -20,12 +20,18 @@ import {
   sessionLeft,
   sessionNews,
   sessionOpen,
+  nowText,
+  readPercent,
   sessionText,
   startProblemText,
+  statusBarEstimate,
   stepWords,
+  testReport,
+  typedProblemText,
   windowNews,
   workText,
   type BatteryEstimate,
+  type Measurement,
   type BatteryNews,
   type BatteryReading,
   type BatterySource,
@@ -121,7 +127,7 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     assert.deepEqual(batteryLines(e, 'iPhone'), [
       'The battery went from 83% to 80%, on battery: 3% (2% to 4%) over 10 runs.',
       'About 0.3% a list (0.2% to 0.4%), and about 0.015% a search (0.01% to 0.02%).',
-      'How sure: the iPhone reports its battery in whole percents, so each reading can be up to a step off, and the ranges say how far that goes. The screen and anything else running draw on the same battery: this is the whole iPhone while it priced.',
+      'How sure: the iPhone gives apps its battery in whole percents, so each reading can be up to a percent off, and the ranges say how far that goes. The screen and anything else running draw on the same battery: this is the whole iPhone while it priced.',
     ]);
     assert.equal(workText('cold', 5 * MIN, work(10, 200, { bytes: 34_000_000 })), '10 runs from cold in 5 min · 200 searches · about 34 MB');
   });
@@ -137,7 +143,7 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     const one = batteryEstimate(closeWindow(openWindow(reading(0, 0.83)), reading(12_000, 0.82)), work(1, 24), 0.01)!;
     assert.deepEqual(batteryLines(one, 'iPhone'), [
       'Battery from 83% to 82%, on battery: 1% (under 2%) for this run, about 0.042% a search (under 0.083%).',
-      'One run is too short to tell, as the iPhone reports its battery in whole percents: the battery test runs it again and again.',
+      'One run is too short to tell, as the iPhone gives apps its battery in whole percents: the battery test runs it again and again.',
     ]);
 
     const coarse = batteryEstimate(closeWindow(openWindow(reading(0, 0.8, { lowPower: true })), reading(4 * MIN, 0.75)), work(10, 230, { planned: 240 }), 0.05)!;
@@ -146,7 +152,7 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     assert.deepEqual(coarse.drop, { value: 0.05, low: 0, high: 0.1 }, 'a 5% gauge: one step either way');
     assert.ok(coarse.rough);
     const said = batteryLines(coarse, 'iPhone').join('\n');
-    assert.match(said, /reports its battery in steps of 5%/);
+    assert.match(said, /gives apps its battery in steps of 5%, so each reading can be up to 5% off/);
     assert.match(said, /Low Power Mode was on: iOS slows the iPhone to save battery/);
     assert.match(said, /10 of 240 searches didn’t run \(a store paused or kept failing\)/);
   });
@@ -200,6 +206,42 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     assert.equal(workText('warm', 90_000, work(5, 120)), '5 warm runs in 1 min 30 s · 120 searches', 'no data counted, none said');
   });
 
+  await t('the status bar’s whole percents, typed at a test’s start and end, in place of the phone’s 5% steps', () => {
+    // As on an iPhone that gives apps 5% steps: 23% in the status bar reached the app as 25%.
+    assert.equal(nowText(reading(0, 0.25), 0.05), 'Now: 25% as apps get it (the status bar may say a few percent more or less), on battery, Low Power Mode off');
+    assert.equal(nowText(reading(0, 0.83), 0.01), 'Now: 83%, on battery, Low Power Mode off', 'whole percents need no note');
+    assert.deepEqual(readPercent(' 23 ', 0.25, 0.05), { ok: true, level: 0.23 });
+    assert.deepEqual(readPercent('23%', Math.fround(0.25), 0.05), { ok: true, level: 0.23 });
+    assert.equal(readPercent('', 0.25, 0.05), undefined, 'optional');
+    assert.deepEqual([readPercent('2.5', 0.25, 0.05), readPercent('101', 1, 0.05), readPercent('abc', 0.25, 0.05)].map((r) => r?.ok === false && r.why), ['not_a_percent', 'not_a_percent', 'not_a_percent']);
+    assert.deepEqual(readPercent('53', 0.25, 0.05), { ok: false, why: 'mismatch' }, 'more than a step from the phone’s reading: mistyped or misread');
+    assert.equal(typedProblemText('mismatch', 0.25, 0.05, 'iPhone'), 'That’s more than 5% from the iPhone’s own reading (25%): check the status bar.');
+
+    const test = (statusBar?: { start: number; end?: number }): Measurement => ({
+      kind: 'cold', runs: 10, done: 10, running: false, cut: false, work: work(10, 200),
+      window: closeWindow(openWindow(reading(0, 0.25)), reading(3 * MIN, 0.2)),
+      ...(statusBar ? { statusBar } : {}),
+    });
+    const report = testReport(test({ start: 0.23, end: 0.2 }), 0.05, 'iPhone')!;
+    assert.deepEqual(report, {
+      short: 'battery 3% by the status bar',
+      lines: [
+        'The status bar went from 23% to 20%, on battery: 3% (2% to 4%) over 10 runs.',
+        'About 0.3% a list (0.2% to 0.4%), and about 0.015% a search (0.01% to 0.02%).',
+        'How sure: the status bar shows whole percents, so each reading can be up to a percent off, and the ranges say how far that goes. The screen and anything else running draw on the same battery: this is the whole iPhone while it priced.',
+        'By the iPhone’s own readings (steps of 5%): 25% to 20%, about 0.5% a list (under 1%).',
+      ],
+      answer: 1,
+    });
+    const phoneOnly = testReport(test(), 0.05, 'iPhone')!;
+    assert.deepEqual([phoneOnly.short, phoneOnly.lines[1], phoneOnly.answer], ['battery 5%', 'About 0.5% a list (under 1%), and about 0.025% a search (under 0.05%).', 1]);
+    assert.equal(testReport(test({ start: 0.23 }), 0.05, 'iPhone')!.lines.pop(), 'The status bar read 23% at the start; no end was typed.');
+    assert.equal(testReport(test({ start: 0.23, end: 0.24 }), 0.05, 'iPhone')!.lines.pop(), 'No estimate from the status bar: the end’s percentage is above the start’s. Check what was typed.');
+    const plugged = { ...test({ start: 0.23, end: 0.2 }), window: { ...test().window, plugged: true } };
+    assert.equal(testReport(plugged, 0.05, 'iPhone')!.lines.filter((l) => /plugged in/.test(l)).length, 1, 'a reason both share is said once');
+    assert.equal(statusBarEstimate({ ...test({ start: 0.23, end: 0.2 }), window: openWindow(reading(0, 0.25)) }), undefined, 'not while it runs');
+  });
+
   await t('this session: each stretch of pricing on the battery adds up; plugged in or leaving the app isn’t counted', () => {
     let s = NO_SESSION;
     assert.equal(sessionText(s, 0.01, 'iPhone'), 'Battery: no list priced since the app opened.');
@@ -248,6 +290,18 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     const session = meter.getSnapshot().session;
     assert.ok(session.counted >= 1 && session.skipped === 0 && !session.open, 'the session counted the pricing too');
     assert.ok(Math.abs(session.drop - 0.04) < 0.0201, 'about the same drop, a step either way at each stretch');
+    assert.equal(test!.statusBar, undefined, 'no status bar typed');
+
+    // The status bar typed at the start goes with the test; its end is typed once it's done, and can be taken back.
+    const run = () => engine.start('speed', ITEMS, STORES, { refresh: true });
+    const typed = meter.measure({ engine, listId: 'speed', runs: 2, kind: 'warm', start: run, statusBarStart: 0.8 });
+    meter.noteStatusBar(0.78);
+    await typed;
+    assert.deepEqual(meter.getSnapshot().test!.statusBar, { start: 0.8 }, 'not while it runs');
+    meter.noteStatusBar(0.78);
+    assert.deepEqual(meter.getSnapshot().test!.statusBar, { start: 0.8, end: 0.78 });
+    meter.noteStatusBar(undefined);
+    assert.deepEqual(meter.getSnapshot().test!.statusBar, { start: 0.8 }, 'taken back');
     detach();
   });
 

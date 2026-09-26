@@ -293,6 +293,15 @@ export function readingText(r: BatteryReading): string {
   return `${r.level === null ? 'level unknown' : levelText(r.level)}, ${CHARGE_WORDS[r.charge]}, Low Power Mode ${r.lowPower ? 'on' : 'off'}`;
 }
 
+/**
+ * The battery now, for the battery test's panel. A phone that gives apps its level in 5% steps shows whole percents in
+ * its status bar, which can differ by a few (23% there reaches apps as 25%): the line says so.
+ */
+export function nowText(r: BatteryReading, step: number): string {
+  if (r.level === null || step <= 0.01) return `Now: ${readingText(r)}`;
+  return `Now: ${levelText(r.level)} as apps get it (the status bar may say a few percent more or less), ${CHARGE_WORDS[r.charge]}, Low Power Mode ${r.lowPower ? 'on' : 'off'}`;
+}
+
 const WHY: Record<NoEstimate, (device: string) => string> = {
   unreadable: (d) => `this ${d} doesn’t report its battery here (a simulator or a computer’s browser can’t).`,
   plugged_in: (d) => `it was plugged in, and the charger hides what pricing draws. Unplug the ${d} and run it again.`,
@@ -330,12 +339,20 @@ function perText(r: Ranged, what: string): string {
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** Where a figure's levels came from: the phone's own readings, or the status bar, as the user read it. */
+export type LevelSource = 'phone' | 'statusBar';
+
+/** As much as one reading can be off: "a percent", "5%". */
+const stepOff = (step: number) => (Math.abs(step - 0.01) < 1e-9 ? 'a percent' : pctText(step));
+
 /**
  * A measured stretch in sentences, for the screen and for sharing: where the battery went from and to, the drop per
  * list and per search with their ranges, and how sure that is. Or why there's no figure.
  */
-export function batteryLines(e: BatteryEstimate, device = 'phone'): string[] {
+export function batteryLines(e: BatteryEstimate, device = 'phone', from: LevelSource = 'phone'): string[] {
+  const bar = from === 'statusBar';
   if (!e.ok) {
+    if (bar) return [`No estimate from the status bar: ${e.why === 'rose' ? 'the end’s percentage is above the start’s. Check what was typed.' : WHY[e.why](device)}`];
     const lines = [noEstimateText(e.why, device)];
     if (e.why !== 'unreadable') lines.push(`At the start: ${readingText(e.start)}. At the end: ${readingText(e.end)}.`);
     return lines;
@@ -345,13 +362,13 @@ export function batteryLines(e: BatteryEstimate, device = 'phone'): string[] {
   if (e.work.runs <= 1) {
     return [
       `Battery ${went}: ${lost} for this run, ${perText(e.perSearch, 'a search')}.`,
-      `One run is too short to tell, as the ${device} reports its battery in ${stepWords(e.step)}: the battery test runs it again and again.`,
+      `One run is too short to tell, as the ${device} gives apps its battery in ${stepWords(e.step)}: the battery test runs it again and again.`,
     ];
   }
   const lines = [
-    `The battery went ${went}: ${lost} over ${e.work.runs} runs.`,
+    `${bar ? 'The status bar' : 'The battery'} went ${went}: ${lost} over ${e.work.runs} runs.`,
     `${capital(perText(e.perList, 'a list'))}, and ${perText(e.perSearch, 'a search')}.`,
-    `How sure: the ${device} reports its battery in ${stepWords(e.step)}, so each reading can be up to a step off, and the ranges say how far that goes${
+    `How sure: ${bar ? 'the status bar shows whole percents' : `the ${device} gives apps its battery in ${stepWords(e.step)}`}, so each reading can be up to ${stepOff(e.step)} off, and the ranges say how far that goes${
       e.rough ? '. With so small a drop, this is mostly an upper limit: more runs make it closer' : ''
     }. The screen and anything else running draw on the same battery: this is the whole ${device} while it priced.`,
   ];
@@ -376,6 +393,62 @@ export function startProblemText(now: BatteryReading, device = 'phone'): string 
     default:
       return undefined;
   }
+}
+
+/** A percentage typed from the status bar, read (see readPercent). */
+export type TypedPercent = { ok: true; level: number } | { ok: false; why: 'not_a_percent' | 'mismatch' };
+
+/**
+ * A battery percentage the user typed from the status bar: a whole number from 0 to 100, within a step of the phone's
+ * own reading, else it was misread or mistyped. Undefined when nothing's typed.
+ */
+export function readPercent(text: string, phone: number | null, step: number): TypedPercent | undefined {
+  const typed = text.trim().replace(/\s*%$/, '');
+  if (!typed) return undefined;
+  if (!/^\d{1,3}$/.test(typed) || Number(typed) > 100) return { ok: false, why: 'not_a_percent' };
+  const level = Number(typed) / 100;
+  if (phone !== null && Math.abs(level - phone) > step + 1e-9) return { ok: false, why: 'mismatch' };
+  return { ok: true, level };
+}
+
+/** What's wrong with a typed percentage, in a sentence. */
+export function typedProblemText(why: 'not_a_percent' | 'mismatch', phone: number | null, step: number, device = 'phone'): string {
+  if (why === 'not_a_percent' || phone === null) return 'Type the status bar’s percentage as a whole number, like 23.';
+  return `That’s more than ${pctText(step)} from the ${device}’s own reading (${levelText(phone)}): check the status bar.`;
+}
+
+/**
+ * A battery test's figure from the status bar's whole percents, once the user typed them at its start and end: the
+ * same window, with those levels in place of the phone's coarser readings.
+ */
+export function statusBarEstimate(m: Measurement): BatteryEstimate | undefined {
+  const bar = m.statusBar;
+  if (!m.window.end || !bar || bar.end === undefined) return undefined;
+  return batteryEstimate({ ...m.window, start: { ...m.window.start, level: bar.start }, end: { ...m.window.end, level: bar.end } }, m.work, 0.01);
+}
+
+/** The phone's own figure in a line, beside a closer one: "By the iPhone’s own readings (steps of 5%): 25% to 20%, …". */
+export function batteryBrief(e: BatteryEstimate, device = 'phone'): string {
+  const by = `By the ${device}’s own readings (${stepWords(e.step)})`;
+  if (!e.ok) return `${by}: ${SHORT[e.why]}.`;
+  return `${by}: ${levelText(e.start.level!)} to ${levelText(e.end.level!)}, ${perText(e.perList, 'a list')}.`;
+}
+
+/**
+ * A finished battery test's result, for the screen and for sharing: from the status bar's whole percents when both
+ * ends were typed, with the phone's own readings in brief; else from the phone's own readings. `answer` is the line
+ * with the drop per list and per search, when there is one.
+ */
+export function testReport(m: Measurement, step: number, device = 'phone'): { short: string; lines: string[]; answer?: number } | undefined {
+  const phone = batteryEstimate(m.window, m.work, step);
+  if (!phone) return undefined;
+  const bar = statusBarEstimate(m);
+  if (bar?.ok) return { short: `${batteryShort(bar)} by the status bar`, lines: [...batteryLines(bar, device, 'statusBar'), batteryBrief(phone, device)], answer: 1 };
+  const lines = batteryLines(phone, device);
+  // The status bar's figure, when it couldn't be had for a reason of its own; else what was typed so far.
+  if (bar && (phone.ok || phone.why !== bar.why)) lines.push(...batteryLines(bar, device, 'statusBar'));
+  else if (m.statusBar && m.statusBar.end === undefined) lines.push(`The status bar read ${levelText(m.statusBar.start)} at the start; no end was typed.`);
+  return { short: batteryShort(phone), lines, answer: phone.ok && m.work.runs > 1 ? 1 : undefined };
 }
 
 /** A battery test's work in a line: "10 runs from cold in 4 min 12 s · 240 searches · about 34 MB". */
@@ -446,6 +519,8 @@ export interface Measurement {
   running: boolean;
   /** Ended before all its runs: stopped, or its list was erased (Start over). */
   cut: boolean;
+  /** The battery levels the user read off the status bar, if they typed them: whole percents (see statusBarEstimate). */
+  statusBar?: { start: number; end?: number };
 }
 
 export interface BatteryMeterState {
@@ -469,6 +544,8 @@ export interface MeasureOptions {
   start: () => void;
   kind: RunKind;
   runs: number;
+  /** The status bar's level at the start, as the user typed it (a battery test only). */
+  statusBarStart?: number;
 }
 
 /** The run of `listId` once it has finished, or undefined when it's gone (the app was started over). */
@@ -537,14 +614,17 @@ export class BatteryMeter {
    * Speed test runs measured on the battery: `runs` of them, one after another, each priced by `start`, with the
    * battery read before and after each run and around them all. One measurement at a time; `stop` ends it early.
    */
-  async measure({ engine, listId, start, kind, runs }: MeasureOptions): Promise<void> {
+  async measure({ engine, listId, start, kind, runs, statusBarStart }: MeasureOptions): Promise<void> {
     if (this.state.busy) return;
     this.stopping = false;
     this.set({ busy: true });
     try {
       const many = runs > 1;
       let reading = await this.read();
-      if (many) this.set({ test: { kind, runs, done: 0, window: openWindow(reading), work: NO_WORK, running: true, cut: false } });
+      if (many) {
+        const statusBar = statusBarStart !== undefined ? { statusBar: { start: statusBarStart } } : {};
+        this.set({ test: { kind, runs, done: 0, window: openWindow(reading), work: NO_WORK, running: true, cut: false, ...statusBar } });
+      }
       for (let i = 0; i < runs && !this.stopping; i++) {
         this.set({ lastRun: { kind, runs: 1, done: 0, window: openWindow(reading), work: NO_WORK, running: true, cut: false } });
         let run: PricingRun | undefined;
@@ -572,6 +652,13 @@ export class BatteryMeter {
   /** Ends the measurement after the run going on; stop the run itself to end it sooner. */
   stop(): void {
     if (this.state.busy) this.stopping = true;
+  }
+
+  /** The status bar's level at the end of the last battery test, as the user typed it; undefined takes it back. */
+  noteStatusBar(end: number | undefined): void {
+    const test = this.state.test;
+    if (!test || test.running || !test.statusBar) return;
+    this.set({ test: { ...test, statusBar: { start: test.statusBar.start, ...(end !== undefined ? { end } : {}) } } });
   }
 
   /** Reads the battery again, for a screen that shows it now: some phones and browsers send no news of it. */

@@ -15,10 +15,13 @@ import {
   batteryShort,
   durationText,
   levelText,
-  readingText,
+  nowText,
+  readPercent,
   runsRoom,
   startProblemText,
   stepWords,
+  testReport,
+  typedProblemText,
   workText,
   type Measurement,
   type RunKind,
@@ -322,17 +325,19 @@ function SpeedTest() {
 
 /**
  * Starts the speed test, measured on the battery (see batteryCost.ts): `runs` of it one after another, each from cold
- * (every page unloaded first) or warm (the pages kept from the run before).
+ * (every page unloaded first) or warm (the pages kept from the run before). A battery test can take the status bar's
+ * level at the start, as the tester typed it.
  */
-function useSpeedRuns(): (kind: RunKind, runs?: number) => void {
+function useSpeedRuns(): (kind: RunKind, runs?: number, statusBarStart?: number) => void {
   const { engine, pool } = useApp();
   const choices = useStoreChoices();
-  return (kind, runs = 1) =>
+  return (kind, runs = 1, statusBarStart) =>
     void batteryMeter.measure({
       engine,
       listId: SPEED_TEST,
       kind,
       runs,
+      statusBarStart,
       start: () => {
         if (kind === 'cold') pool.resetAll();
         engine.start(SPEED_TEST, SPEED_ITEMS, choices, { refresh: true });
@@ -348,15 +353,15 @@ function switchesText(pool: WebViewPool): string {
 
 /** A finished battery test in words, for sharing: what ran, with which switches, and what it took from the battery. */
 function batteryTestText(test: Measurement, step: number, switches: string): string | null {
-  const e = batteryEstimate(test.window, test.work, step);
-  if (!e) return null;
+  const report = testReport(test, step, deviceWord);
+  if (!report || !test.window.end) return null;
   const stores = test.work.runs ? Math.round(test.work.planned / test.work.runs / SPEED_ITEMS.length) : 0;
   return [
     `Stretch battery test on this ${deviceWord}, ${new Date(test.window.start.at).toLocaleString('en-US')}: the speed test (${SPEED_ITEMS.length} searches × ${stores} stores) ` +
       `${test.runs} times in a row, ${test.kind === 'cold' ? 'each from cold' : 'warm'}${test.cut ? `, stopped after ${test.done}` : ''}`,
     switches,
-    `${workText(test.kind, e.ms, test.work)} · ${batteryShort(e)}`,
-    ...batteryLines(e, deviceWord),
+    `${workText(test.kind, test.window.end.at - test.window.start.at, test.work)} · ${report.short}`,
+    ...report.lines,
   ].join('\n');
 }
 
@@ -372,10 +377,14 @@ function BatteryTest() {
   const startRuns = useSpeedRuns();
   const [runs, setRuns] = useState(10);
   const [kind, setKind] = useState<RunKind>('cold');
+  const [barStart, setBarStart] = useState('');
   const test = battery.test;
   const testing = !!test?.running;
   const now = useNow(testing ? 1000 : 30_000);
   const reading = battery.now;
+  // A phone that gives apps 5% steps still shows whole percents in its status bar: the tester can type those instead.
+  const coarse = battery.step > 0.01;
+  const typedStart = coarse && !testing ? readPercent(barStart, reading?.level ?? null, battery.step) : undefined;
   // The battery as it is when the panel shows, even where the phone sends no news of it.
   useEffect(() => {
     void batteryMeter.refresh();
@@ -400,7 +409,7 @@ function BatteryTest() {
           ? `Not enough room this hour: ${hourText}, so ${room === 0 ? 'no more runs fit' : `only ${room} more ${room === 1 ? 'run fits' : 'runs fit'}`}, ` +
             `and the test makes ${TEST_RUNS[0]} at least. Room for ${TEST_RUNS[0]} runs at about ${roomClock}.`
           : undefined));
-  const estimate = test && !testing ? batteryEstimate(test.window, test.work, battery.step) : undefined;
+  const report = test && !testing ? testReport(test, battery.step, deviceWord) : undefined;
   const stop = () => {
     batteryMeter.stop();
     engine.stop(SPEED_TEST);
@@ -421,12 +430,14 @@ function BatteryTest() {
         another list soon after. Keep the app open with the screen on until it’s done.
       </Text>
       <Text style={styles.meta}>
-        How precise: this {deviceWord} reports its battery in {stepWords(battery.step)}
-        {battery.step > 0.01 ? ' so far' : ''}, so a reading can be a step off and one run is too short to tell. Each figure comes with its
-        range, and more runs narrow it. The screen and anything else running draw on the same battery, so it’s the whole {deviceWord} while it
-        priced, not the searches alone. And it only measures unplugged: on the charger, there’s no estimate.
+        How precise:{' '}
+        {coarse
+          ? `this ${deviceWord} gives apps its battery in ${stepWords(battery.step)} so far, not the status bar’s whole percents (23% there can reach apps as 25%), so a reading can be a step off and one run is too short to tell. Type the status bar’s percentage at the start and the end, and the figure is about five times closer.`
+          : `this ${deviceWord} gives apps its battery in whole percents, so a reading can be a percent off and one run is too short to tell.`}{' '}
+        Each figure comes with its range, and more runs narrow it. The screen and anything else running draw on the same battery, so it’s the
+        whole {deviceWord} while it priced, not the searches alone. And it only measures unplugged: on the charger, there’s no estimate.
       </Text>
-      <Text style={styles.status}>{reading ? `Now: ${readingText(reading)}` : 'Reading the battery…'}</Text>
+      <Text style={styles.status}>{reading ? nowText(reading, battery.step) : 'Reading the battery…'}</Text>
       {!testing ? (
         <>
           <Segmented
@@ -444,6 +455,26 @@ function BatteryTest() {
             value={kind}
             onChange={setKind}
           />
+          {coarse ? (
+            <>
+              {/* After a test, its own end is typed below its result: this one is for the next test's start. */}
+              <Text style={styles.label}>Status bar at the start{test ? ' of the next test' : ''}, in %</Text>
+              <TextInput
+                value={barStart}
+                onChangeText={setBarStart}
+                placeholder="Optional, like 23"
+                placeholderTextColor={colors.faint}
+                keyboardType="number-pad"
+                maxLength={3}
+                style={styles.input}
+                accessibilityLabel={`Battery percentage in the status bar at the start${test ? ' of the next test' : ''}`}
+                accessibilityHint="Optional. Type it again when the test ends, for a figure about five times closer."
+              />
+              {typedStart && !typedStart.ok ? (
+                <Text style={styles.warn}>{typedProblemText(typedStart.why, reading?.level ?? null, battery.step, deviceWord)}</Text>
+              ) : null}
+            </>
+          ) : null}
           {planned !== undefined && room < TEST_RUNS[TEST_RUNS.length - 1] ? (
             <Text style={styles.meta}>
               Room for {room} more runs this hour: {hourText}, and each run is {SPEED_ITEMS.length} searches at each store.
@@ -460,10 +491,12 @@ function BatteryTest() {
             label={`Start ${planned ?? runs} runs`}
             small
             variant="dark"
-            disabled={!!why || battery.busy}
+            disabled={!!why || battery.busy || (!!typedStart && !typedStart.ok)}
             accessibilityLabel={`Start ${planned ?? runs} runs of the battery test, ${kind === 'cold' ? 'each from cold' : 'warm'}`}
             onPress={() => {
-              if (planned) startRuns(kind, planned);
+              if (!planned) return;
+              startRuns(kind, planned, typedStart?.ok ? typedStart.level : undefined);
+              setBarStart('');
             }}
           />
         )}
@@ -474,22 +507,56 @@ function BatteryTest() {
           {test.window.start.level !== null ? ` · from ${levelText(test.window.start.level)}` : ''}
         </Text>
       ) : null}
-      {test && estimate ? (
+      {test && report && test.window.end ? (
         <>
           <Text style={styles.status}>
-            {workText(test.kind, estimate.ms, test.work)} · {batteryShort(estimate)}
+            {workText(test.kind, test.window.end.at - test.window.start.at, test.work)} · {report.short}
             {test.cut ? ` · stopped after ${test.done} of ${test.runs}` : ''}
           </Text>
-          {batteryLines(estimate, deviceWord).map((line, i) => (
-            // The second line is the answer: the drop per list and per search (after one run, only a caveat).
-            <Text key={i} style={estimate.ok && estimate.work.runs > 1 && i === 1 ? styles.answer : styles.meta}>
+          {report.lines.map((line, i) => (
+            // The answer: the drop per list and per search.
+            <Text key={i} style={i === report.answer ? styles.answer : styles.meta}>
               {line}
             </Text>
           ))}
+          {test.statusBar ? <StatusBarEnd key={test.window.start.at} test={test} step={battery.step} /> : null}
           <Pill label="Share results" icon="share" small variant="outline" accessibilityLabel="Share results of the battery test" onPress={share} style={styles.alignStart} />
         </>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The status bar's percentage at a battery test's end, as the tester reads it: with the one typed at the start, the
+ * test's figure in whole percents instead of the phone's 5% steps (see statusBarEstimate).
+ */
+function StatusBarEnd({ test, step }: { test: Measurement; step: number }) {
+  const phone = test.window.end?.level ?? null;
+  const typedEnd = test.statusBar?.end;
+  const [text, setText] = useState(() => (typedEnd !== undefined ? String(Math.round(typedEnd * 100)) : ''));
+  const typed = readPercent(text, phone, step);
+  return (
+    <>
+      <Text style={styles.label}>Status bar at the end, in %</Text>
+      <TextInput
+        value={text}
+        onChangeText={(next) => {
+          setText(next);
+          const got = readPercent(next, phone, step);
+          batteryMeter.noteStatusBar(got?.ok ? got.level : undefined);
+        }}
+        placeholder="Like 21"
+        placeholderTextColor={colors.faint}
+        keyboardType="number-pad"
+        maxLength={3}
+        style={styles.input}
+        accessibilityLabel="Battery percentage in the status bar at the end of the test"
+        accessibilityHint="With the one typed at the start, gives the figure in whole percents."
+      />
+      {typed && !typed.ok ? <Text style={styles.warn}>{typedProblemText(typed.why, phone, step, deviceWord)}</Text> : null}
+      {typedEnd === undefined ? <Text style={styles.meta}>Type it as soon as the test ends: the battery keeps going down.</Text> : null}
+    </>
   );
 }
 
