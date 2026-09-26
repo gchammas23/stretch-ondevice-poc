@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
+import { Politeness } from '../src/onDevice/politeness';
 import type { RetailerConfig, SearchOutcome } from '../src/onDevice/types';
 import {
   BatteryMeter,
@@ -180,6 +181,18 @@ function engineOn(battery: FakeBattery, drain: number, during: () => void = () =
     assert.equal(runsRoom([], 6), 20);
     assert.equal(runsRoom([30, 12, 0], 6), 15, 'the busiest store sets it, so none pauses mid-test');
     assert.equal(runsRoom([118], 6), 0);
+    // 40 searches at Walmart 50 minutes ago and 60 (a 10-run battery test) 10 minutes ago: room for 3 runs, not 5.
+    let clock = 100 * 60 * MIN;
+    const hour = new Politeness(120, () => clock);
+    clock -= 50 * MIN;
+    for (let i = 0; i < 40; i++) hour.take('walmart');
+    clock += 40 * MIN;
+    for (let i = 0; i < 60; i++) hour.take('walmart');
+    clock += 10 * MIN;
+    assert.equal(runsRoom([hour.used('walmart')], 6), 3);
+    assert.equal(hour.roomAt('walmart', 30), clock + 10 * MIN + 1, 'room for 5 runs once 10 of the older searches are an hour old');
+    assert.equal(hour.roomAt('target', 30), clock, 'room now');
+    assert.equal(hour.roomAt('walmart', 121), Infinity, 'more than an hour holds');
     assert.equal(startProblemText(reading(0, 0.8), 'iPhone'), undefined);
     assert.equal(startProblemText(reading(0, 0.8, { charge: 'charging' }), 'iPhone'), 'Plugged in: unplug the iPhone to run the battery test. On the charger, there’s no estimate.');
     assert.match(startProblemText(reading(0, 1), 'iPhone')!, /^At 100%: just off the charger/);

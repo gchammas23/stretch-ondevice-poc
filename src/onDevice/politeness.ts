@@ -46,6 +46,17 @@ export class Politeness {
     return this.recent(retailerId).length;
   }
 
+  /**
+   * The first moment the store has room for `n` more searches: now, or once enough of its last hour's searches are an
+   * hour old. Never, for more than it takes in an hour.
+   */
+  roomAt(retailerId: string, n: number): number {
+    if (n > this.perHour) return Infinity;
+    const list = [...this.recent(retailerId)].sort((a, b) => a - b);
+    const over = list.length + n - this.perHour;
+    return over <= 0 ? this.now() : list[over - 1] + HOUR + 1;
+  }
+
   reset(): void {
     this.times.clear();
   }

@@ -381,15 +381,25 @@ function BatteryTest() {
     void batteryMeter.refresh();
   }, []);
   // Runs that fit in every compared store's hour: past it, a store would pause mid-test and the runs would search less.
-  const room = runsRoom(choices.map(({ config }) => politeness.used(config.id)), SPEED_ITEMS.length);
+  // The busiest store sets it; the hour rolls, so room comes back as its searches turn an hour old.
+  const usage = choices.map(({ config }) => ({ id: config.id, name: config.name, used: politeness.used(config.id) }));
+  const busiest = usage.reduce((a, b) => (b.used > a.used ? b : a), usage[0]);
+  const room = runsRoom(usage.map((u) => u.used), SPEED_ITEMS.length);
   const fits = TEST_RUNS.filter((n) => n <= room);
   const planned = runs <= room ? runs : fits[fits.length - 1];
+  const hourText = busiest ? `${busiest.name} has had ${busiest.used} of its ${MAX_SEARCHES_PER_HOUR} searches in the last hour` : '';
+  // When every store has room for the shortest test, to the next minute.
+  const roomAt = Math.max(...usage.map((u) => politeness.roomAt(u.id, TEST_RUNS[0] * SPEED_ITEMS.length)));
+  const roomClock = new Date(Math.ceil(roomAt / 60_000) * 60_000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   const why = !choices.length
     ? 'Choose stores to compare first.'
     : !reading
       ? 'Reading the battery…'
       : (startProblemText(reading, deviceWord) ??
-        (planned === undefined ? `No room left this hour: a store takes ${MAX_SEARCHES_PER_HOUR} searches an hour at most. Try again later.` : undefined));
+        (planned === undefined
+          ? `Not enough room this hour: ${hourText}, so ${room === 0 ? 'no more runs fit' : `only ${room} more ${room === 1 ? 'run fits' : 'runs fit'}`}, ` +
+            `and the test makes ${TEST_RUNS[0]} at least. Room for ${TEST_RUNS[0]} runs at about ${roomClock}.`
+          : undefined));
   const estimate = test && !testing ? batteryEstimate(test.window, test.work, battery.step) : undefined;
   const stop = () => {
     batteryMeter.stop();
@@ -434,10 +444,9 @@ function BatteryTest() {
             value={kind}
             onChange={setKind}
           />
-          {room < TEST_RUNS[TEST_RUNS.length - 1] ? (
+          {planned !== undefined && room < TEST_RUNS[TEST_RUNS.length - 1] ? (
             <Text style={styles.meta}>
-              Room for {room} more {room === 1 ? 'run' : 'runs'} this hour: each run is {SPEED_ITEMS.length} searches at each store, and a store
-              takes {MAX_SEARCHES_PER_HOUR} an hour at most.
+              Room for {room} more runs this hour: {hourText}, and each run is {SPEED_ITEMS.length} searches at each store.
             </Text>
           ) : null}
           {why ? <Text style={styles.warn}>{why}</Text> : null}
