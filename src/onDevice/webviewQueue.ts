@@ -1,0 +1,764 @@
+import type { ReplayTemplate } from './replay';
+import type { LoadTiming, ReplayTiming } from './timing';
+import type { KnownStore, PageSource } from './types';
+import {
+  captureScript,
+  clipScript,
+  extractionScript,
+  lightScript,
+  listPageScript,
+  looksLikeSignIn,
+  replayScript,
+  stopScript,
+  storeListScript,
+  storeScript,
+  suggestScript,
+  type ReplayRequest,
+} from './webviewScript';
+
+/**
+ * Instead of reading results: press the store finder's "make this my store" button, on the first store or a given
+ * one (see storeScript), or list the stores it finds near a ZIP code (see storeListScript); read a page that lists
+ * things, a weekly ad or an account's coupons (see listPageScript); or clip one coupon, because the user asked in the
+ * app (see clipScript).
+ */
+export type StoreTask =
+  | { kind: 'setStore'; buttons: string[]; target?: { id?: string; name?: string } }
+  | { kind: 'listStores'; zip: string }
+  | { kind: 'readList'; scrolls?: number }
+  | { kind: 'clip'; target: { id?: string; title: string }; buttons?: string[] };
+
+/** One hidden page load for a search, or for setting the store. */
+export interface WebViewJob {
+  url: string;
+  /** Sent as a Cookie header. react-native-webview only attaches headers to the first request. */
+  cookie?: string;
+  pageScript?: string;
+  challengeMarkers: string[];
+  timeoutMs: number;
+  /** Shown to the user if the retailer asks for a bot check. */
+  retailerName: string;
+  /** See ExtractOptions in webviewScript.ts. 'details' reads a product's own page; 'text', what a page says. */
+  waitFor?: 'nextData' | 'auto' | 'details' | 'loaded' | 'text';
+  /** Leave the page loaded afterwards, so later searches can be replayed inside it. */
+  keepPage?: boolean;
+  task?: StoreTask;
+  /**
+   * Checked against the responses the page streams in as they arrive: true once they hold the results, so the load
+   * finishes shortly after instead of waiting for the page to go quiet; 'now' when nothing that matters is still to
+   * come (the search's own answer, whole), so it finishes at once.
+   */
+  accept?: (payload: WebViewPayload) => boolean | 'now';
+  /** Load without images, fonts or video (see lightScript). A bot check is shown with everything, reloaded. */
+  light?: boolean;
+  /** Fail with 'challenge' on a bot check instead of showing it: for checks nobody is waiting on. */
+  reportChallenge?: boolean;
+  /** Filled in as the load goes (see LoadTiming), for the speed test's timeline. */
+  timing?: LoadTiming;
+  /**
+   * A page of the user's account (their coupons): if the site sends it to a sign-in page, that page isn't loaded and
+   * the job fails with 'signed_out'. Nothing is ever injected into a sign-in page (see allows).
+   */
+  guardSignIn?: boolean;
+}
+
+/** A visible visit: the user searches on the site, then taps Read products; or looks at a page. */
+export interface BrowseJob {
+  url: string;
+  retailerName: string;
+  pageScript?: string;
+  /**
+   * 'read' offers Read products. 'view' shows a page (a product's) to look at, with only Close. 'signin' is the store's
+   * own sign-in page: nothing is injected into it at all, so nothing typed there can reach the app. 'account' is a
+   * page of the user's account (their coupons, to clip there), which may ask them to sign in: nothing is injected
+   * into it either.
+   */
+  purpose?: 'read' | 'view' | 'signin' | 'account';
+}
+
+export interface WebViewPayload {
+  href: string;
+  /** The page's title, for explaining a failure. */
+  title?: string;
+  nextDataText?: string;
+  sources?: PageSource[];
+  pageResult?: unknown;
+  /** About how much data the page moved. */
+  bytes?: number;
+  /** The store the page says it's set to, as it writes it (see storeLabel in webviewScript.ts). */
+  store?: string;
+  /** A page read for what it says ('text'): its visible text. */
+  text?: string;
+}
+
+/** What a replayed request returned (see replayScript). */
+export interface ReplayResponse {
+  status: number;
+  url: string;
+  type: string;
+  /** JSON responses: the body. */
+  text?: string;
+  /** HTML responses: the embedded data, the title, and the whole page only when it's short. */
+  nextDataText?: string | null;
+  ld?: string[];
+  title?: string;
+  short?: string;
+  /** How much data the response was, about. */
+  bytes?: number;
+}
+
+/** What the host renders. A new object only when the load changes. */
+export interface ActiveLoad {
+  id: number;
+  /** Bumps after a bot check; the host remounts the WebView on change. */
+  round: number;
+  /** 'idle': a finished search page kept loaded (hidden) for replays. */
+  phase: 'hidden' | 'challenge' | 'browse' | 'idle';
+  url: string;
+  cookie?: string;
+  retailerName: string;
+  purpose?: BrowseJob['purpose'];
+  /** For injectedJavaScriptBeforeContentLoaded: the response capture hook, when this load needs it. */
+  beforeScript?: string;
+  /** For injectedJavaScript on this load. */
+  script: string;
+}
+
+interface Job {
+  id: number;
+  mode: 'search' | 'browse';
+  nonce: string;
+  round: number;
+  phase: 'hidden' | 'challenge' | 'browse';
+  url: string;
+  cookie?: string;
+  pageScript?: string;
+  challengeMarkers: string[];
+  timeoutMs: number;
+  retailerName: string;
+  waitFor: 'nextData' | 'auto' | 'details' | 'loaded' | 'text';
+  keepPage: boolean;
+  task?: StoreTask;
+  accept?: (payload: WebViewPayload) => boolean | 'now';
+  light: boolean;
+  reportChallenge: boolean;
+  guardSignIn: boolean;
+  /** Responses streamed in so far, newest first. */
+  partial: PageSource[];
+  partialHref?: string;
+  partialTitle?: string;
+  partialBytes?: number;
+  partialStore?: string;
+  /** Running once `accept` said yes: related responses get a moment to land. */
+  acceptTimer?: ReturnType<typeof setTimeout>;
+  purpose?: BrowseJob['purpose'];
+  timing?: LoadTiming;
+  resolve: (payload: WebViewPayload | null) => void;
+  reject: (error: Error) => void;
+}
+
+/** What the site suggested for what was typed into its search box (see suggestScript). */
+export interface SuggestResponse {
+  items: string[];
+  /** 'list': the site's suggestion list; 'response': its suggestion data; 'none'; 'no_box': no search box found. */
+  how: string;
+}
+
+/** Something sent into the kept page that answers by nonce: a replayed search, or suggestions for what's typed. */
+interface Replay {
+  nonce: string;
+  script: (nonce: string) => string;
+  /** Replays count toward the lane's stats; suggestions don't. */
+  counts: boolean;
+  timeoutMs: number;
+  resolve: (msg: Record<string, unknown>) => void;
+  reject: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  timing?: ReplayTiming;
+}
+
+export const CHALLENGE_TIMEOUT_MS = 120_000;
+export const BROWSE_TIMEOUT_MS = 15 * 60_000;
+/** After the streamed responses first hold the results: how long to wait for closely related ones. */
+export const ACCEPT_SETTLE_MS = 700;
+/** A kept page that nothing has used for this long is unloaded. */
+export const IDLE_PAGE_MS = 120_000;
+/** Replays in flight at once inside one page. */
+export const MAX_REPLAYS = 3;
+const MAX_MESSAGE_CHARS = 8_000_000;
+/** A page's text, as much as the app keeps of it: fees pages say what they have to well within this. */
+const MAX_TEXT_CHARS = 150_000;
+const CAPTURE = captureScript();
+const LIGHT = lightScript();
+
+const makeNonce = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+/**
+ * Runs page loads one at a time for one WebView, and replays inside the page a search left loaded.
+ * A plain class outside React, so its mutable state never lives in render;
+ * the host component reads it through useSyncExternalStore.
+ */
+export class WebViewQueue {
+  private queue: Job[] = [];
+  private current: Job | null = null;
+  /** The last search page, left loaded (hidden) for replays. */
+  private resident: ActiveLoad | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private nextId = 1;
+  private snapshot: ActiveLoad | null = null;
+  private listeners = new Set<() => void>();
+  private inject: ((script: string) => void) | null = null;
+  private replays = new Map<string, Replay>();
+  private waiting: Replay[] = [];
+  private settleWaiters: (() => void)[] = [];
+
+  /** What to replay in the kept page. Set by the search layer after a page load; dropped with the page. */
+  template: ReplayTemplate | null = null;
+  /** Replays in a row that came back unusable. */
+  replayMisses = 0;
+  /** The store the kept page was loaded for. A different one needs a fresh page. */
+  context = '';
+  /** Which store the kept page said it's set to, for searches replayed in it. Dropped with the page. */
+  seenStore: KnownStore | null = null;
+  /** Set by the pool: frees a WebView before this lane loads a page. */
+  beforeMount: (() => void) | null = null;
+  lastUsed = 0;
+  maxReplays = MAX_REPLAYS;
+  idleMs = IDLE_PAGE_MS;
+  readonly stats = { pageLoads: 0, replays: 0, replayMisses: 0 };
+
+  constructor(
+    readonly key = 'default',
+    readonly label = key,
+  ) {}
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  getSnapshot = (): ActiveLoad | null => this.snapshot;
+
+  /** A hidden load for a search. */
+  run = (job: WebViewJob): Promise<WebViewPayload> =>
+    new Promise<WebViewPayload>((resolve, reject) => {
+      if (job.timing) {
+        job.timing.queuedAt = Date.now();
+        job.timing.url = job.url;
+      }
+      this.enqueue({
+        ...job,
+        mode: 'search',
+        phase: 'hidden',
+        waitFor: job.waitFor ?? 'nextData',
+        keepPage: !!job.keepPage,
+        light: !!job.light,
+        reportChallenge: !!job.reportChallenge,
+        guardSignIn: !!job.guardSignIn,
+        resolve: (payload) => (payload ? resolve(payload) : reject(new Error('no_payload'))),
+        reject,
+      });
+    });
+
+  /** A visible visit. Resolves with the page's data when the user taps Read products, or null if they close it. */
+  browse = (job: BrowseJob): Promise<WebViewPayload | null> =>
+    new Promise<WebViewPayload | null>((resolve, reject) => {
+      this.enqueue({
+        ...job,
+        mode: 'browse',
+        phase: 'browse',
+        challengeMarkers: [],
+        timeoutMs: BROWSE_TIMEOUT_MS,
+        waitFor: 'auto',
+        keepPage: false,
+        light: false,
+        reportChallenge: false,
+        guardSignIn: false,
+        resolve,
+        reject,
+      });
+    });
+
+  /**
+   * Sends one request from inside the kept page. Waits for a page load that is running or queued;
+   * rejects with 'no_page' when there's no page to send it from. `timing` is filled in as it goes.
+   */
+  replay = (req: ReplayRequest, timeoutMs: number, timing?: ReplayTiming): Promise<ReplayResponse> =>
+    new Promise<ReplayResponse>((resolve, reject) => {
+      if (timing) timing.askedAt = Date.now();
+      this.waiting.push({
+        nonce: makeNonce(),
+        script: (nonce) => replayScript(nonce, req),
+        counts: true,
+        timeoutMs,
+        resolve: (msg) => resolve(this.toResponse(msg)),
+        reject,
+        timing,
+      });
+      this.pump();
+    });
+
+  /**
+   * Types `text` into the kept page's search box and resolves with what the site suggests. Like a replay, it waits
+   * for a page load that is running or queued, and rejects with 'no_page' when there's no page.
+   */
+  suggest = (text: string, timeoutMs: number): Promise<SuggestResponse> =>
+    new Promise<SuggestResponse>((resolve, reject) => {
+      this.waiting.push({
+        nonce: makeNonce(),
+        script: (nonce) => suggestScript(nonce, text),
+        counts: false,
+        timeoutMs,
+        resolve: (msg) =>
+          resolve({
+            items: Array.isArray(msg.items) ? msg.items.filter((i): i is string => typeof i === 'string').slice(0, 12) : [],
+            how: str(msg.how) ?? 'none',
+          }),
+        reject,
+      });
+      this.pump();
+    });
+
+  /** A page is loaded and free for replays right now. */
+  hasPage = (): boolean => !!this.resident && !this.current && !this.queue.length;
+
+  /** A search page load is running or waiting. */
+  loading = (): boolean => this.current?.mode === 'search' || this.queue.some((j) => j.mode === 'search');
+
+  /** Nothing running or waiting at all. */
+  isIdle = (): boolean => !this.current && !this.queue.length && !this.replays.size && !this.waiting.length;
+
+  /** Requests being sent from inside the kept page right now. */
+  replaysInFlight = (): number => this.replays.size;
+
+  /** Resolves once no page load or visit is running or waiting. */
+  settled = (): Promise<void> =>
+    !this.current && !this.queue.length ? Promise.resolve() : new Promise((resolve) => this.settleWaiters.push(resolve));
+
+  /** The host hands over its WebView's injectJavaScript. */
+  attach = (inject: (script: string) => void): void => {
+    this.inject = inject;
+    this.pump();
+  };
+
+  detach = (): void => {
+    this.inject = null;
+  };
+
+  /** A message the page posted through window.ReactNativeWebView.postMessage. */
+  receive = (raw: unknown): void => {
+    if (typeof raw !== 'string' || raw.length > MAX_MESSAGE_CHARS) return;
+
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (msg.kind === 'replay' || msg.kind === 'suggest') {
+      this.replayDone(msg);
+      return;
+    }
+
+    const job = this.current;
+    // Ignore anything without this load's nonce, including the retailer's own scripts.
+    if (!job || msg.nonce !== job.nonce) return;
+
+    if (msg.kind === 'challenge') {
+      if (job.phase === 'hidden') {
+        if (job.reportChallenge) {
+          this.finish(new Error('challenge'));
+          return;
+        }
+        job.phase = 'challenge';
+        if (job.timing) job.timing.check = { loadFrom: job.timing.startedAt ?? Date.now(), from: Date.now() };
+        // A check can need images to be answered: shown with everything, which means loading it again.
+        if (job.light) {
+          job.light = false;
+          job.round += 1;
+          job.nonce = makeNonce();
+        }
+        this.arm(CHALLENGE_TIMEOUT_MS, 'challenge_timeout');
+        this.publish();
+      }
+      return;
+    }
+
+    if (msg.kind === 'progress') {
+      if (job.phase === 'hidden' && job.accept) this.progress(job, msg);
+      return;
+    }
+
+    if (msg.kind === 'data') {
+      if (job.phase === 'challenge') {
+        // Check passed. Reload from scratch, since the Cookie header only rides the first request.
+        job.phase = 'hidden';
+        job.round += 1;
+        job.nonce = makeNonce();
+        job.partial = [];
+        if (job.acceptTimer) clearTimeout(job.acceptTimer);
+        job.acceptTimer = undefined;
+        const t = job.timing;
+        if (t?.check) {
+          t.check.to = Date.now();
+          t.startedAt = t.check.to;
+          t.navAt = t.fetchAt = t.htmlAt = t.dataAt = t.openedAt = undefined;
+          t.navigations = 0;
+          t.streamed = undefined;
+        }
+        this.arm(job.timeoutMs, 'timeout');
+        this.publish();
+        return;
+      }
+      this.noteData(job, msg);
+      if (job.timing) job.timing.ended ??= str(msg.ready) ?? 'data';
+      const payload: WebViewPayload = {
+        href: typeof msg.href === 'string' ? msg.href : job.url,
+        nextDataText: typeof msg.nextDataText === 'string' ? msg.nextDataText : undefined,
+        sources: Array.isArray(msg.sources) ? msg.sources.flatMap(toSource) : undefined,
+        pageResult: msg.pageResult ?? undefined,
+      };
+      if (typeof msg.title === 'string' && msg.title) payload.title = msg.title;
+      const bytes = usageBytes(msg);
+      if (bytes !== undefined) payload.bytes = bytes;
+      const store = storeText(msg) ?? job.partialStore;
+      if (store) payload.store = store;
+      if (typeof msg.text === 'string') payload.text = msg.text.slice(0, MAX_TEXT_CHARS);
+      this.finish(payload);
+      return;
+    }
+
+    this.finish(new Error(typeof msg.error === 'string' ? msg.error : 'page_error'));
+  };
+
+  /**
+   * injectedJavaScript only runs on a WebView's first load, so the host re-runs this after each navigation: during a
+   * check, and while setting a store (pressing the button may load another page).
+   */
+  scriptAfterNavigation = (): string | null => {
+    const job = this.current;
+    return job && (job.phase === 'challenge' || (job.task && job.phase === 'hidden')) ? this.scriptFor(job) : null;
+  };
+
+  /** The Read products button: a script that posts whatever the current page holds. */
+  readPage = (): string | null => {
+    const job = this.current;
+    return job?.phase === 'browse' && job.purpose !== 'signin' && job.purpose !== 'account' ? extractionScript(job.nonce, [], job.pageScript, { mode: 'read' }) : null;
+  };
+
+  /**
+   * Whether the WebView may load `url` now. A hidden read of the user's account (see guardSignIn) that the site sends
+   * to a sign-in page stops there, before that page loads: it fails with 'signed_out', and the page gets nothing.
+   */
+  allows = (url: string, isTopFrame: boolean): boolean => {
+    const job = this.current;
+    if (!job || job.phase !== 'hidden' || !job.guardSignIn || !isTopFrame || !looksLikeSignIn(url)) return true;
+    this.finish(new Error('signed_out'));
+    return false;
+  };
+
+  closeBrowse = (): void => {
+    if (this.current?.phase === 'browse') this.finish(null);
+  };
+
+  networkError = (): void => {
+    if (this.current?.phase === 'hidden') this.finish(new Error('network'));
+    else if (!this.current && this.resident) this.dropPage();
+  };
+
+  /** The WebView began loading a page (its own event), for the speed test's timeline: when, and how many. */
+  loadStarted = (): void => {
+    const job = this.current;
+    const t = job?.phase === 'hidden' ? job.timing : undefined;
+    if (!t) return;
+    t.openedAt ??= Date.now();
+    t.navigations = (t.navigations ?? 0) + 1;
+  };
+
+  /** The WebView's content process died (memory pressure, usually). */
+  pageLost = (): void => {
+    const job = this.current;
+    if (job) this.finish(job.phase === 'browse' ? null : new Error('page_crashed'));
+    else this.dropPage();
+  };
+
+  cancel = (): void => this.finish(new Error('challenge_cancelled'));
+
+  /** Shown to the user now: give them the full time for a bot check. */
+  onPresented = (): void => {
+    if (this.current?.phase === 'challenge') this.arm(CHALLENGE_TIMEOUT_MS, 'challenge_timeout');
+  };
+
+  /** Unloads the kept page and forgets what to replay, e.g. after the user picked another store. */
+  reset = (): void => this.dropPage();
+
+  private toResponse(msg: Record<string, unknown>): ReplayResponse {
+    return {
+      status: typeof msg.status === 'number' ? msg.status : 0,
+      url: str(msg.url) ?? '',
+      type: str(msg.type) ?? '',
+      text: str(msg.text),
+      nextDataText: str(msg.nextDataText) ?? null,
+      ld: Array.isArray(msg.ld) ? msg.ld.filter((s): s is string => typeof s === 'string') : undefined,
+      title: str(msg.title),
+      short: str(msg.short),
+      bytes: typeof msg.bytes === 'number' ? msg.bytes : undefined,
+    };
+  }
+
+  private replayDone(msg: Record<string, unknown>): void {
+    const r = typeof msg.nonce === 'string' ? this.replays.get(msg.nonce) : undefined;
+    if (!r) return;
+    this.replays.delete(r.nonce);
+    if (r.timer) clearTimeout(r.timer);
+    if (r.timing) r.timing.doneAt = Date.now();
+    if (r.counts) this.stats.replays += 1;
+    if (typeof msg.error === 'string') r.reject(new Error(msg.error === 'too_large' ? 'replay_too_large' : 'replay_failed'));
+    else r.resolve(msg);
+    this.pump();
+  }
+
+  private enqueue(job: Omit<Job, 'id' | 'nonce' | 'round' | 'partial'>): void {
+    this.queue.push({ ...job, id: this.nextId++, nonce: makeNonce(), round: 0, partial: [] });
+    this.pump();
+  }
+
+  /** The page's data reached the app: when, and when the page itself loaded, for the speed test's timeline. */
+  private noteData(job: Job, msg: Record<string, unknown>): void {
+    const t = job.timing;
+    if (!t) return;
+    t.dataAt ??= Date.now();
+    if (typeof msg.href === 'string') t.pageUrl = msg.href;
+    const nav = msg.nav;
+    if (typeof nav !== 'object' || nav === null) return;
+    const { start, fetch, html } = nav as { start?: unknown; fetch?: unknown; html?: unknown };
+    if (typeof start === 'number' && start > 0) t.navAt ??= start;
+    if (typeof fetch === 'number' && fetch > 0) t.fetchAt ??= fetch;
+    if (typeof html === 'number' && html > 0) t.htmlAt ??= html;
+  }
+
+  /** Responses the page streamed in: once they hold the results, finish shortly instead of waiting for quiet. */
+  private progress(job: Job, msg: Record<string, unknown>): void {
+    const sources = Array.isArray(msg.sources) ? msg.sources.flatMap(toSource) : [];
+    if (!sources.length) return;
+    this.noteData(job, msg);
+    if (job.timing) job.timing.streamed = [...(job.timing.streamed ?? []), ...sources.map((s) => s.label)].slice(-30);
+    job.partial = [...sources, ...job.partial];
+    if (typeof msg.href === 'string') job.partialHref = msg.href;
+    if (typeof msg.title === 'string' && msg.title) job.partialTitle = msg.title;
+    const bytes = usageBytes(msg);
+    if (bytes !== undefined) job.partialBytes = Math.max(bytes, job.partialBytes ?? 0);
+    job.partialStore = storeText(msg) ?? job.partialStore;
+    if (job.acceptTimer) return; // Already settling; the timer takes whatever has arrived by then.
+
+    let ok: boolean | 'now' = false;
+    try {
+      ok = job.accept?.(this.partialPayload(job)) ?? false;
+    } catch {
+      ok = false;
+    }
+    if (!ok) return;
+    if (job.timing) {
+      job.timing.acceptedAt = Date.now();
+      job.timing.ended = 'results';
+    }
+    if (ok === 'now') {
+      this.inject?.(stopScript(job.nonce));
+      this.finish(this.partialPayload(job));
+      return;
+    }
+    job.acceptTimer = setTimeout(() => {
+      if (this.current !== job) return;
+      this.inject?.(stopScript(job.nonce));
+      this.finish(this.partialPayload(job));
+    }, ACCEPT_SETTLE_MS);
+  }
+
+  private partialPayload(job: Job): WebViewPayload {
+    const payload: WebViewPayload = { href: job.partialHref ?? job.url, sources: job.partial };
+    if (job.partialTitle) payload.title = job.partialTitle;
+    if (job.partialBytes !== undefined) payload.bytes = job.partialBytes;
+    if (job.partialStore) payload.store = job.partialStore;
+    return payload;
+  }
+
+  private scriptFor(job: Job): string {
+    if (job.mode === 'browse') return 'true;';
+    if (job.task?.kind === 'listStores') return storeListScript(job.nonce, job.task.zip, job.challengeMarkers);
+    if (job.task?.kind === 'readList') return listPageScript(job.nonce, job.challengeMarkers, { scrolls: job.task.scrolls });
+    if (job.task?.kind === 'clip') return clipScript(job.nonce, job.challengeMarkers, job.task.target, job.task.buttons);
+    if (job.task) return storeScript(job.nonce, job.challengeMarkers, job.task.buttons, { target: job.task.target });
+    return extractionScript(job.nonce, job.challengeMarkers, job.pageScript, {
+      waitFor: job.waitFor,
+      progress: !!job.accept,
+      // A product page with nothing more coming after it loads has said all it will; a page read for its words, soon.
+      giveUpMs: job.waitFor === 'details' ? 3000 : job.waitFor === 'text' ? 4000 : undefined,
+    });
+  }
+
+  private loadOf(job: Job): ActiveLoad {
+    return {
+      id: job.id,
+      round: job.round,
+      phase: job.phase,
+      url: job.url,
+      cookie: job.cookie,
+      retailerName: job.retailerName,
+      purpose: job.purpose,
+      // A sign-in page gets nothing: no response capture, which would see what's typed there. Nor does a page of the
+      // user's account shown to them, which may ask them to sign in.
+      beforeScript:
+        job.purpose === 'signin' || job.purpose === 'account'
+          ? undefined
+          : [job.mode === 'browse' || job.waitFor !== 'nextData' ? CAPTURE : '', job.light && job.phase === 'hidden' ? LIGHT : '']
+              .filter(Boolean)
+              .join('\n') || undefined,
+      script: this.scriptFor(job),
+    };
+  }
+
+  private publish(): void {
+    const job = this.current;
+    const prev = this.snapshot;
+    const same = !!job && !!prev && prev.id === job.id && prev.round === job.round && prev.phase === job.phase;
+    const next = job ? (same ? prev : this.loadOf(job)) : this.resident;
+    if (next === prev) return;
+    this.snapshot = next;
+    this.listeners.forEach((listener) => listener());
+  }
+
+  /** Starts whatever can run next: a queued load (once replays in the old page finish), else waiting replays. */
+  private pump(): void {
+    if (!this.current && this.queue.length && !this.replays.size) this.startNext();
+    if (!this.current && !this.queue.length) {
+      while (this.waiting.length && this.replays.size < this.maxReplays) {
+        const r = this.waiting.shift()!;
+        const inject = this.inject;
+        if (!this.resident || !inject) {
+          if (r.timing) r.timing.doneAt = Date.now();
+          r.reject(new Error('no_page'));
+          continue;
+        }
+        this.replays.set(r.nonce, r);
+        r.timer = setTimeout(() => {
+          if (!this.replays.delete(r.nonce)) return;
+          if (r.counts) this.stats.replays += 1;
+          if (r.timing) r.timing.doneAt = Date.now();
+          r.reject(new Error('replay_timeout'));
+          this.pump();
+        }, r.timeoutMs);
+        this.lastUsed = Date.now();
+        if (r.timing) r.timing.sentAt = this.lastUsed;
+        inject(r.script(r.nonce));
+      }
+      const settled = this.settleWaiters.splice(0);
+      settled.forEach((resolve) => resolve());
+    }
+    this.armIdle();
+    this.publish();
+  }
+
+  private startNext(): void {
+    const job = this.queue.shift();
+    if (!job) return;
+    this.current = job;
+    this.resident = null;
+    this.lastUsed = Date.now();
+    if (job.timing) job.timing.startedAt = this.lastUsed;
+    if (job.mode === 'search') this.stats.pageLoads += 1;
+    this.beforeMount?.();
+    this.arm(job.timeoutMs, 'timeout');
+  }
+
+  private arm(ms: number, reason: string): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.finish(new Error(reason)), ms);
+  }
+
+  private armIdle(): void {
+    const idle = !!this.resident && this.isIdle();
+    if (!idle) {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    } else if (!this.idleTimer) {
+      this.idleTimer = setTimeout(() => {
+        this.idleTimer = null;
+        if (this.isIdle()) this.dropPage();
+      }, this.idleMs);
+    }
+  }
+
+  private dropPage(): void {
+    this.resident = null;
+    this.template = null;
+    this.seenStore = null;
+    this.replayMisses = 0;
+    // Requests in flight in that page will never answer.
+    for (const r of this.replays.values()) {
+      if (r.timer) clearTimeout(r.timer);
+      if (r.timing) r.timing.doneAt = Date.now();
+      r.reject(new Error('no_page'));
+    }
+    this.replays.clear();
+    this.pump();
+  }
+
+  private finish(result: WebViewPayload | Error | null): void {
+    const job = this.current;
+    if (!job) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (job.acceptTimer) clearTimeout(job.acceptTimer);
+    if (job.timing) job.timing.doneAt = Date.now();
+    this.current = null;
+    const keep = job.mode === 'search' && job.keepPage && result !== null && !(result instanceof Error);
+    // Kept as the same load (same id and round), so the host leaves the WebView and its page alone.
+    this.resident = keep ? { ...this.loadOf(job), phase: 'idle' } : null;
+    if (result instanceof Error) job.reject(result);
+    else job.resolve(result);
+    this.pump();
+  }
+}
+
+/** The store label a page posted, if any (see storeLabel in webviewScript.ts). */
+function storeText(msg: Record<string, unknown>): string | undefined {
+  return typeof msg.store === 'string' && msg.store.trim() ? msg.store.trim().slice(0, 300) : undefined;
+}
+
+/** The data a page reported moving (see pageBytes in webviewScript.ts). */
+function usageBytes(msg: Record<string, unknown>): number | undefined {
+  const usage = msg.usage;
+  if (typeof usage !== 'object' || usage === null) return undefined;
+  const bytes = (usage as { bytes?: unknown }).bytes;
+  return typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0 ? bytes : undefined;
+}
+
+function toSource(s: unknown): PageSource[] {
+  if (typeof s !== 'object' || s === null) return [];
+  const o = s as Record<string, unknown>;
+  if (typeof o.label !== 'string' || typeof o.text !== 'string') return [];
+  const source: PageSource = { label: o.label, text: o.text };
+  const req = o.request;
+  if (typeof req === 'object' && req !== null) {
+    const r = req as Record<string, unknown>;
+    if (typeof r.method === 'string' && typeof r.url === 'string') {
+      const headers: Record<string, string> = {};
+      if (typeof r.headers === 'object' && r.headers !== null) {
+        for (const [k, v] of Object.entries(r.headers)) if (typeof v === 'string') headers[k] = v;
+      }
+      source.request = {
+        method: r.method,
+        url: r.url,
+        headers,
+        body: typeof r.body === 'string' ? r.body : undefined,
+        opaqueBody: r.opaqueBody === true ? true : undefined,
+        credentials: r.credentials === 'omit' || r.credentials === 'include' ? r.credentials : 'same-origin',
+      };
+    }
+  }
+  return [source];
+}
