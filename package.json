@@ -43,7 +43,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts && tsx tests/battery.test.ts"
+    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts && tsx tests/battery.test.ts && tsx tests/phoneVsServer.test.ts"
   },
   "private": true
 }

@@ -4,13 +4,21 @@ import type { ParseResult, RetailerConfig } from './types';
 
 /** A strategy failed for a reason worth reporting (and falling back on). */
 export class StrategyError extends Error {
+  /** The HTTP status the store answered with, when a plain request got an answer. */
+  readonly status?: number;
+  /** About how much data the try moved, when that's known: a plain request's page, or a page load's. */
+  readonly bytes?: number;
+
   constructor(
     public readonly reason: string,
     /** What the page showed, in words, for the Diagnostics screen. May name the page and its data URLs. */
     public readonly detail?: string,
+    info?: { status?: number; bytes?: number },
   ) {
     super(reason);
     this.name = 'StrategyError';
+    this.status = info?.status;
+    this.bytes = info?.bytes;
   }
 }
 
@@ -75,6 +83,15 @@ export async function searchViaFetch(cfg: RetailerConfig, query: string, storeId
   const parsed = clock ? clock.time('parse', read) : read();
   // The page as received; over the network it was likely compressed to a fraction of that.
   if (parsed.payloadFound) return { ...parsed, bytes: page.html.length };
-  if (looksChallenged(cfg.challengeMarkers, page.finalUrl, page.html)) throw new StrategyError('challenge');
-  throw new StrategyError(page.ok ? 'no_payload' : `http_${page.status}`);
+  const info = { status: page.status, bytes: page.html.length };
+  const marker = cfg.challengeMarkers.find((m) => looksChallenged([m], page.finalUrl, page.html));
+  if (marker) throw new StrategyError('challenge', plainDetail(page, marker), info);
+  throw new StrategyError(page.ok ? 'no_payload' : `http_${page.status}`, plainDetail(page), info);
+}
+
+/** What a plain request got instead of products, in words: "HTTP 403, a page of 2 KB, with “Robot or human” in it." */
+function plainDetail(page: Page, marker?: string): string {
+  const size = page.html.length < 1000 ? `${page.html.length} characters` : `${Math.round(page.html.length / 1000)} KB`;
+  const what = marker ? `, with “${marker}” in it` : page.ok ? ', and no product data in it' : '';
+  return `HTTP ${page.status}, a page of ${size}${what}.`;
 }

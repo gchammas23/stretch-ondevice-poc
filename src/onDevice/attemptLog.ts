@@ -4,12 +4,16 @@ import type { Strategy } from './types';
 
 /**
  * What an attempt was for. 'fees': the store's own page about its online order fees. 'ad': its weekly ad. 'coupons':
- * the account's coupons page. 'clip': a coupon clipped there, as the user asked.
+ * the account's coupons page. 'clip': a coupon clipped there, as the user asked. 'versus': the phone vs. server test,
+ * a search of the store's page in the phone's browser and a plain request for it.
  */
-export type AttemptKind = 'search' | 'coverage' | 'product' | 'recipe' | 'store' | 'fees' | 'ad' | 'coupons' | 'clip';
+export type AttemptKind = 'search' | 'coverage' | 'product' | 'recipe' | 'store' | 'fees' | 'ad' | 'coupons' | 'clip' | 'versus';
 
-/** Attempts that aren't about reading prices from searches: Store health's rates leave them out. */
-const NOT_PRICES = new Set<AttemptKind>(['store', 'fees', 'ad', 'coupons', 'clip']);
+/**
+ * Attempts Store health's rates leave out: those that aren't about reading prices from searches, and the phone vs.
+ * server test's, which asks stores in ways the app doesn't read them (a plain request where it loads the page).
+ */
+const NOT_PRICES = new Set<AttemptKind>(['store', 'fees', 'ad', 'coupons', 'clip', 'versus']);
 
 /** One try at reading a store, kept on the phone for Store health. */
 export interface AttemptEntry {
@@ -125,7 +129,7 @@ function median(values: number[]): number | undefined {
 
 /**
  * How reading one store has gone over the last `days` days. Store setting, fees pages, weekly ads and coupons aren't
- * counted: they aren't prices from its searches.
+ * counted: they aren't prices from its searches. Nor is the phone vs. server test.
  */
 export function storeHealth(entries: AttemptEntry[], retailerId: string, now: number, days = 7): StoreHealth {
   const since = now - days * DAY;

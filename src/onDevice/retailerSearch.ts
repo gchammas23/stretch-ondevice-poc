@@ -44,6 +44,9 @@ export class SearchFailed extends Error {
 const reasonOf = (e: unknown) =>
   e instanceof StrategyError ? e.reason : e instanceof Error ? e.message : 'unknown';
 const detailOf = (e: unknown) => (e instanceof StrategyError ? e.detail : undefined);
+/** What a failed try knew of the store's answer: a plain request's HTTP status, and the data it moved. */
+const infoOf = (e: unknown): Pick<Attempt, 'status' | 'bytes'> =>
+  e instanceof StrategyError ? { ...(e.status !== undefined ? { status: e.status } : {}), ...(e.bytes !== undefined ? { bytes: e.bytes } : {}) } : {};
 
 /** A failed attempt, kept on the phone for the Diagnostics screen. */
 export interface FailureRecord {
@@ -480,7 +483,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     let parsed = clock.time('parse', () => parser(payload, ctx));
     if (!parsed.payloadFound) {
       clock.failSince(from);
-      throw new StrategyError('no_payload', describePage(payload, cfg.name));
+      throw new StrategyError('no_payload', describePage(payload, cfg.name), { bytes: payload.bytes });
     }
     // The largest list isn't always the results (a carousel of deals, say): when it doesn't fit the query and one of
     // the responses has a list that does, that one is taken.
@@ -547,6 +550,12 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     const timing = (): SearchTiming => ({ startedAt: started, endedAt: Date.now(), spans: clock.spans, ...(clock.notes.length ? { notes: clock.notes } : {}) });
     // How hard this store may be pushed right now, from how its searches have gone (see tuning.ts).
     const run: Run = { clock, tune: tuner.get(cfg.id, tuningBase(cfg)), limited: false, checked: false, extraBytes: 0 };
+    // A way the store isn't searched with (asked for with `only`, to test it) says nothing about how its searches go:
+    // its tuning hears of it only when the store pushed back, on a site the store is searched on (its website, for a
+    // plain request or its page; an official API is another door).
+    const door = (s: Strategy) => (s === 'api' ? 'api' : 'site');
+    const tells = (strategy: Strategy) =>
+      cfg.strategies.includes(strategy) || ((run.checked || run.limited) && cfg.strategies.some((s) => door(s) === door(strategy)));
     // A store that pushed back gets a pause between searches.
     const pause = tuner.delay(cfg.id, run.tune.gapMs);
     if (pause > 0) {
@@ -573,7 +582,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
         attempts.push(attempt);
         reportAttempt({ ...attempt, retailer: cfg.id, configVersion });
         record({ retailerId: cfg.id, kind, strategy, ok: true, ms: attempt.ms, via: result.via, bytes: result.bytes, ...(result.bytesSaved ? { bytesSaved: result.bytesSaved } : {}) });
-        tuner.record(cfg.id, tuningSample(run, true, attempt.ms, strategy));
+        if (tells(strategy)) tuner.record(cfg.id, tuningSample(run, true, attempt.ms, strategy));
         // What the store sent, for the price X-ray: in memory only.
         const at = Date.now();
         for (const p of result.products.slice(0, EVIDENCE_KEPT)) {
@@ -611,7 +620,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
         };
       } catch (e) {
         clock.failSince(from);
-        const attempt: Attempt = { strategy, ok: false, reason: reasonOf(e), detail: detailOf(e), ms: Date.now() - t0 };
+        const attempt: Attempt = { strategy, ok: false, reason: reasonOf(e), detail: detailOf(e), ms: Date.now() - t0, ...infoOf(e) };
         // A bot check or "too many requests", to any way of searching, is the store pushing back.
         if (BOT_CHECKS.has(attempt.reason!)) run.checked = true;
         if (/(^|_)429$/.test(attempt.reason!)) run.limited = true;
@@ -627,7 +636,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       }
     }
     const last = attempts.filter((a) => a.reason !== 'resting').pop();
-    if (last) tuner.record(cfg.id, tuningSample(run, false, Date.now() - started, last.strategy, last.reason));
+    if (last && tells(last.strategy)) tuner.record(cfg.id, tuningSample(run, false, Date.now() - started, last.strategy, last.reason));
     throw new SearchFailed(attempts, timing());
   };
 

@@ -331,6 +331,13 @@ function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => 
       ) : null}
       <View style={styles.actions}>
         <Pill label="Run it again" icon="refresh" variant="dark" onPress={onAgain} />
+        <Pill
+          label="Could a server do this?"
+          icon="globe"
+          variant="outline"
+          accessibilityHint={`Tests each of your stores live: a plain request, the way a server asks, against this ${deviceWord}’s browser.`}
+          onPress={() => router.push({ pathname: '/phone-vs-server', params: { start: '1' } })}
+        />
         <Pill label="See Find a store" variant="outline" onPress={() => router.push(`/list/${list.id}/compare`)} />
         <Pill label="Done" variant="outline" onPress={onClose} />
       </View>

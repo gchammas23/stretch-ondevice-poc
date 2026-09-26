@@ -290,6 +290,8 @@ export interface Attempt {
   via?: 'page' | 'replay';
   /** About how much data it moved over the network (see pageBytes in webviewScript.ts). */
   bytes?: number;
+  /** A plain request that failed: the HTTP status the store answered with. */
+  status?: number;
 }
 
 /** A store as the phone learned it: from the retailer's API, its store finder, its page, or a search's request. */

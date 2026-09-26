@@ -32,6 +32,103 @@ function extractLdJson(html: string): string[] {
   return out;
 }
 
+/** Texts of the <script type="application/json"> blocks in a page's HTML, but Next.js's page data (read on its own). */
+function extractJsonScripts(html: string): string[] {
+  const marker = 'type="application/json"';
+  const out: string[] = [];
+  let from = 0;
+  for (let i = 0; i < 50; i++) {
+    const at = html.indexOf(marker, from);
+    if (at === -1) break;
+    const open = html.lastIndexOf('<script', at);
+    const start = html.indexOf('>', at);
+    // Only where the words are in a script's opening tag.
+    if (open === -1 || start === -1 || html.indexOf('>', open) !== start) {
+      from = at + marker.length;
+      continue;
+    }
+    const end = html.indexOf('</script>', start);
+    if (end === -1) break;
+    if (!html.slice(open, start).includes('__NEXT_DATA__')) out.push(html.slice(start + 1, end));
+    from = end;
+  }
+  return out;
+}
+
+/** The page state a store page's own scripts set, which the browser's page script reads (see collect in webviewScript.ts). */
+const PAGE_STATES = ['__APOLLO_STATE__', '__PRELOADED_STATE__', '__INITIAL_STATE__', '__NUXT__'];
+const isSpace = (c: string | undefined) => c === ' ' || c === '\n' || c === '\r' || c === '\t';
+
+/** The JSON object or array that starts at `at`, as text: brackets matched outside strings. Null when it doesn't close. */
+function balancedJson(text: string, at: number): string | null {
+  let depth = 0;
+  let inString = false;
+  for (let i = at; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) return text.slice(at, i + 1);
+    }
+  }
+  return null;
+}
+
+/** The JSON text in `JSON.parse("…")` whose string starts at `at` (its opening quote). Null when it isn't a JSON string. */
+function jsonStringAt(text: string, at: number): string | null {
+  if (text[at] !== '"') return null;
+  for (let i = at + 1; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === '"') {
+      try {
+        const inner: unknown = JSON.parse(text.slice(at, i + 1));
+        return typeof inner === 'string' ? inner : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The page state a page's HTML sets as it loads (`window.__APOLLO_STATE__ = {…}`, or `= JSON.parse("…")`), which a
+ * browser reads from the page itself: a plain request's HTML carries it too. Only what's written as JSON.
+ */
+function extractPageStates(html: string): PageSource[] {
+  const out: PageSource[] = [];
+  for (const name of PAGE_STATES) {
+    let from = 0;
+    for (let tries = 0; tries < 5; tries++) {
+      const at = html.indexOf(name, from);
+      if (at === -1) break;
+      let i = at + name.length;
+      while (isSpace(html[i])) i++;
+      from = i;
+      // Set here, not read or compared.
+      if (html[i] !== '=' || html[i + 1] === '=') continue;
+      i++;
+      while (isSpace(html[i])) i++;
+      let text: string | null = null;
+      if (html[i] === '{' || html[i] === '[') text = balancedJson(html, i);
+      else if (html.startsWith('JSON.parse(', i)) {
+        i += 'JSON.parse('.length;
+        while (isSpace(html[i])) i++;
+        text = jsonStringAt(html, i);
+      }
+      if (text) {
+        out.push({ label: name, text });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 /** True when a bot-check marker shows up in any of the given strings. */
 export function looksChallenged(markers: string[], ...haystacks: (string | undefined)[]): boolean {
   return markers.some((m) => haystacks.some((h) => h !== undefined && h.includes(m)));
@@ -403,11 +500,19 @@ function productOrigin(source: PageSource): ProductOrigin {
   return { kind: 'other' };
 }
 
+/**
+ * The JSON documents to look through. A plain request's HTML is read for everything a page carries in it, as a
+ * scraper would: Next.js's page data, JSON-LD, JSON script blocks, and the page state its scripts set.
+ */
 function sourcesOf(payload: PagePayload): PageSource[] {
   const list: PageSource[] = [...(payload.sources ?? [])];
   const nextData = payload.nextDataText ?? (payload.html ? extractNextDataText(payload.html) : null);
   if (nextData) list.push({ label: 'next-data', text: nextData });
-  if (payload.html) for (const text of extractLdJson(payload.html)) list.push({ label: 'ld+json', text });
+  if (payload.html) {
+    for (const text of extractLdJson(payload.html)) list.push({ label: 'ld+json', text });
+    for (const text of extractJsonScripts(payload.html)) list.push({ label: 'json script', text });
+    list.push(...extractPageStates(payload.html));
+  }
   return list;
 }
 

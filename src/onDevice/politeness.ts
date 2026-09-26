@@ -8,8 +8,11 @@ import type { AttemptEntry } from './attemptLog';
 export const MAX_SEARCHES_PER_HOUR = 120;
 const HOUR = 60 * 60_000;
 
-/** Kinds of attempt that are searches of the store's site (not store finders or single product pages). */
-const SEARCHES = new Set(['search', 'coverage']);
+/**
+ * Kinds of attempt that are searches of the store's site (not store finders or single product pages): the phone vs.
+ * server test's too, its page and its plain request.
+ */
+const SEARCHES = new Set(['search', 'coverage', 'versus']);
 /** Kinds that count toward the hourly limit: searches, and pages read for the store's weekly ad and coupons. */
 const COUNTED = new Set([...SEARCHES, 'ad', 'coupons', 'clip']);
 

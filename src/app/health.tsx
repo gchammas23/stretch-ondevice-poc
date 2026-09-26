@@ -4,6 +4,7 @@ import { ActivityIndicator, KeyboardAvoidingView, Platform, Share, ScrollView, S
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { bytesSavedToday, bytesToday, storeHealth, type StoreHealth } from '../onDevice/attemptLog';
 import { COVERAGE_WORDS, coverageText, type CoverageRow } from '../onDevice/coverage';
+import { summaryLine, versusSummary } from '../onDevice/phoneVsServer';
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
 import { BUNDLED_CONFIG } from '../onDevice/retailers';
 import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
@@ -121,6 +122,8 @@ export default function HealthScreen() {
           })}
         </View>
 
+        <VersusCard />
+
         <View style={styles.card}>
           <Text style={styles.title} accessibilityRole="header">
             The last 7 days
@@ -140,6 +143,36 @@ export default function HealthScreen() {
         <RulesCard />
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+/** Phone vs. server: the last test's result, and the way to it. */
+function VersusCard() {
+  const { versus } = useApp();
+  const state = useSyncExternalStore(versus.subscribe, versus.getSnapshot);
+  const now = useNow(60_000);
+  const summary = versusSummary(state);
+  return (
+    <View style={styles.card}>
+      <Text style={styles.title} accessibilityRole="header">
+        Phone vs. server
+      </Text>
+      <Text style={styles.small}>
+        {state.finishedAt && summary.tried
+          ? `${summaryLine(summary, deviceWord)} Tested ${whenLabel(state.finishedAt, now)}.`
+          : `Could a server read these stores? A live test at each store: a plain request, the way a scraping server asks, against this ${deviceWord}’s own browser.`}
+      </Text>
+      <View style={styles.row}>
+        <Pill
+          label={state.running ? 'Testing now' : 'Open the test'}
+          accessibilityLabel={`${state.running ? 'Testing now' : 'Open the test'}: phone vs. server`}
+          icon="globe"
+          small
+          variant="outline"
+          onPress={() => router.push('/phone-vs-server')}
+        />
+      </View>
+    </View>
   );
 }
 

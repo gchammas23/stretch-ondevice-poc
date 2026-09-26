@@ -17,7 +17,7 @@ import { colors, fonts, radius, shadow } from '../ui/theme';
  */
 export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
-  const { cache, coverage, fees, ads, coupons, startOver } = useApp();
+  const { cache, coverage, versus, fees, ads, coupons, startOver } = useApp();
   const history = useHistory();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
@@ -41,6 +41,7 @@ export default function PrivacyScreen() {
           history.clear();
           log.clear();
           coverage.clear();
+          versus.clear();
           fees.clear();
           ads.clear();
           coupons.clear();
