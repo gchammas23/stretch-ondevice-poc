@@ -53,6 +53,7 @@ import { ReadBook } from '../pricing/readBook';
 import { sharePlan } from '../pricing/sharing';
 import { useToday } from '../ui/useNow';
 import { AppStore, type AppState, type WatchItem } from './appStore';
+import { batteryMeter } from './battery';
 import { locateZip } from './deviceLocation';
 import { storeChoices } from './storeChoices';
 import type { SetupDeps } from './storeSetup';
@@ -239,6 +240,9 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     engine.setConcurrency({ searches: (cfg) => storeTuner.get(cfg.id, tuningBase(cfg)).searches, stores: (max) => storeTuner.storesAtOnce(max) });
     return () => engine.setConcurrency(null);
   }, [engine]);
+
+  // The battery, read while lists are priced: this session's share in Store health (the speed test measures its own).
+  useEffect(() => batteryMeter.attach(engine), [engine]);
 
   // Every fresh price goes into the product's history, and into the watchlist, which may have news. The store the
   // search got them from is noted for Your stores.

@@ -178,6 +178,11 @@ export class PricingEngine {
     return !!run && Object.values(run.stores).some((s) => s.status !== 'done');
   }
 
+  /** Some list is still being priced: the phone is searching, for the battery meter (see batteryCost.ts). */
+  pricing(): boolean {
+    return [...this.runs.keys()].some((listId) => this.isRunning(listId));
+  }
+
   /** Some list is still searching this store: its lane is in use, and pages read for other things can wait. */
   busyAt(retailerId: string): boolean {
     return [...this.runs.values()].some((run) => {

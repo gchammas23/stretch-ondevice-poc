@@ -7,8 +7,10 @@ import { COVERAGE_WORDS, coverageText, type CoverageRow } from '../onDevice/cove
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
 import { BUNDLED_CONFIG } from '../onDevice/retailers';
 import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
+import { sessionText } from '../pricing/batteryCost';
 import { whenLabel } from '../pricing/receipt';
 import { useApp, useAttemptLog, useSettings } from '../state/AppProvider';
+import { useBattery } from '../state/battery';
 import { announce } from '../ui/a11y';
 import { Chip } from '../ui/bits';
 import { Pill, tap } from '../ui/controls';
@@ -222,8 +224,15 @@ function CitizenCard() {
       ) : (
         <Text style={styles.small}>Nothing asked of any store today yet.</Text>
       )}
+      <BatteryNote />
     </View>
   );
+}
+
+/** And what it asks of the phone: the battery this session's pricing took, from the phone's own readings (batteryCost.ts). */
+function BatteryNote() {
+  const battery = useBattery();
+  return <Text style={[styles.small, styles.batteryNote]}>{sessionText(battery.session, battery.step, deviceWord)}</Text>;
 }
 
 function CitizenLine({ row, name }: { row: CitizenRow; name: string }) {
@@ -345,6 +354,7 @@ const styles = StyleSheet.create({
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   storeName: { fontFamily: fonts.semibold, fontSize: 15, color: colors.ink },
   healthRow: { gap: 6, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  batteryNote: { paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   bars: { flexDirection: 'row', alignItems: 'flex-end', gap: 6, height: 50, marginLeft: 36 },
   barSlot: { alignItems: 'center', gap: 2, width: 26 },
   bar: { width: 14, borderRadius: 4, backgroundColor: '#F2D5CC', justifyContent: 'flex-end', overflow: 'hidden' },

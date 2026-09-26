@@ -1,16 +1,33 @@
 import { router } from 'expo-router';
-import React, { useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Alert, FlatList, Image, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { krogerApiConfigured, krogerEnvironment } from '../onDevice/krogerApi';
+import { MAX_SEARCHES_PER_HOUR, politeness } from '../onDevice/politeness';
 import type { Product, RetailerConfig, SearchOutcome, Strategy } from '../onDevice/types';
 import { SearchFailed } from '../onDevice/useRetailerSearch';
 import { storeTuner, tuningBase, tuningWords } from '../onDevice/tuning';
+import type { WebViewPool } from '../onDevice/webviewPool';
 import type { WebViewQueue } from '../onDevice/webviewQueue';
 import { ago } from '../pricing/age';
+import {
+  batteryEstimate,
+  batteryLines,
+  batteryShort,
+  durationText,
+  levelText,
+  readingText,
+  runsRoom,
+  startProblemText,
+  stepWords,
+  workText,
+  type Measurement,
+  type RunKind,
+} from '../pricing/batteryCost';
 import { PRODUCTS_KEPT } from '../pricing/priceCache';
 import { scorecard, scorecardText, speedProfile, speedProfileText } from '../pricing/scorecard';
 import { bytesText } from '../onDevice/scrapeFeed';
 import { useApp, usePricingRun, useSettings, useStoreChoices } from '../state/AppProvider';
+import { batteryMeter, useBattery } from '../state/battery';
 import { Pill } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { ScreenHeader } from '../ui/ScreenHeader';
@@ -22,6 +39,8 @@ import { StoreWaterfall, WaterfallLegend, WhereTimeWent } from '../ui/Waterfall'
 /** The speed test prices these at every compared store, as a list of its own that no screen shows. */
 const SPEED_TEST = '__speedtest__';
 const SPEED_ITEMS = ['milk', 'eggs', 'bread', 'bananas', 'butter', 'coffee'];
+/** How many runs a battery test can make: more narrow its figures, within each store's hourly limit. */
+const TEST_RUNS = [5, 10, 15];
 
 type Mode = 'auto' | Strategy;
 
@@ -95,6 +114,7 @@ export default function DiagnosticsScreen() {
             <Pill label="What servers would cost instead" icon="phone" small variant="outline" onPress={() => router.push('/cost')} style={styles.alignStart} />
             <StartOver />
             <SpeedTest />
+            <BatteryTest />
             <Lanes />
             <RecentFailures />
 
@@ -178,14 +198,18 @@ export default function DiagnosticsScreen() {
 /**
  * The same six searches at every compared store, ignoring saved prices: from cold (pages unloaded, so each store's
  * first search loads its page) or warm (pages kept, so searches reuse them). A scorecard to share, with each search's
- * timeline (waiting, page load, replay, reading, to the screen) and where the run's time went.
+ * timeline (waiting, page load, replay, reading, to the screen) and where the run's time went. Each run reads the
+ * battery before and after it; the battery test below repeats runs for a closer figure.
  */
 function SpeedTest() {
   const { engine, pool } = useApp();
   const choices = useStoreChoices();
   const run = usePricingRun(SPEED_TEST);
+  const battery = useBattery();
+  const startRuns = useSpeedRuns();
   const now = useNow(run && !run.finishedAt ? 500 : 60_000);
-  const [mode, setMode] = useState<'cold' | 'warm'>('cold');
+  // Cold or warm, as the last run was started, by a battery test too.
+  const mode: RunKind = battery.lastRun?.kind ?? 'cold';
   // The last results reach this panel after the run ends: once they have, the timeline is drawn again with them.
   const [, setShown] = useState(0);
   useScreenTimes(run, () => {
@@ -196,17 +220,19 @@ function SpeedTest() {
   const profile = run && !running ? speedProfile(run) : null;
   const settled = run ? Object.values(run.stores).reduce((n, s) => n + s.settled, 0) : 0;
   const total = run ? Object.values(run.stores).reduce((n, s) => n + s.total, 0) : 0;
-
-  const start = (next: 'cold' | 'warm') => {
-    if (next === 'cold') pool.resetAll();
-    setMode(next);
-    engine.start(SPEED_TEST, SPEED_ITEMS, choices, { refresh: true });
+  // A battery test runs the speed test too: nothing else starts until it's done, and Stop ends it.
+  const busy = running || battery.busy;
+  const stop = () => {
+    batteryMeter.stop();
+    engine.stop(SPEED_TEST);
   };
-  const onOff = (on: boolean) => (on ? 'on' : 'off');
+  // What the last run took from the battery, read before and after it (see batteryCost.ts).
+  const lastRun = battery.lastRun;
+  const runBattery = lastRun && !lastRun.running ? batteryEstimate(lastRun.window, lastRun.work, battery.step) : undefined;
   const heading = () =>
     `Stretch on-device speed test (${mode === 'cold' ? 'cold start' : 'pages kept warm'}), on this ${deviceWord}, ${new Date(run!.startedAt).toLocaleString('en-US')}\n` +
     `${SPEED_ITEMS.length} searches × ${run!.retailerIds.length} stores: ${SPEED_ITEMS.join(', ')}\n` +
-    `Replays ${onOff(pool.replayEnabled)} · lighter pages ${onOff(pool.lightPages)} · asking for only what the app keeps ${onOff(pool.leanRequests)} · adapting to each store ${onOff(storeTuner.enabled)}`;
+    switchesText(pool);
   // How hard each store is pushed now, after this run: what the next one starts from.
   const tuningText = () =>
     `How hard each store is pushed now:\n${choices.map(({ config }) => `${config.name}: ${tuningWords(storeTuner.get(config.id, tuningBase(config)))}`).join('\n')}`;
@@ -218,12 +244,12 @@ function SpeedTest() {
       </Text>
       <Text style={styles.meta}>
         Searches {SPEED_ITEMS.join(', ')} at your {choices.length} stores, ignoring saved prices. Cold unloads every page first; warm reuses
-        the pages left from the last run.
+        the pages left from the last run. Each run also reads the battery before and after.
       </Text>
       <View style={styles.panelActions}>
-        <Pill label="Run from cold" small variant="dark" busy={running && mode === 'cold'} disabled={running || !choices.length} onPress={() => start('cold')} />
-        <Pill label="Run again warm" small variant="outline" busy={running && mode === 'warm'} disabled={running || !run} onPress={() => start('warm')} />
-        {running ? <Pill label="Stop" small variant="outline" onPress={() => engine.stop(SPEED_TEST)} /> : null}
+        <Pill label="Run from cold" small variant="dark" busy={running && mode === 'cold'} disabled={busy || !choices.length} onPress={() => startRuns('cold')} />
+        <Pill label="Run again warm" small variant="outline" busy={running && mode === 'warm'} disabled={busy || !run} onPress={() => startRuns('warm')} />
+        {busy ? <Pill label="Stop" small variant="outline" accessibilityLabel="Stop the speed test" onPress={stop} /> : null}
       </View>
       {run && card ? (
         <>
@@ -234,8 +260,9 @@ function SpeedTest() {
                   card.firstMs !== undefined ? `${(card.firstMs / 1000).toFixed(1)} s` : '—'
                 } · all in ${card.totalMs !== undefined ? `${(card.totalMs / 1000).toFixed(1)} s` : '—'}${card.bytes ? ` · about ${bytesText(card.bytes)}` : ''}${
                   card.bytesSaved ? `, ${bytesText(card.bytesSaved)} saved` : ''
-                }${card.shared ? ` · ${card.shared} shared a search` : ''}`}
+                }${runBattery ? ` · ${batteryShort(runBattery)}` : ''}${card.shared ? ` · ${card.shared} shared a search` : ''}`}
           </Text>
+          {!running && runBattery ? <Text style={styles.meta}>{batteryLines(runBattery, deviceWord).join(' ')}</Text> : null}
           {profile ? <WhereTimeWent profile={profile} /> : null}
           {card.stores.map((s) => (
             <View key={s.retailerId} style={styles.lane}>
@@ -272,11 +299,185 @@ function SpeedTest() {
               small
               variant="outline"
               onPress={() =>
-                void Share.share({ message: `${scorecardText(card, heading())}${profile ? `\n\n${speedProfileText(profile)}` : ''}\n\n${tuningText()}` }).catch(() => {})
+                void Share.share({
+                  message: [
+                    scorecardText(card, heading()),
+                    runBattery ? batteryLines(runBattery, deviceWord).join(' ') : null,
+                    profile ? speedProfileText(profile) : null,
+                    tuningText(),
+                    battery.test && !battery.test.running ? batteryTestText(battery.test, battery.step, switchesText(pool)) : null,
+                  ]
+                    .filter(Boolean)
+                    .join('\n\n'),
+                }).catch(() => {})
               }
               style={styles.alignStart}
             />
           ) : null}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Starts the speed test, measured on the battery (see batteryCost.ts): `runs` of it one after another, each from cold
+ * (every page unloaded first) or warm (the pages kept from the run before).
+ */
+function useSpeedRuns(): (kind: RunKind, runs?: number) => void {
+  const { engine, pool } = useApp();
+  const choices = useStoreChoices();
+  return (kind, runs = 1) =>
+    void batteryMeter.measure({
+      engine,
+      listId: SPEED_TEST,
+      kind,
+      runs,
+      start: () => {
+        if (kind === 'cold') pool.resetAll();
+        engine.start(SPEED_TEST, SPEED_ITEMS, choices, { refresh: true });
+      },
+    });
+}
+
+/** Which speed switches were on, for the shared results. */
+function switchesText(pool: WebViewPool): string {
+  const onOff = (on: boolean) => (on ? 'on' : 'off');
+  return `Replays ${onOff(pool.replayEnabled)} · lighter pages ${onOff(pool.lightPages)} · asking for only what the app keeps ${onOff(pool.leanRequests)} · adapting to each store ${onOff(storeTuner.enabled)}`;
+}
+
+/** A finished battery test in words, for sharing: what ran, with which switches, and what it took from the battery. */
+function batteryTestText(test: Measurement, step: number, switches: string): string | null {
+  const e = batteryEstimate(test.window, test.work, step);
+  if (!e) return null;
+  const stores = test.work.runs ? Math.round(test.work.planned / test.work.runs / SPEED_ITEMS.length) : 0;
+  return [
+    `Stretch battery test on this ${deviceWord}, ${new Date(test.window.start.at).toLocaleString('en-US')}: the speed test (${SPEED_ITEMS.length} searches × ${stores} stores) ` +
+      `${test.runs} times in a row, ${test.kind === 'cold' ? 'each from cold' : 'warm'}${test.cut ? `, stopped after ${test.done}` : ''}`,
+    switches,
+    `${workText(test.kind, e.ms, test.work)} · ${batteryShort(e)}`,
+    ...batteryLines(e, deviceWord),
+  ].join('\n');
+}
+
+/**
+ * What reading prices takes from the battery: the speed test again and again, with the battery read before and after
+ * (see batteryCost.ts). It says what the readings can't tell: they move in steps, the screen and other apps draw on
+ * the same battery, and a phone on its charger can't be measured, so it won't start plugged in.
+ */
+function BatteryTest() {
+  const { engine, pool } = useApp();
+  const choices = useStoreChoices();
+  const battery = useBattery();
+  const startRuns = useSpeedRuns();
+  const [runs, setRuns] = useState(10);
+  const [kind, setKind] = useState<RunKind>('cold');
+  const test = battery.test;
+  const testing = !!test?.running;
+  const now = useNow(testing ? 1000 : 30_000);
+  const reading = battery.now;
+  // The battery as it is when the panel shows, even where the phone sends no news of it.
+  useEffect(() => {
+    void batteryMeter.refresh();
+  }, []);
+  // Runs that fit in every compared store's hour: past it, a store would pause mid-test and the runs would search less.
+  const room = runsRoom(choices.map(({ config }) => politeness.used(config.id)), SPEED_ITEMS.length);
+  const fits = TEST_RUNS.filter((n) => n <= room);
+  const planned = runs <= room ? runs : fits[fits.length - 1];
+  const why = !choices.length
+    ? 'Choose stores to compare first.'
+    : !reading
+      ? 'Reading the battery…'
+      : (startProblemText(reading, deviceWord) ??
+        (planned === undefined ? `No room left this hour: a store takes ${MAX_SEARCHES_PER_HOUR} searches an hour at most. Try again later.` : undefined));
+  const estimate = test && !testing ? batteryEstimate(test.window, test.work, battery.step) : undefined;
+  const stop = () => {
+    batteryMeter.stop();
+    engine.stop(SPEED_TEST);
+  };
+  const share = () => {
+    const text = test ? batteryTestText(test, battery.step, switchesText(pool)) : null;
+    if (text) void Share.share({ message: text }).catch(() => {});
+  };
+
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle} accessibilityRole="header">
+        Battery test
+      </Text>
+      <Text style={styles.meta}>
+        What reading prices takes from the battery. Runs the speed test {planned ?? runs} times in a row, then divides what the battery lost by the
+        lists and searches. From cold unloads the pages before each run, like the first list after opening the app; warm keeps them, like
+        another list soon after. Keep the app open with the screen on until it’s done.
+      </Text>
+      <Text style={styles.meta}>
+        How precise: this {deviceWord} reports its battery in {stepWords(battery.step)}
+        {battery.step > 0.01 ? ' so far' : ''}, so a reading can be a step off and one run is too short to tell. Each figure comes with its
+        range, and more runs narrow it. The screen and anything else running draw on the same battery, so it’s the whole {deviceWord} while it
+        priced, not the searches alone. And it only measures unplugged: on the charger, there’s no estimate.
+      </Text>
+      <Text style={styles.status}>{reading ? `Now: ${readingText(reading)}` : 'Reading the battery…'}</Text>
+      {!testing ? (
+        <>
+          <Segmented
+            label="Runs"
+            options={TEST_RUNS.map((n) => ({ value: String(n), label: `${n} runs`, disabled: n > room }))}
+            value={String(planned ?? runs)}
+            onChange={(v) => setRuns(Number(v))}
+          />
+          <Segmented
+            label="Each run"
+            options={[
+              { value: 'cold', label: 'From cold' },
+              { value: 'warm', label: 'Warm' },
+            ]}
+            value={kind}
+            onChange={setKind}
+          />
+          {room < TEST_RUNS[TEST_RUNS.length - 1] ? (
+            <Text style={styles.meta}>
+              Room for {room} more {room === 1 ? 'run' : 'runs'} this hour: each run is {SPEED_ITEMS.length} searches at each store, and a store
+              takes {MAX_SEARCHES_PER_HOUR} an hour at most.
+            </Text>
+          ) : null}
+          {why ? <Text style={styles.warn}>{why}</Text> : null}
+        </>
+      ) : null}
+      <View style={styles.panelActions}>
+        {testing ? (
+          <Pill label="Stop" small variant="outline" accessibilityLabel="Stop the battery test" onPress={stop} />
+        ) : (
+          <Pill
+            label={`Start ${planned ?? runs} runs`}
+            small
+            variant="dark"
+            disabled={!!why || battery.busy}
+            accessibilityLabel={`Start ${planned ?? runs} runs of the battery test, ${kind === 'cold' ? 'each from cold' : 'warm'}`}
+            onPress={() => {
+              if (planned) startRuns(kind, planned);
+            }}
+          />
+        )}
+      </View>
+      {test && testing ? (
+        <Text style={styles.status}>
+          Run {Math.min(test.done + 1, test.runs)} of {test.runs} · {durationText(now - test.window.start.at)}
+          {test.window.start.level !== null ? ` · from ${levelText(test.window.start.level)}` : ''}
+        </Text>
+      ) : null}
+      {test && estimate ? (
+        <>
+          <Text style={styles.status}>
+            {workText(test.kind, estimate.ms, test.work)} · {batteryShort(estimate)}
+            {test.cut ? ` · stopped after ${test.done} of ${test.runs}` : ''}
+          </Text>
+          {batteryLines(estimate, deviceWord).map((line, i) => (
+            // The second line is the answer: the drop per list and per search (after one run, only a caveat).
+            <Text key={i} style={estimate.ok && estimate.work.runs > 1 && i === 1 ? styles.answer : styles.meta}>
+              {line}
+            </Text>
+          ))}
+          <Pill label="Share results" icon="share" small variant="outline" accessibilityLabel="Share results of the battery test" onPress={share} style={styles.alignStart} />
         </>
       ) : null}
     </View>
@@ -570,18 +771,26 @@ function ProductRow({ product: p }: { product: Product }) {
   );
 }
 
-function Segmented<T extends string>(props: { options: { value: T; label: string }[]; value: T; onChange: (value: T) => void }) {
+function Segmented<T extends string>(props: {
+  options: { value: T; label: string; disabled?: boolean }[];
+  value: T;
+  onChange: (value: T) => void;
+  /** What the choice is, for screen readers. */
+  label?: string;
+}) {
   return (
-    <View style={styles.segmented} accessibilityRole="radiogroup">
+    <View style={styles.segmented} accessibilityRole="radiogroup" accessibilityLabel={props.label}>
       {props.options.map((o) => {
         const selected = o.value === props.value;
         return (
           <Pressable
             key={o.value}
             accessibilityRole="radio"
-            accessibilityState={{ checked: selected }}
+            accessibilityLabel={o.label}
+            accessibilityState={{ checked: selected, disabled: !!o.disabled }}
+            disabled={o.disabled}
             onPress={() => props.onChange(o.value)}
-            style={[styles.segment, selected && styles.segmentOn]}
+            style={[styles.segment, selected && styles.segmentOn, o.disabled && styles.segmentOff]}
           >
             <Text style={[styles.segmentText, selected && styles.segmentTextOn]}>{o.label}</Text>
           </Pressable>
@@ -617,6 +826,7 @@ const styles = StyleSheet.create({
   segmented: { flexDirection: 'row', borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, overflow: 'hidden', marginTop: 8, backgroundColor: colors.card },
   segment: { flex: 1, paddingVertical: 10, alignItems: 'center' },
   segmentOn: { backgroundColor: colors.ink },
+  segmentOff: { opacity: 0.45 },
   segmentText: { fontFamily: fonts.medium, fontSize: 14, color: colors.ink },
   segmentTextOn: { color: '#ffffff' },
   warn: { fontFamily: fonts.body, fontSize: 14, color: colors.amber, backgroundColor: colors.amberTint, padding: 10, borderRadius: radius.sm, marginTop: 4 },
@@ -624,6 +834,7 @@ const styles = StyleSheet.create({
   linkButton: { alignItems: 'center', paddingVertical: 10 },
   linkText: { fontFamily: fonts.semibold, color: colors.orangeText, fontSize: 15 },
   status: { fontFamily: fonts.body, fontSize: 14, lineHeight: 20, color: colors.ink, marginTop: 4 },
+  answer: { fontFamily: fonts.semibold, fontSize: 15, lineHeight: 21, color: colors.ink },
   error: { fontFamily: fonts.body, fontSize: 14, color: colors.red, marginTop: 4 },
   meta: { fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.muted },
   panel: { backgroundColor: colors.card, borderRadius: radius.lg, padding: 14, gap: 12, borderWidth: 1, borderColor: colors.line },

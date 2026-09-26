@@ -8,6 +8,7 @@
     "@expo-google-fonts/geist": "^0.4.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~57.0.25",
+    "expo-battery": "~57.0.3",
     "expo-camera": "~57.0.5",
     "expo-constants": "~57.0.19",
     "expo-font": "~57.0.4",
@@ -42,7 +43,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts"
+    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts && tsx tests/battery.test.ts"
   },
   "private": true
 }
