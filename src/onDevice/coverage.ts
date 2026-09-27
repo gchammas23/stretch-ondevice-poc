@@ -3,7 +3,7 @@ import type { Attempt, RetailerConfig, SearchOutcome } from './types';
 
 // Pure TypeScript: which stores this phone can read right now, one search each.
 
-export type CoverageStatus = 'works' | 'bot_check' | 'no_products' | 'slow' | 'failed';
+export type CoverageStatus = 'works' | 'bot_check' | 'no_products' | 'slow' | 'failed' | 'cooling';
 
 export interface CoverageRow {
   retailerId: string;
@@ -38,7 +38,8 @@ export type CoverageSearch = (cfg: RetailerConfig, query: string, storeId: strin
 /** What a failure reason means for coverage. */
 export function coverageStatus(reason: string | undefined): CoverageStatus {
   if (!reason) return 'failed';
-  if (reason.startsWith('challenge') || /^http_(401|403|429|503)$/.test(reason)) return 'bot_check';
+  if (reason === 'cooling_down') return 'cooling';
+  if (reason.startsWith('challenge') || reason === 'blocked' || reason === 'tiny_page' || /^http_(401|403|429|503)$/.test(reason)) return 'bot_check';
   if (reason === 'no_payload' || reason === 'no_products_on_page' || reason === 'empty') return 'no_products';
   if (reason === 'timeout') return 'slow';
   return 'failed';
@@ -50,6 +51,7 @@ export const COVERAGE_WORDS: Record<CoverageStatus, string> = {
   no_products: 'No products came back',
   slow: 'Too slow',
   failed: 'Failed',
+  cooling: 'Cooling down',
 };
 
 const EMPTY: CoverageState = { query: 'milk', running: false, stores: [], rows: {}, checking: [] };

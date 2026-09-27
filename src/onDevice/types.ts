@@ -97,6 +97,83 @@ export interface RetailerConfig {
    * `clipButtons`: the words of its clip buttons, when they aren't the usual ones (CLIP_BUTTONS in webviewScript.ts).
    */
   coupons?: { url: string; program: string; clipButtons?: string[] };
+  /**
+   * Where the store's search results are and how its products read, as a phone learned it from its own searches (see
+   * profiles.ts). Shared rules carry the profiles learned so far, so they travel with the rules file.
+   */
+  profile?: ParserProfile;
+}
+
+/**
+ * Where one store's search results are, learned on the phone from its searches (see profiles.ts): which of the page's
+ * data holds the list, the keys down to the list in it, and the keys from a product down to each of its fields. Later
+ * searches read the list there first, and fall back to the general reader when it stops matching.
+ */
+export interface ParserProfile {
+  source: ProfileSource;
+  /** Keys from the document down to the list; '*' for any item of an array, or any entry of a map, on the way. */
+  list: string[];
+  fields: ProfileFields;
+  /** Products its searches usually gave: the middle of the lists it was learned from. */
+  usual: number;
+  learnedAt: number;
+  /** Searches whose lists agreed when it was learned. */
+  searches: number;
+  /** Searches that agreed, the price truth check, or a rules file. */
+  how: 'searches' | 'truth' | 'rules';
+  /** The last search it read the products of. */
+  matchedAt?: number;
+  /** Searches in a row it didn't match, and the last of them. */
+  misses?: number;
+  missedAt?: number;
+}
+
+/** A response from this address (and GraphQL operation, where one address serves many), or the page's own data by name. */
+export type ProfileSource = { kind: 'request'; host: string; path: string; op?: string } | { kind: 'page'; label: string };
+
+/**
+ * Where each of a product's fields is: the ways it was found (keys from the product down to it), in the order to try
+ * them. A price's ways go in the order the general reader ranks them, so a product on sale is read at its sale price.
+ * A key past a list goes to its first item, as the general reader reads.
+ */
+export interface ProfileFields {
+  id?: string[][];
+  name: string[][];
+  price: string[][];
+  was?: string[][];
+  member?: string[][];
+  /** What the store calls its member price ("with Card"), from the field it's in. */
+  memberLabel?: string;
+  unit?: string[][];
+  link?: string[][];
+  image?: string[][];
+  stock?: string[][];
+  gtin?: string[][];
+  sponsored?: string[][];
+}
+
+/** Where the general reader found a list, and how its products read: what a profile is learned from. */
+export interface ProfileCandidate {
+  source: ProfileSource;
+  list: string[];
+  fields: ProfileFields;
+  count: number;
+}
+
+/** How a search's list was chosen and read. */
+export interface ListRead {
+  /** 'profile': the store's profile read it. 'general': the general reader (autoDetect) found it. */
+  by: 'profile' | 'general';
+  /** The store has a profile, and it didn't match this time. */
+  missed?: boolean;
+  /** Where the general reader found the list, and how it reads. */
+  candidate?: ProfileCandidate;
+  /** Its products' names fit the query; undefined when that can't be told. */
+  fits?: boolean;
+  /** Why it may not be the store's results (the wrong-list rule), in words; undefined when nothing says so. */
+  suspect?: string;
+  /** A bigger list that fits the query was taken over the one the general reader ranks first. */
+  preferred?: boolean;
 }
 
 /** A way to order online. In store is the third way to shop, with nothing to add. */
@@ -267,6 +344,8 @@ export interface ParseResult {
   origin?: ProductOrigin;
   /** The store's own data for each product (by id), and where in it the price was: for the price X-ray. */
   evidence?: Record<string, RawProduct>;
+  /** How the list was chosen and read: the store's profile, or the general reader (see profiles.ts). */
+  read?: ListRead;
 }
 
 /** A product as the store's data had it: its JSON, and the path to the price in it ("priceInfo.currentPrice.price"). */
@@ -275,7 +354,18 @@ export interface RawProduct {
   pricePath: string;
 }
 
-export type Parser = (payload: PagePayload, ctx: { retailer: string; storeId: string }) => ParseResult;
+/**
+ * What a reader is told: the store and store number; for a search, what was searched (to tell whether a list fits
+ * it) and how many products the store usually gives (a much smaller list is suspect, see judgeList).
+ */
+export interface ParseContext {
+  retailer: string;
+  storeId: string;
+  query?: string;
+  usual?: number;
+}
+
+export type Parser = (payload: PagePayload, ctx: ParseContext) => ParseResult;
 
 export interface Attempt {
   strategy: Strategy;
@@ -292,6 +382,8 @@ export interface Attempt {
   bytes?: number;
   /** A plain request that failed: the HTTP status the store answered with. */
   status?: number;
+  /** A search that wasn't sent because the store, or this way of searching it, is cooling down: until when. */
+  until?: number;
 }
 
 /** A store as the phone learned it: from the retailer's API, its store finder, its page, or a search's request. */
@@ -322,4 +414,17 @@ export interface SearchOutcome {
   store?: KnownStore;
   /** When each part of the search happened, for the speed test's timeline. */
   timing?: SearchTiming;
+  /** How its list was read: with the store's profile, or by the general reader (and whether a profile missed). */
+  reader?: ReaderNote;
+}
+
+/** Which reader found a search's products, for "Found in" and the X-ray. */
+export interface ReaderNote {
+  by: 'profile' | 'general';
+  /** The store's profile didn't match, so the general reader read it, and the phone learns again. */
+  missed?: boolean;
+  /** The list may not be the store's results (the wrong-list rule), in words. */
+  suspect?: string;
+  /** A bigger list that fits the search was taken over a smaller one. */
+  preferred?: boolean;
 }

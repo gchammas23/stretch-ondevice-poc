@@ -180,8 +180,12 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
   await t('fetch: block page, unknown page, HTTP error and timeout each report their reason', async () => {
     mockFetch('<html><head><title>Robot or human?</title></head><body><div id="px-captcha"></div></body></html>', { url: 'https://www.walmart.com/blocked?url=L3NlYXJjaA==' });
     await assert.rejects(searchViaFetch(walmart, 'milk', ''), (e: any) => e.reason === 'challenge');
-    mockFetch('<html>maintenance</html>');
+    mockFetch(`<html><body>${'<p>Our site is down for maintenance.</p>'.repeat(60)}</body></html>`);
     await assert.rejects(searchViaFetch(walmart, 'milk', ''), (e: any) => e.reason === 'no_payload');
+    mockFetch('<html>maintenance</html>');
+    await assert.rejects(searchViaFetch(walmart, 'milk', ''), (e: any) => e.reason === 'tiny_page', 'nearly empty, and no product data: a quiet block, often');
+    mockFetch('<html><head><title>Access Denied</title></head><body>You don’t have permission to access this server. Reference #18</body></html>', { status: 403 });
+    await assert.rejects(searchViaFetch(walmart, 'milk', ''), (e: any) => e.reason === 'blocked' && e.status === 403 && /“Access Denied”/.test(e.detail), 'a block, not a bot check');
     mockFetch('<html>nope</html>', { status: 503 });
     await assert.rejects(searchViaFetch(walmart, 'milk', ''), (e: any) => e.reason === 'http_503');
     globalThis.fetch = ((_u: string, opts: any) => new Promise((_res, rej) => opts.signal.addEventListener('abort', () => rej(new Error('aborted'))))) as any;

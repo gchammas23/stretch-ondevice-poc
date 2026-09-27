@@ -41,7 +41,7 @@ import { DEFAULT_CHALLENGE_MARKERS } from '../src/onDevice/webviewScript';
 // Search events are logged for telemetry; keep them out of the test output.
 const log = console.log;
 console.log = (...args: unknown[]) => {
-  if (!String(args[0]).startsWith('[on-device-search]')) log(...args);
+  if (!String(args[0]).startsWith('[on-device-')) log(...args);
 };
 
 let passed = 0;
@@ -58,6 +58,7 @@ const summaryOf = (plain: number, browser: number, tried: number): VersusSummary
   plain: { prices: plain, blocked: 0, bytes: 0 },
   browser: { prices: browser, blocked: 0, bytes: 0 },
   paused: 0,
+  cooling: 0,
   datacenter: { stores: 0, blocked: 0, noPrices: 0, loaded: 0 },
 });
 
@@ -396,8 +397,9 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
     const calls = stubFetch(denied, 403);
     const blocked = await searchViaFetch(target, 'milk', '').catch((e) => e);
     assert.ok(blocked instanceof StrategyError);
-    assert.deepEqual([blocked.reason, blocked.status, blocked.bytes], ['challenge', 403, denied.length]);
+    assert.deepEqual([blocked.reason, blocked.status, blocked.bytes], ['blocked', 403, denied.length], 'a block, not a bot check');
     assert.equal(blocked.detail, `HTTP 403, a page of ${denied.length} characters, with “Access Denied” in it.`);
+    assert.equal(verdictWords(fromFailure(new SearchFailed([{ strategy: 'fetch', ok: false, reason: 'blocked', ms: 10, status: 403 }]), 10)), 'Blocked (403)');
     assert.deepEqual([calls[0].url, calls[0].opts.credentials, calls[0].opts.headers['User-Agent'], calls[0].opts.headers.Accept], [
       'https://www.target.com/s?searchTerm=milk',
       'omit',
@@ -409,7 +411,7 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
     assert.deepEqual([shell.reason, shell.status, shell.detail], ['no_payload', 200, 'HTTP 200, a page of 4 KB, and no product data in it.']);
     stubFetch('');
     const empty = await searchViaFetch(target, 'milk', '').catch((e) => e);
-    assert.deepEqual([empty.reason, empty.bytes, verdictOf(empty.reason, empty.bytes)], ['no_payload', 0, 'empty']);
+    assert.deepEqual([empty.reason, empty.bytes, verdictOf(empty.reason, empty.bytes)], ['tiny_page', 0, 'empty'], 'a nearly empty page is its own reason now');
     stubFetch('slow down', 429);
     const limited = await searchViaFetch(target, 'milk', '').catch((e) => e);
     assert.deepEqual([limited.reason, limited.status, limited.detail], ['http_429', 429, 'HTTP 429, a page of 9 characters.']);
@@ -420,7 +422,10 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
     const ctx = { retailer: 'x', storeId: '' };
     const items = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Whole Milk ${i}`, price: 3 + i }));
     const block = autoDetect({ html: `<html><script type="application/json" id="initial">${JSON.stringify({ search: { products: items(3) } })}</script></html>` }, ctx);
-    assert.deepEqual([block.payloadFound, block.products.length, block.source], [true, 3, 'json script (3)']);
+    assert.deepEqual([block.payloadFound, block.products.length, block.source], [true, 3, 'json script #initial (3)'], 'labeled with its id, as the browser labels it');
+    // Some pages write their data URL-encoded, as Instacart's storefronts do.
+    const encoded = autoDetect({ html: `<html><script id="node-state" type="application/json">${encodeURIComponent(JSON.stringify({ search: { products: items(4) } }))}</script></html>` }, ctx);
+    assert.deepEqual([encoded.products.length, encoded.source], [4, 'json script #node-state (4)']);
     const state = autoDetect(
       {
         html: `<script>if (window.__PRELOADED_STATE__ == null) {}; var s = window.__PRELOADED_STATE__;</script><script>window.__PRELOADED_STATE__ = ${JSON.stringify({ results: items(2), note: 'a } in a string' })};</script>`,
@@ -458,14 +463,14 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
     const { pool, entries, deps, tuner } = setUp();
     const cfg = store('ex1');
     fakePage(pool.lane('ex1', 'EX1'));
-    const calls = stubFetch('<html><head><title>Access Denied</title></head></html>', 403, 5);
+    const calls = stubFetch('<html><head><title>Robot or human?</title></head></html>', 403, 5);
     const test = new PhoneVsServer();
     await test.run([{ config: cfg, storeId: '' }], deps);
     globalThis.fetch = realFetch;
     const row = test.getSnapshot().rows.ex1;
     assert.deepEqual([row.browser?.verdict, row.browser?.products, row.browser?.how, row.browser?.bytes], ['prices', 4, 'page load', 2_000_000]);
     assert.deepEqual([row.plain?.verdict, verdictWords(row.plain!), row.plain?.status], ['blocked', 'Bot check (403)', 403]);
-    assert.match(row.plain?.detail ?? '', /HTTP 403.*Access Denied/);
+    assert.match(row.plain?.detail ?? '', /HTTP 403.*Robot or human/);
     assert.equal(calls[0].opts.headers['User-Agent'], 'Mozilla/5.0 (iPhone)');
     assert.equal(pool.getSnapshot().presented, null, 'no bot check covered the app');
     assert.deepEqual(entries.map((e) => [e.kind, e.strategy, e.ok, e.reason]), [

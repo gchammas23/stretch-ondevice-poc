@@ -1,4 +1,4 @@
-import type { AttemptEntry } from './attemptLog';
+import { NOTES, type AttemptEntry } from './attemptLog';
 
 // Pure TypeScript: how much the phone asks of each store, and the limit it keeps to. A person shopping searches a
 // store's site now and then, one page at a time; the app stays at that scale: one page load at a time per store
@@ -99,7 +99,8 @@ export interface CitizenRow {
 export function citizenReport(entries: AttemptEntry[], since: number): CitizenRow[] {
   const rows = new Map<string, CitizenRow & { times: number[] }>();
   for (const e of entries) {
-    if (e.at < since) continue;
+    // Cool-downs and connection drops are notes in the log, not visits to a store.
+    if (e.at < since || NOTES.has(e.kind)) continue;
     const row =
       rows.get(e.retailerId) ??
       ({ retailerId: e.retailerId, searches: 0, pageLoads: 0, reused: 0, api: 0, otherPages: 0, bytes: 0, bytesSaved: 0, busiestHour: 0, times: [] } as CitizenRow & { times: number[] });

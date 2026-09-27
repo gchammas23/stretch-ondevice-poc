@@ -3,7 +3,7 @@ import Constants from 'expo-constants';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { AppState as RNAppState } from 'react-native';
 import type { GroceryList } from '../lists/types';
-import { listQueries } from '../lists/types';
+import { listQueries, queryKey } from '../lists/types';
 import type { WeeklyAd } from '../onDevice/adPage';
 import { AttemptLog } from '../onDevice/attemptLog';
 import type { Coupon, CouponList } from '../onDevice/couponPage';
@@ -12,7 +12,9 @@ import { krogerApiConfigured, warmUpKroger } from '../onDevice/krogerApi';
 import { priceEvidence } from '../onDevice/evidence';
 import { PhoneVsServer, plainConfig, versusIds, type VersusScope } from '../onDevice/phoneVsServer';
 import { politeness } from '../onDevice/politeness';
-import { storeTuner, tuningBase } from '../onDevice/tuning';
+import { parserProfiles, type ProfileBook } from '../onDevice/profiles';
+import type { SearchHooks } from '../onDevice/retailerSearch';
+import { coolWords, storeTuner, tuningBase } from '../onDevice/tuning';
 import { BUNDLED_CONFIG, fetchRules, type RulesStatus } from '../onDevice/retailers';
 import type { RetailerConfig, RetailerConfigBundle } from '../onDevice/types';
 import { useRetailerSearch, type RetailerSearch } from '../onDevice/useRetailerSearch';
@@ -68,8 +70,12 @@ const FEES_KEY = 'stretch.fees.v1';
 const ADS_KEY = 'stretch.ads.v1';
 const COUPONS_KEY = 'stretch.coupons.v1';
 const VERSUS_KEY = 'stretch.versus.v1';
+const PROFILES_KEY = 'stretch.profiles.v1';
 /** Every key the app saves under, for erasing it all. */
-export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY];
+export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY];
+
+/** The connection counts as down for the pricing engine's words this long after the last of its failures. */
+const DROP_FRESH_MS = 60_000;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** A saved weekly ad, and a saved list of coupons: the shapes the readers give. */
@@ -105,6 +111,8 @@ interface AppContextValue {
   runCoverage: () => Promise<void>;
   /** The phone vs. server test: its last result, and the one running. */
   versus: PhoneVsServer;
+  /** Where each store's results are, learned from its searches (see profiles.ts), and what they taught so far. */
+  profiles: ProfileBook;
   /**
    * Searches each store (the compared ones, or all, see versusIds) two ways: its page in this phone's browser, then a
    * plain request as a server sends. Bot checks are reported, not shown; both count toward each store's hour.
@@ -193,6 +201,14 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
   // Its search is set below, before anything can be priced (nothing renders until the saved state has loaded).
   const [engine] = useState(() => new PricingEngine(() => Promise.reject(new Error('not_ready')), cache));
   const [ready, setReady] = useState(false);
+  // A search for something a store gave products for before (in the saved prices): an empty answer is then a quiet
+  // block, not a lack of results (see emptyBlock in retailerSearch.ts).
+  const [hooks] = useState<SearchHooks>(() => ({
+    worked: (retailerId, query) => {
+      const tail = `|${queryKey(query)}`;
+      return cache.list().some(([key, hit]) => key.startsWith(`${retailerId}|`) && key.endsWith(tail) && hit.products.length > 0);
+    },
+  }));
   const custom = useSyncExternalStore(store.subscribe, () => store.getState().settings.customRetailers);
   const rulesUrl = useSyncExternalStore(store.subscribe, () => store.getState().settings.rulesUrl);
   const lightPages = useSyncExternalStore(store.subscribe, () => store.getState().settings.lightPages);
@@ -203,7 +219,12 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
   const current = url && fetched?.url === url ? fetched : null;
   const served = current?.bundle ?? BUNDLED_CONFIG;
   const rules = useMemo<RulesStatus>(() => (!url ? BUNDLED_STATUS : (current?.status ?? { ...BUNDLED_STATUS, url })), [url, current]);
-  const search = useRetailerSearch(served.version);
+  const search = useRetailerSearch(served.version, hooks);
+
+  // Profiles a rules file carries: a store takes one when it has none of its own, or the file's is newer.
+  useEffect(() => {
+    if (ready) parserProfiles.seed(served.retailers);
+  }, [ready, served]);
 
   const bundle = useMemo(() => {
     const ids = new Set(served.retailers.map((r) => r.id));
@@ -250,9 +271,21 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     }
   }, [ready, settings, bundle.retailers]);
 
-  // Searches at once at each store, and stores at once, as the store tuning says from how their searches go.
+  // Searches at once at each store, and stores at once, as the store tuning says from how their searches go; a store
+  // cooling down after a block is skipped until its retry time; and a dropped connection is said as such.
   useEffect(() => {
-    engine.setConcurrency({ searches: (cfg) => storeTuner.get(cfg.id, tuningBase(cfg)).searches, stores: (max) => storeTuner.storesAtOnce(max) });
+    engine.setConcurrency({
+      searches: (cfg) => storeTuner.get(cfg.id, tuningBase(cfg)).searches,
+      stores: (max) => storeTuner.storesAtOnce(max),
+      cooling: (cfg) => {
+        const c = storeTuner.cooling(cfg.id);
+        return c ? { until: c.until, words: coolWords(c) } : undefined;
+      },
+      connectionDropped: () => {
+        const drop = storeTuner.connection();
+        return drop && !drop.endedAt && Date.now() - drop.to < DROP_FRESH_MS ? { from: drop.from } : undefined;
+      },
+    });
     return () => engine.setConcurrency(null);
   }, [engine]);
 
@@ -278,15 +311,17 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     let alive = true;
     (async () => {
       await store.hydrate(AsyncStorage);
-      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead] = await Promise.all(
-        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY].map((k) => AsyncStorage.getItem(k).catch(() => null)),
+      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead, profilesRead] = await Promise.all(
+        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY].map((k) => AsyncStorage.getItem(k).catch(() => null)),
       );
       cache.hydrate(prices);
       history.hydrate(past);
       log.hydrate(health);
-      // Searches made before the app last closed count toward each store's hour, and toward how it's tuned.
+      // Searches made before the app last closed count toward each store's hour, and toward how it's tuned; a store
+      // that was cooling down still is, until its retry time.
       politeness.seed(log.entries());
       storeTuner.seed(log.entries());
+      parserProfiles.hydrate(profilesRead);
       coverage.hydrate(covered);
       versus.hydrate(versusRead);
       fees.hydrate(feesRead);
@@ -307,6 +342,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       { subscribe: log.subscribe, write: save(HEALTH_KEY, () => log.serialize()), ms: 3000 },
       { subscribe: coverage.subscribe, write: save(COVERAGE_KEY, () => coverage.serialize()), ms: 1500 },
       { subscribe: versus.subscribe, write: save(VERSUS_KEY, () => versus.serialize()), ms: 1500 },
+      { subscribe: parserProfiles.subscribe, write: save(PROFILES_KEY, () => parserProfiles.serialize()), ms: 3000 },
       { subscribe: fees.subscribe, write: save(FEES_KEY, () => fees.serialize()), ms: 1500 },
       { subscribe: ads.subscribe, write: save(ADS_KEY, () => ads.serialize()), ms: 1500 },
       { subscribe: coupons.subscribe, write: save(COUPONS_KEY, () => coupons.serialize()), ms: 1500 },
@@ -547,6 +583,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     engine.reset();
     pool.resetAll();
     storeTuner.reset();
+    parserProfiles.clear();
     priceEvidence.clear();
     cache.clear();
     history.clear();
@@ -563,8 +600,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
 
   const value = useMemo(
     () => ({
-      store, engine, cache, history, log, coverage, versus, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
-      ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
+      store, engine, cache, history, log, coverage, versus, profiles: parserProfiles, search, bundle, rules, checkRules, runCoverage, runVersus, fees,
+      checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
     }),
     [
       store, engine, cache, history, log, coverage, versus, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
@@ -609,6 +646,13 @@ export function useHistory(): PriceHistory {
   const { history } = useApp();
   useSyncExternalStore(history.subscribe, () => history.version);
   return history;
+}
+
+/** Re-renders when a store's profile is learned, matched, missed or reset. */
+export function useProfiles(): ProfileBook {
+  const { profiles } = useApp();
+  useSyncExternalStore(profiles.subscribe, () => profiles.version);
+  return profiles;
 }
 
 /** Re-renders when the attempt log changes. */

@@ -1,6 +1,6 @@
 import { queryKey } from '../lists/types';
 import { timelineOf, type SearchTimeline, type SearchTiming } from '../onDevice/timing';
-import type { KnownStore, Product, RetailerConfig, SearchOutcome } from '../onDevice/types';
+import type { KnownStore, Product, ReaderNote, RetailerConfig, SearchOutcome } from '../onDevice/types';
 import type { ItemResult } from './basket';
 import { PRODUCTS_KEPT, PriceCache } from './priceCache';
 import { sharedProducts } from './sharing';
@@ -25,6 +25,8 @@ export interface SearchResult extends ItemResult {
   found?: number;
   /** Where in the page the products were found, e.g. "response www.target.com/… (24)". */
   source?: string;
+  /** Which reader found them: the store's profile, or the general reader (see profiles.ts). */
+  reader?: ReaderNote;
   /** Extra context from the search, e.g. which Kroger store a ZIP resolved to. */
   note?: string;
   /** Why an item didn't get fresh prices: its search ran and 'failed', or it was 'skipped'. */
@@ -60,6 +62,8 @@ export interface StoreRun {
   finishedAt?: number;
   /** Why the rest of this store's searches were skipped. */
   stoppedBecause?: string;
+  /** Skipped while the store cools down after a block: when they're tried again. */
+  retryAt?: number;
 }
 
 export interface PricingRun {
@@ -79,10 +83,17 @@ export interface StartOptions {
   share?: Record<string, string>;
 }
 
-/** How many searches at once each store takes, and how many stores at once: they can change as searches land. */
+/**
+ * How many searches at once each store takes, and how many stores at once: they can change as searches land. And, from
+ * the same store tuning, whether a store is cooling down after a block (until when, in words: it's skipped, and tried
+ * again then) and whether the phone's connection just dropped (every store failing within seconds of each other).
+ */
 export interface Concurrency {
   searches: (config: RetailerConfig) => number;
   stores: (max: number) => number;
+  cooling?: (config: RetailerConfig) => { until: number; words: string } | undefined;
+  /** While the connection is down: when it dropped (the first of the failures within seconds of each other). */
+  connectionDropped?: () => { from: number } | undefined;
 }
 
 export interface StoreChoice {
@@ -101,6 +112,11 @@ export const STORES_AT_ONCE = 4;
 export const SEARCHES_PER_STORE = 3;
 /** Failures in a row after which a store's remaining searches are skipped (it's likely blocking us). */
 export const FAILURES_BEFORE_STOP = 2;
+/** A store that cooled down is tried again this long after its retry time. */
+const RETRY_MARGIN_MS = 250;
+/** Why a store's remaining searches were skipped: its own failures, or the phone's connection (see sayDropped). */
+const KEPT_FAILING = 'Kept failing';
+const DROPPED = 'The connection dropped';
 
 interface Worker {
   config: RetailerConfig;
@@ -134,6 +150,10 @@ export class PricingEngine {
   private foregroundWaiters: (() => void)[] = [];
   /** When the app last left the screen: searches running then were cut off, not failed. */
   private backgroundedAt = -1;
+  /** Stores skipped while they cool down, to try again at their retry time: by list and store. */
+  private retries = new Map<string, ReturnType<typeof setTimeout>>();
+  /** When each store's remaining searches were skipped for its failures: by list and store. */
+  private gaveUpAt = new Map<string, number>();
   /** Each list's items that can take another item's search (see StartOptions.share). */
   private shares = new Map<string, Record<string, string>>();
   private concurrency: Concurrency | null = null;
@@ -296,6 +316,9 @@ export class PricingEngine {
 
   /** Forgets every run, as on a fresh start. Searches already running finish, and their results go nowhere. */
   reset(): void {
+    for (const timer of this.retries.values()) clearTimeout(timer);
+    this.retries.clear();
+    this.gaveUpAt.clear();
     for (const listId of this.runs.keys()) this.stopped.add(listId);
     this.runs.clear();
     this.workers.clear();
@@ -338,7 +361,7 @@ export class PricingEngine {
         }
         results[id] = mine;
         this.streaks.set(`${listId}|${id}`, 0);
-        stores[id] = { ...storeSummary(stores[id], mine, this.now()), stoppedBecause: undefined, finishedAt: undefined };
+        stores[id] = { ...storeSummary(stores[id], mine, this.now()), stoppedBecause: undefined, retryAt: undefined, finishedAt: undefined };
       }
       return { ...r, results, stores, finishedAt: undefined };
     });
@@ -391,6 +414,12 @@ export class PricingEngine {
     const workerKey = `${listId}|${retailerId}`;
     const worker = this.workers.get(workerKey);
     if (!worker || this.active.has(workerKey) || !this.nextReady(listId, retailerId)) return;
+    // A store cooling down after a block isn't searched: its items wait for its retry time, and are tried again then.
+    const cooling = this.concurrency?.cooling?.(worker.config);
+    if (cooling) {
+      this.coolOff(listId, retailerId, cooling);
+      return;
+    }
     this.active.add(workerKey);
     try {
       await this.acquire();
@@ -482,6 +511,7 @@ export class PricingEngine {
         found, source: out.source, note: out.note, bytes: out.bytes, store: out.store,
         queuedAt: pending.queuedAt, timing: timelineOf(pending.queuedAt ?? startedAt, startedAt, at, out.timing),
         ...(out.bytesSaved ? { bytesSaved: out.bytesSaved } : {}),
+        ...(out.reader ? { reader: out.reader } : {}),
       });
       this.shareFrom(listId, retailerId);
       return true;
@@ -493,6 +523,13 @@ export class PricingEngine {
         return true;
       }
       const reason = reasonFrom(e);
+      // The store began cooling down (its last search was refused): the rest wait for its retry time, not a search each.
+      if (reason === 'cooling_down') {
+        const until = untilFrom(e);
+        this.setResult(listId, retailerId, key, { ...pending, status: 'queued' });
+        this.coolOff(listId, retailerId, { until: until ?? this.now(), words: detailFrom(e) ?? 'Cooling down after a block' });
+        return false;
+      }
       const streak = (this.streaks.get(workerKey) ?? 0) + 1;
       this.streaks.set(workerKey, streak);
       const timing = timelineOf(pending.queuedAt ?? startedAt, startedAt, this.now(), timingFrom(e));
@@ -502,12 +539,39 @@ export class PricingEngine {
         this.skipRest(listId, retailerId, 'Paused: an hour’s worth of searches here already');
         return false;
       }
+      // Every store failing within seconds of each other: the phone's connection, not the stores. A store given up on
+      // since it dropped, before the next store's failure told, was given up on because of it too.
+      const drop = this.concurrency?.connectionDropped?.();
+      if (drop) this.sayDropped(listId, drop.from);
       if (reason === 'challenge_cancelled' || streak >= FAILURES_BEFORE_STOP) {
-        this.skipRest(listId, retailerId, reason === 'challenge_cancelled' ? 'You skipped the bot check' : `Kept failing (${reason})`);
+        const why = reason === 'challenge_cancelled' ? 'You skipped the bot check' : drop ? DROPPED : `${KEPT_FAILING} (${reason})`;
+        this.skipRest(listId, retailerId, why);
         return false;
       }
       return true;
     }
+  }
+
+  /**
+   * A store cooling down: its queued items are skipped with its words ("Cooling down after “Access Denied”, retrying at
+   * 3:40 PM"), and tried again at its retry time, if the list is still being priced there then. The searches then go
+   * through the same hourly limit as any other.
+   */
+  private coolOff(listId: string, retailerId: string, cooling: { until: number; words: string }): void {
+    this.skipRest(listId, retailerId, cooling.words, 'cooling_down');
+    this.update(listId, (run) => (run.stores[retailerId] ? { ...run, stores: { ...run.stores, [retailerId]: { ...run.stores[retailerId], retryAt: cooling.until } } } : run));
+    const key = `${listId}|${retailerId}`;
+    const had = this.retries.get(key);
+    if (had) clearTimeout(had);
+    const timer = setTimeout(
+      () => {
+        this.retries.delete(key);
+        const store = this.runs.get(listId)?.stores[retailerId];
+        if (!this.stopped.has(listId) && store?.stoppedBecause === cooling.words) this.retry(listId, retailerId);
+      },
+      Math.max(0, cooling.until - this.now()) + RETRY_MARGIN_MS,
+    );
+    this.retries.set(key, timer);
   }
 
   /** Items waiting to take a search that just ended: its products where one says the item; else they search on their own. */
@@ -523,14 +587,35 @@ export class PricingEngine {
     });
   }
 
-  private skipRest(listId: string, retailerId: string, why: string): void {
+  private skipRest(listId: string, retailerId: string, why: string, reason = why): void {
+    if (why.startsWith(KEPT_FAILING)) this.gaveUpAt.set(`${listId}|${retailerId}`, this.now());
     this.update(listId, (run) => {
       const mine = { ...run.results[retailerId] };
-      for (const [k, v] of Object.entries(mine)) if (v.status === 'queued') mine[k] = settle(v, 'skipped', why);
+      for (const [k, v] of Object.entries(mine)) if (v.status === 'queued') mine[k] = settle(v, 'skipped', reason, reason === why ? undefined : why);
       const store = { ...storeSummary(run.stores[retailerId], mine, this.now()), stoppedBecause: why };
       return finishIfDone({ ...run, results: { ...run.results, [retailerId]: mine }, stores: { ...run.stores, [retailerId]: store } }, this.now());
     });
   }
+  /** Stores this list's run gave up on for their failures since `from`, when the connection dropped: said to be its doing. */
+  private sayDropped(listId: string, from: number): void {
+    const run = this.runs.get(listId);
+    if (!run) return;
+    const ids = Object.keys(run.stores).filter(
+      (id) => run.stores[id].stoppedBecause?.startsWith(KEPT_FAILING) && (this.gaveUpAt.get(`${listId}|${id}`) ?? 0) >= from - 1000,
+    );
+    if (!ids.length) return;
+    this.update(listId, (r) => {
+      const results = { ...r.results };
+      const stores = { ...r.stores };
+      for (const id of ids) {
+        const was = stores[id].stoppedBecause;
+        results[id] = Object.fromEntries(Object.entries(results[id]).map(([k, v]) => [k, v.status === 'skipped' && v.reason === was ? { ...v, reason: DROPPED } : v]));
+        stores[id] = { ...stores[id], stoppedBecause: DROPPED };
+      }
+      return { ...r, results, stores };
+    });
+  }
+
 }
 
 /**
@@ -577,6 +662,13 @@ function lastAttempt(e: unknown): { reason?: string; detail?: string } | undefin
   if (!Array.isArray(attempts)) return undefined;
   const real = attempts.filter((a) => a.reason && a.reason !== 'resting');
   return real[real.length - 1];
+}
+
+/** When a search that wasn't sent (its store cooling down) may be tried again. */
+function untilFrom(e: unknown): number | undefined {
+  const attempts = (e as { attempts?: { until?: number }[] } | null)?.attempts;
+  const until = Array.isArray(attempts) ? attempts[attempts.length - 1]?.until : undefined;
+  return typeof until === 'number' ? until : undefined;
 }
 
 function reasonFrom(e: unknown): string {

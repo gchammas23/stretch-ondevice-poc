@@ -1,3 +1,4 @@
+import type { ReaderNote } from '../onDevice/types';
 import { ago } from './age';
 import type { PriceChange } from './priceHistory';
 import type { SearchResult } from './pricingEngine';
@@ -17,6 +18,8 @@ export interface Receipt {
   bytes?: number;
   /** Which of the page's data held the products. */
   source?: string;
+  /** Which reader found them there: the store's profile, or the general reader. */
+  reader?: ReaderNote;
   note?: string;
   /** Searched earlier and reused, not searched just now. */
   saved: boolean;
@@ -34,6 +37,7 @@ export function sourceWords(source: string | undefined): string | undefined {
   if (bare === 'next-data') return 'the search page’s own data';
   if (bare === 'ld+json') return 'the search page’s structured data';
   if (/^__\w+__$/.test(bare)) return 'the page’s app state';
+  if (bare.startsWith('json script')) return 'the page’s own data';
   return bare;
 }
 
@@ -67,6 +71,7 @@ export function receiptFor(result: SearchResult | undefined, storeName: string, 
     ms: result.ms,
     bytes: saved || result.sharedWith ? undefined : result.bytes,
     source: result.source,
+    ...(result.reader && !saved && !result.sharedWith ? { reader: result.reader } : {}),
     note: result.note,
     saved,
   };

@@ -64,6 +64,22 @@ export interface TruthSummary {
   byStore: Record<string, { same: number; checked: number }>;
 }
 
+/** Checked prices that agree this often (all of them, two at least) confirm where a store's results are. */
+export const TRUTH_TO_LEARN = 2;
+
+/**
+ * The stores whose checked prices all matched their product pages, two at least, with the products that matched: the
+ * truth check agrees with the list they came from, which can then be the store's profile (see ProfileBook.confirm).
+ */
+export function agreedStores(checks: TruthCheck[]): { retailerId: string; productIds: string[] }[] {
+  const out: { retailerId: string; productIds: string[] }[] = [];
+  for (const [retailerId, s] of Object.entries(truthSummary(checks).byStore)) {
+    if (s.checked < TRUTH_TO_LEARN || s.same !== s.checked) continue;
+    out.push({ retailerId, productIds: checks.filter((c) => c.retailerId === retailerId && c.state === 'same').map((c) => c.product.id) });
+  }
+  return out;
+}
+
 export function truthSummary(checks: TruthCheck[]): TruthSummary {
   const byStore: TruthSummary['byStore'] = {};
   let same = 0;

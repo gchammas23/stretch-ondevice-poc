@@ -45,11 +45,12 @@ export function datacenterFor(retailerId: string, sisterOf?: string): { said: st
 }
 
 /**
- * How one way of searching a store went: prices; blocked (a bot check, or the store refusing: HTTP 401, 403, 429 or
- * 503); an empty page; a page without prices in it (on most stores they come later, from the page's own requests,
- * which only a browser makes); too slow; failed another way; or not tried, the store's hour being full.
+ * How one way of searching a store went: prices; blocked (a bot check, a page that refuses the phone, or the store
+ * refusing: HTTP 401, 403, 429 or 503); an empty page; a page without prices in it (on most stores they come later,
+ * from the page's own requests, which only a browser makes); too slow; failed another way; or not tried, the store's
+ * hour being full ('paused') or the store cooling down after a block ('cooling').
  */
-export type Verdict = 'prices' | 'blocked' | 'empty' | 'no_prices' | 'slow' | 'failed' | 'paused';
+export type Verdict = 'prices' | 'blocked' | 'empty' | 'no_prices' | 'slow' | 'failed' | 'paused' | 'cooling';
 
 /** A page with no product data under this much is empty: a real search page is far bigger. */
 export const EMPTY_PAGE_BYTES = 2000;
@@ -58,7 +59,9 @@ export const EMPTY_PAGE_BYTES = 2000;
 export function verdictOf(reason: string | undefined, bytes?: number): Verdict {
   if (!reason) return 'failed';
   if (reason === 'polite_limit') return 'paused';
-  if (reason.startsWith('challenge') || /^http_(401|403|429|503)$/.test(reason)) return 'blocked';
+  if (reason === 'cooling_down') return 'cooling';
+  if (reason.startsWith('challenge') || reason === 'blocked' || /^http_(401|403|429|503)$/.test(reason)) return 'blocked';
+  if (reason === 'tiny_page') return 'empty';
   if (reason === 'no_payload' || reason === 'no_products_on_page' || reason === 'empty') {
     return bytes !== undefined && bytes < EMPTY_PAGE_BYTES ? 'empty' : 'no_prices';
   }
@@ -129,6 +132,7 @@ export function verdictWords(side: SideResult): string {
       const code = httpCode(side.reason);
       if (code === '429') return 'Too many requests (429)';
       if (code) return `Blocked (${code})`;
+      if (side.reason === 'blocked') return side.status && side.status !== 200 ? `Blocked (${side.status})` : 'Blocked';
       return side.status && side.status !== 200 ? `Bot check (${side.status})` : 'Bot check';
     }
     case 'empty':
@@ -139,6 +143,8 @@ export function verdictWords(side: SideResult): string {
       return 'Too slow';
     case 'paused':
       return 'Not tried: its hour is full';
+    case 'cooling':
+      return 'Not tried: cooling down after a block';
     default: {
       const code = httpCode(side.reason);
       const words = code ? `HTTP ${code}` : reasonWords(side.reason);
@@ -149,7 +155,7 @@ export function verdictWords(side: SideResult): string {
 
 /** "6.1 s · 2.1 MB · page load": its time, data and, with `how`, how it read the store. */
 export function sideMeta(side: SideResult, how = false): string {
-  if (side.verdict === 'paused') return '';
+  if (side.verdict === 'paused' || side.verdict === 'cooling') return '';
   return [seconds(side.ms), side.bytes ? bytesText(side.bytes) : '', how ? (side.how ?? '') : ''].filter(Boolean).join(' · ');
 }
 
@@ -205,6 +211,8 @@ export interface VersusSummary {
   browser: { prices: number; blocked: number; bytes: number };
   /** Stores not tried both ways this time: their hour was full. */
   paused: number;
+  /** Stores not tried both ways this time: cooling down after a block (see tuning.ts). */
+  cooling: number;
   /** What the datacenter's request got at the stores tried that it was sent to itself (not a parent's site). */
   datacenter: { stores: number; blocked: number; noPrices: number; loaded: number };
 }
@@ -218,6 +226,7 @@ export function versusSummary(state: Pick<VersusState, 'stores' | 'rows'>): Vers
     plain: { prices: 0, blocked: 0, bytes: 0 },
     browser: { prices: 0, blocked: 0, bytes: 0 },
     paused: 0,
+    cooling: 0,
     datacenter: { stores: 0, blocked: 0, noPrices: 0, loaded: 0 },
   };
   for (const store of state.stores) {
@@ -226,6 +235,10 @@ export function versusSummary(state: Pick<VersusState, 'stores' | 'rows'>): Vers
     const { plain, browser } = row;
     if (row.pausedUntil !== undefined || plain?.verdict === 'paused' || browser?.verdict === 'paused') {
       s.paused += 1;
+      continue;
+    }
+    if (plain?.verdict === 'cooling' || browser?.verdict === 'cooling') {
+      s.cooling += 1;
       continue;
     }
     // Still being tested.
@@ -293,6 +306,7 @@ export function versusText(state: VersusState, heading: string, device = 'phone'
   const dc = datacenterLine(s);
   if (dc) lines.push(dc);
   if (s.paused) lines.push(`Not tried: ${s.paused} ${s.paused === 1 ? 'store, with no room in its' : 'stores, with no room in their'} hour for both searches.`);
+  if (s.cooling) lines.push(`Not tried: ${s.cooling} ${s.cooling === 1 ? 'store, cooling down' : 'stores, cooling down'} after a block.`);
   lines.push(bestCaseText(device));
   for (const store of state.stores) {
     const row = state.rows[store.retailerId];

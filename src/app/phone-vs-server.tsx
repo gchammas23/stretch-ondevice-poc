@@ -52,6 +52,7 @@ const LOOK: Record<Verdict, { color: string; icon: IconName }> = {
   slow: { color: colors.amber, icon: 'clock' },
   failed: { color: colors.amber, icon: 'alert' },
   paused: { color: colors.muted, icon: 'clock' },
+  cooling: { color: colors.muted, icon: 'clock' },
 };
 const SERVER_COLOR: Record<ServerOutcome, string> = { blocked: colors.red, no_prices: colors.amber, loaded: colors.muted };
 
@@ -240,6 +241,11 @@ function Hero({ state, summary: s, settled, now }: { state: VersusState; summary
           most {MAX_SEARCHES_PER_HOUR} an hour from this {deviceWord}).
         </Text>
       ) : null}
+      {s.cooling ? (
+        <Text style={styles.small}>
+          {s.cooling === 1 ? '1 store wasn’t' : `${s.cooling} stores weren’t`} tried: cooling down after a block, until the retry time Store health shows.
+        </Text>
+      ) : null}
       <View style={styles.caveat}>
         <Icon name="info" size={16} color={colors.muted} />
         <Text style={[styles.small, styles.flex]}>{bestCaseText(deviceWord)}</Text>
@@ -330,7 +336,7 @@ function spokenSide(side: SideResult | undefined, now: boolean, waiting: string)
   if (!side) return now ? 'testing now' : waiting.toLowerCase();
   const parts = [verdictWords(side)];
   if (side.first) parts.push(`${side.first.name} at ${money(side.first.price)}`);
-  if (side.verdict !== 'paused') parts.push(`${(side.ms / 1000).toFixed(1)} seconds`);
+  if (side.verdict !== 'paused' && side.verdict !== 'cooling') parts.push(`${(side.ms / 1000).toFixed(1)} seconds`);
   if (side.bytes) parts.push(bytesText(side.bytes));
   if (side.how && side.how !== 'direct request') parts.push(side.how);
   return parts.join(', ');

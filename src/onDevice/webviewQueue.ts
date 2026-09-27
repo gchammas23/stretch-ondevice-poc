@@ -5,6 +5,7 @@ import {
   captureScript,
   clipScript,
   extractionScript,
+  goScript,
   lightScript,
   listPageScript,
   looksLikeSignIn,
@@ -49,6 +50,12 @@ export interface WebViewJob {
    * come (the search's own answer, whole), so it finishes at once.
    */
   accept?: (payload: WebViewPayload) => boolean | 'now';
+  /**
+   * Asked when the page's requests go quiet before `accept` took anything (see askQuiet in webviewScript.ts), with what
+   * streamed in so far: true to end the load with what the page has, false to wait for more (the list so far may be a
+   * carousel beside the results, which come later). The page still gives up when nothing new comes for a while.
+   */
+  settle?: (payload: WebViewPayload) => boolean;
   /** Load without images, fonts or video (see lightScript). A bot check is shown with everything, reloaded. */
   light?: boolean;
   /** Fail with 'challenge' on a bot check instead of showing it: for checks nobody is waiting on. */
@@ -89,6 +96,8 @@ export interface WebViewPayload {
   store?: string;
   /** A page read for what it says ('text'): its visible text. */
   text?: string;
+  /** How much the page was: its elements, and its words when it had few elements (-1 when it had many). */
+  size?: { elements: number; chars: number };
 }
 
 /** What a replayed request returned (see replayScript). */
@@ -140,6 +149,7 @@ interface Job {
   keepPage: boolean;
   task?: StoreTask;
   accept?: (payload: WebViewPayload) => boolean | 'now';
+  settle?: (payload: WebViewPayload) => boolean;
   light: boolean;
   reportChallenge: boolean;
   guardSignIn: boolean;
@@ -368,10 +378,16 @@ export class WebViewQueue {
     // Ignore anything without this load's nonce, including the retailer's own scripts.
     if (!job || msg.nonce !== job.nonce) return;
 
+    // A page that refuses the phone outright ("Access Denied"): there's nothing to answer, so it's never shown.
+    if (msg.kind === 'blocked') {
+      if (job.phase !== 'browse') this.finish(failure('blocked', typeof msg.marker === 'string' ? `“${msg.marker.slice(0, 60)}”` : undefined));
+      return;
+    }
+
     if (msg.kind === 'challenge') {
       if (job.phase === 'hidden') {
         if (job.reportChallenge) {
-          this.finish(new Error('challenge'));
+          this.finish(failure('challenge', msg.frame === true ? 'a captcha in a frame of the page' : undefined));
           return;
         }
         job.phase = 'challenge';
@@ -390,6 +406,19 @@ export class WebViewQueue {
 
     if (msg.kind === 'progress') {
       if (job.phase === 'hidden' && job.accept) this.progress(job, msg);
+      return;
+    }
+
+    // Its requests went quiet: the search says whether what streamed in is enough, or to wait for more.
+    if (msg.kind === 'quiet') {
+      if (job.phase !== 'hidden' || job.acceptTimer) return;
+      let enough = true;
+      try {
+        enough = job.settle ? job.settle(this.partialPayload(job)) : true;
+      } catch {
+        enough = true;
+      }
+      if (enough) this.inject?.(goScript(job.nonce));
       return;
     }
 
@@ -428,6 +457,8 @@ export class WebViewQueue {
       const store = storeText(msg) ?? job.partialStore;
       if (store) payload.store = store;
       if (typeof msg.text === 'string') payload.text = msg.text.slice(0, MAX_TEXT_CHARS);
+      const size = sizeOf(msg);
+      if (size) payload.size = size;
       this.finish(payload);
       return;
     }
@@ -595,6 +626,7 @@ export class WebViewQueue {
     return extractionScript(job.nonce, job.challengeMarkers, job.pageScript, {
       waitFor: job.waitFor,
       progress: !!job.accept,
+      askQuiet: !!job.settle,
       // A product page with nothing more coming after it loads has said all it will; a page read for its words, soon.
       giveUpMs: job.waitFor === 'details' ? 3000 : job.waitFor === 'text' ? 4000 : undefined,
     });
@@ -722,6 +754,19 @@ export class WebViewQueue {
     else job.resolve(result);
     this.pump();
   }
+}
+
+/** An error with what the page showed, in words, for the search's failure (see StrategyError). */
+function failure(reason: string, detail?: string): Error {
+  return Object.assign(new Error(reason), detail ? { detail } : {});
+}
+
+/** How much a page was, as its script counted it (see pageSize in webviewScript.ts). */
+function sizeOf(msg: Record<string, unknown>): WebViewPayload['size'] | undefined {
+  const size = msg.size;
+  if (typeof size !== 'object' || size === null) return undefined;
+  const { elements, chars } = size as { elements?: unknown; chars?: unknown };
+  return typeof elements === 'number' && typeof chars === 'number' ? { elements, chars } : undefined;
 }
 
 /** The store label a page posted, if any (see storeLabel in webviewScript.ts). */

@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { GroceryList } from '../../../lists/types';
 import { onRetailerSite } from '../../../onDevice/retailerSearch';
 import { reasonWords } from '../../../onDevice/scrapeFeed';
-import { pricesOf, truthSample, truthSummary, verdictOf, type TruthCheck } from '../../../pricing/truth';
+import { agreedStores, pricesOf, truthSample, truthSummary, verdictOf, type TruthCheck } from '../../../pricing/truth';
 import { useApp, useComparison, useList, usePricingRun } from '../../../state/AppProvider';
 import { announce } from '../../../ui/a11y';
 import { Chip } from '../../../ui/bits';
@@ -31,11 +31,13 @@ const PER_STORE = [3, 5, 10];
  */
 function Truth({ list }: { list: GroceryList }) {
   const insets = useSafeAreaInsets();
-  const { search, bundle } = useApp();
+  const { search, bundle, profiles } = useApp();
   const run = usePricingRun(list.id);
   const { baskets } = useComparison(list, run);
   const [perStore, setPerStore] = useState(3);
   const [checks, setChecks] = useState<TruthCheck[] | null>(null);
+  /** Stores whose prices all matched: where their results are was learned from them (their profile). */
+  const [taught, setTaught] = useState<string[]>([]);
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -57,6 +59,7 @@ function Truth({ list }: { list: GroceryList }) {
     tap();
     const list0: TruthCheck[] = sample.map((s) => ({ ...s, state: 'waiting' }));
     setChecks(list0);
+    setTaught([]);
     const results = [...list0];
     // One page at a time, like a person clicking through: the pages lane reads them in turn anyway.
     for (let i = 0; i < results.length && alive.current; i++) {
@@ -75,6 +78,8 @@ function Truth({ list }: { list: GroceryList }) {
     }
     if (alive.current) {
       const s = truthSummary(results);
+      // Prices that all match confirm the list they came from: it becomes the store's profile, where it isn't already.
+      setTaught(agreedStores(results).filter((a) => !!profiles.confirm(a.retailerId, a.productIds)).map((a) => a.retailerId));
       announce(s.checked ? `${s.same} of ${s.checked} prices match their product pages.` : 'No product page could be read.');
     }
   };
@@ -144,6 +149,12 @@ function Truth({ list }: { list: GroceryList }) {
                 </View>
               ))}
             </View>
+            {taught.length ? (
+              <Text style={styles.small}>
+                These prices confirmed where {taught.map(nameOf).join(' and ')}’s results are: {taught.length === 1 ? 'its' : 'their'} searches read
+                there first from now on (Store health, Where each store’s results are).
+              </Text>
+            ) : null}
           </View>
         )}
 
