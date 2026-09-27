@@ -267,7 +267,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
         history.record(retailerId, storeKey, products, at);
         const dropped = store.notePrices(retailerId, storeKey, products, at);
         if (dropped.length) dropListeners.forEach((listener) => listener(dropped));
-        if (seen) store.noteSeenStore(retailerId, storeKey, seen, at);
+        // Noted even when the search said nothing about its store: Your stores then says so.
+        store.noteSeenStore(retailerId, storeKey, seen ?? {}, at);
       }),
     [engine, history, store, dropListeners],
   );

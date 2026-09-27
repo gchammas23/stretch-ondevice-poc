@@ -207,6 +207,12 @@ export const BUNDLED_CONFIG: RetailerConfigBundle = {
       timeoutMs: 15000,
       storeHint: 'Store number, used with the cookie template in retailers.ts. Your stores sets it on walmart.com’s store finder instead.',
       // Checked 2026-09-25: lists the stores nearest the ZIP, nearest first, each with "Make this my store".
+      // A phone capture of walmart.com's store picker (2026-09-27): the list comes from a "nearByNodes" GraphQL query with
+      // the ZIP in its variables (id, displayName, address, geoPoint, distance in miles), which nearbyStores reads as it
+      // is; choosing a store sends one "setPickup" mutation (storeId, postalCode, the store's accessPointId from the
+      // list). The store then lives on Walmart's server against the guest id in the ACID cookie, and nearly every response
+      // rewrites the client's copies (assortmentStoreId, xptc, hasLocData, the encrypted xptwj): a cookie template can't
+      // pin it, and with no store set the page served store 3520, near 10016. The query hashes change with each release.
       storeFinder: { url: 'https://www.walmart.com/store-finder?location={{zip}}&distance=50', auto: true },
       note: 'Results are in the page HTML, so a plain request can work. Our datacenter test got the bot check.',
       storeBrands: ['Great Value', 'Marketside', 'Sam’s Choice', "Sam's Choice", 'bettergoods', 'Freshness Guaranteed'],
@@ -329,6 +335,12 @@ export const BUNDLED_CONFIG: RetailerConfigBundle = {
     },
     {
       ...webviewRetailer('heb', 'H-E-B', 'https://www.heb.com/search?q={{query}}', 'https://www.heb.com/', 'Sent our datacenter test a bot-check page.'),
+      // A phone capture of heb.com's store picker (2026-09-27): the site sits behind Imperva, whose "Pardon Our
+      // Interruption" check passed by itself in 3 s in Safari (see CHALLENGE_GRACE_MS). The store is the SHOPPING_STORE_ID
+      // cookie (plain, a year long) plus USER_CHOSEN_STORE=true, both written by the page's own script when a store is
+      // picked, and every GraphQL request carries storeId in its variables, so pinning by number fits. Its picker lists
+      // stores with a "StorePickerSearch" query (address: the ZIP, radius 100: storeNumber, name, address, latitude,
+      // longitude, distanceMiles), which nearbyStores reads as it is. With no store set it served store 92, in Victoria.
       storeFinder: { url: 'https://www.heb.com/store-locations' },
       storeBrands: ['H-E-B', 'Hill Country Fare', 'Central Market'],
       // Checked 2026-09-25: its help pages publish no amounts ("shown on your checkout page"), so these are estimates

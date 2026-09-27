@@ -151,6 +151,8 @@ interface Job {
   partialStore?: string;
   /** Running once `accept` said yes: related responses get a moment to land. */
   acceptTimer?: ReturnType<typeof setTimeout>;
+  /** Running while a bot check the page met is given time to pass by itself (see CHALLENGE_GRACE_MS). */
+  graceTimer?: ReturnType<typeof setTimeout>;
   purpose?: BrowseJob['purpose'];
   timing?: LoadTiming;
   resolve: (payload: WebViewPayload | null) => void;
@@ -178,6 +180,12 @@ interface Replay {
 }
 
 export const CHALLENGE_TIMEOUT_MS = 120_000;
+/**
+ * How long a hidden page gets to pass a bot check by itself before the check counts. Imperva's and PerimeterX's
+ * checks often run unseen, in a script, and the page moves on: H-E-B's took 3 s on a phone (2026-09-27). Until then the
+ * page stays hidden, and a check that's still there afterwards is shown, or reported, as before.
+ */
+export const CHALLENGE_GRACE_MS = 8_000;
 export const BROWSE_TIMEOUT_MS = 15 * 60_000;
 /** After the streamed responses first hold the results: how long to wait for closely related ones. */
 export const ACCEPT_SETTLE_MS = 700;
@@ -227,6 +235,7 @@ export class WebViewQueue {
   lastUsed = 0;
   maxReplays = MAX_REPLAYS;
   idleMs = IDLE_PAGE_MS;
+  challengeGraceMs = CHALLENGE_GRACE_MS;
   readonly stats = { pageLoads: 0, replays: 0, replayMisses: 0 };
 
   constructor(
@@ -369,22 +378,14 @@ export class WebViewQueue {
     if (!job || msg.nonce !== job.nonce) return;
 
     if (msg.kind === 'challenge') {
-      if (job.phase === 'hidden') {
-        if (job.reportChallenge) {
-          this.finish(new Error('challenge'));
-          return;
-        }
-        job.phase = 'challenge';
-        if (job.timing) job.timing.check = { loadFrom: job.timing.startedAt ?? Date.now(), from: Date.now() };
-        // A check can need images to be answered: shown with everything, which means loading it again.
-        if (job.light) {
-          job.light = false;
-          job.round += 1;
-          job.nonce = makeNonce();
-        }
-        this.arm(CHALLENGE_TIMEOUT_MS, 'challenge_timeout');
-        this.publish();
-      }
+      if (job.phase !== 'hidden' || job.graceTimer) return;
+      // The page gets a moment, still hidden, to pass the check by itself and move on (an invisible check does). The
+      // script it posted from stops there; the one injected after the page moves on picks up.
+      if (job.timing) job.timing.check = { loadFrom: job.timing.startedAt ?? Date.now(), from: Date.now() };
+      job.graceTimer = setTimeout(() => {
+        job.graceTimer = undefined;
+        if (this.current === job && job.phase === 'hidden') this.checkStands(job);
+      }, this.challengeGraceMs);
       return;
     }
 
@@ -414,6 +415,7 @@ export class WebViewQueue {
         this.publish();
         return;
       }
+      if (job.graceTimer) this.checkPassedUnseen(job);
       this.noteData(job, msg);
       if (job.timing) job.timing.ended ??= str(msg.ready) ?? 'data';
       const payload: WebViewPayload = {
@@ -441,7 +443,7 @@ export class WebViewQueue {
    */
   scriptAfterNavigation = (): string | null => {
     const job = this.current;
-    return job && (job.phase === 'challenge' || (job.task && job.phase === 'hidden')) ? this.scriptFor(job) : null;
+    return job && (job.phase === 'challenge' || (job.phase === 'hidden' && (job.task || job.graceTimer))) ? this.scriptFor(job) : null;
   };
 
   /** The Read products button: a script that posts whatever the current page holds. */
@@ -473,6 +475,8 @@ export class WebViewQueue {
   /** The WebView began loading a page (its own event), for the speed test's timeline: when, and how many. */
   loadStarted = (): void => {
     const job = this.current;
+    // A page that was on a bot check is loading another page: the check let it through.
+    if (job?.phase === 'hidden' && job.graceTimer) this.checkPassedUnseen(job);
     const t = job?.phase === 'hidden' ? job.timing : undefined;
     if (!t) return;
     t.openedAt ??= Date.now();
@@ -520,6 +524,35 @@ export class WebViewQueue {
     if (typeof msg.error === 'string') r.reject(new Error(msg.error === 'too_large' ? 'replay_too_large' : 'replay_failed'));
     else r.resolve(msg);
     this.pump();
+  }
+
+  /** The check the page met is still there once its grace is over: shown to the user, or reported, as asked. */
+  private checkStands(job: Job): void {
+    if (job.reportChallenge) {
+      this.finish(new Error('challenge'));
+      return;
+    }
+    job.phase = 'challenge';
+    // A check can need images to be answered: shown with everything, which means loading it again.
+    if (job.light) {
+      job.light = false;
+      job.round += 1;
+      job.nonce = makeNonce();
+    }
+    this.arm(CHALLENGE_TIMEOUT_MS, 'challenge_timeout');
+    this.publish();
+  }
+
+  /** The page passed its bot check by itself, unseen: the load goes on from here, for the timeline. */
+  private checkPassedUnseen(job: Job): void {
+    if (job.graceTimer) clearTimeout(job.graceTimer);
+    job.graceTimer = undefined;
+    const t = job.timing;
+    if (!t?.check || t.check.to !== undefined) return;
+    t.check.to = Date.now();
+    t.check.unseen = true;
+    t.startedAt = t.check.to;
+    t.navAt = t.fetchAt = t.htmlAt = t.dataAt = t.openedAt = undefined;
   }
 
   private enqueue(job: Omit<Job, 'id' | 'nonce' | 'round' | 'partial'>): void {
@@ -676,7 +709,17 @@ export class WebViewQueue {
 
   private arm(ms: number, reason: string): void {
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.finish(new Error(reason)), ms);
+    this.timer = setTimeout(() => {
+      const job = this.current;
+      // Out of time while a bot check was being given its moment: the check is what happened, as before the grace.
+      if (job?.graceTimer && job.phase === 'hidden') {
+        clearTimeout(job.graceTimer);
+        job.graceTimer = undefined;
+        this.checkStands(job);
+        return;
+      }
+      this.finish(new Error(reason));
+    }, ms);
   }
 
   private armIdle(): void {
@@ -713,6 +756,8 @@ export class WebViewQueue {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (job.acceptTimer) clearTimeout(job.acceptTimer);
+    if (job.graceTimer) clearTimeout(job.graceTimer);
+    job.graceTimer = undefined;
     if (job.timing) job.timing.doneAt = Date.now();
     this.current = null;
     const keep = job.mode === 'search' && job.keepPage && result !== null && !(result instanceof Error);

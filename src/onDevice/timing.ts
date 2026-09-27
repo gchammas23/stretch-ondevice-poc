@@ -61,8 +61,11 @@ export interface LoadTiming {
   ended?: string;
   /** Where the responses that streamed in came from, by label ("response https://…"). */
   streamed?: string[];
-  /** A bot check: the first load's start, when the check showed, and when it was passed (the page loaded again then). */
-  check?: { loadFrom: number; from: number; to?: number };
+  /**
+   * A bot check: the first load's start, when the page met it, and when it was passed (the page loaded again then).
+   * `unseen`: the check passed by itself while the page stayed hidden, never shown (see CHALLENGE_GRACE_MS).
+   */
+  check?: { loadFrom: number; from: number; to?: number; unseen?: boolean };
 }
 
 /** A request replayed in a kept page: asked for, sent from the page, answered. */

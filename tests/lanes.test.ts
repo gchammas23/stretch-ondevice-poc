@@ -131,6 +131,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
   // --- The pool ----------------------------------------------------------------------------------------
   await t('pool: one lane per retailer; a store visit is shown before bot checks, then the oldest check', async () => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const a = pool.lane('a');
     assert.equal(pool.lane('a'), a);
     const b = pool.lane('b');
@@ -140,6 +141,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     const pb = b.run(job());
     b.receive(JSON.stringify({ nonce: nonceOf(b.getSnapshot()!.script), kind: 'challenge' }));
     a.receive(JSON.stringify({ nonce: nonceOf(a.getSnapshot()!.script), kind: 'challenge' }));
+    await tick();
     assert.equal(pool.getSnapshot().presented, b, 'b asked first');
     const visit = c.browse({ url: 'https://www.example.com/', retailerName: 'C' });
     assert.equal(pool.getSnapshot().presented, c, 'the user opened c');
@@ -417,6 +419,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
 
   await t('stores near: from the finder’s JSON when it answers, else its page, hidden, with the ZIP typed in; failures say why', async () => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const searcher = createRetailerSearch(pool, 'test');
     const safeway = BUNDLED_CONFIG.retailers.find((r) => r.id === 'safeway')!;
     const yext = { response: { entities: [
@@ -463,6 +466,19 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
 
       answer = (nonce) => ({ nonce, kind: 'challenge' });
       assert.deepEqual(await searcher.storesNear(safeway, '94110', 10), { ok: false, reason: 'challenge' }, 'a bot check doesn’t cover the app');
+      // A check the page passes by itself: the list comes from the page it moves on to, and the feed says so.
+      lane.challengeGraceMs = 100;
+      answer = (nonce) => {
+        setTimeout(() => {
+          lane.loadStarted();
+          lane.receive(JSON.stringify({ nonce, kind: 'data', sources: [{ label: 'response https://local.safeway.com/locator?q=94110', text: JSON.stringify(yext) }], pageResult: { cards: [] } }));
+        }, 20);
+        return { nonce, kind: 'challenge' };
+      };
+      const passed = await searcher.storesNear(safeway, '94110', 10);
+      assert.deepEqual(passed.ok && passed.stores.map((st) => st.id), ['739', '667'], 'listed from the page the check let through');
+      assert.ok(pool.feed.getSnapshot().some((e) => e.what === 'stores near 94110' && /passed by itself/.test(e.text)), 'the feed says so');
+      lane.challengeGraceMs = 0;
       answer = (nonce) => ({ nonce, kind: 'data', sources: [], pageResult: { cards: [] } });
       assert.deepEqual(await searcher.storesNear(safeway, '94110', 10), { ok: false, reason: 'no_stores_listed' });
       assert.deepEqual(await searcher.storesNear(example, '94110', 10), { ok: false, reason: 'no_store_finder' });
@@ -498,6 +514,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     lane.reset();
 
     const blocked = new WebViewPool();
+    blocked.challengeGraceMs = 0;
     const b = blocked.lane('example', 'Example');
     b.subscribe(() => {
       const s = b.getSnapshot();
@@ -569,6 +586,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
 
   await t('fees page: read hidden on the page lane for its words; a bot check fails the read, unseen; Store health hears of it', async () => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const lane = pool.lane(PAGE_LANE, 'Pages');
     let reply: (nonce: string, url: string) => Record<string, unknown> = (nonce, url) => ({
       nonce, kind: 'data', href: url, usage: { bytes: 42000 },
@@ -607,6 +625,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
 
   await t('fees pages: a store with a page for pickup has both read, one at a time; one that fails leaves the other’s', async () => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const lane = pool.lane(PAGE_LANE, 'Pages');
     const main = 'https://www.example.com/help/delivery';
     const pickup = 'https://www.example.com/help/pickup';
@@ -679,6 +698,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
 
   await t('coverage searches report a bot check instead of covering the app; lighter pages follow the setting', async () => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const lane = pool.lane('example', 'Example');
     const seen: { light: boolean }[] = [];
     let last = -1;

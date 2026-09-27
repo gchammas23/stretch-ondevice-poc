@@ -107,6 +107,55 @@ export function storeIdFromRequest(req: Pick<CapturedRequest, 'url' | 'body' | '
   return f && { id: f.id, field: `${f.key} in the request ${f.where}` };
 }
 
+/**
+ * The store a page's own data is for, when the products were in the page rather than in a request. Walmart's page data
+ * carries it under its page metadata (`location.storeId`, next to the ZIP; seen on a phone, 2026-09-27). The best-ranked
+ * store field in the data, by the value it holds most often; nothing unless one value has most of them, since a page
+ * can hold other stores' numbers too (nearby stores, say).
+ */
+export function storeIdFromPageData(text: string | undefined): { id: string; field: string } | undefined {
+  const t = text?.trim();
+  if (!t || !(t.startsWith('{') || t.startsWith('['))) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(t);
+  } catch {
+    return undefined;
+  }
+  // By rank, then by value: how many fields held it, and the first key that did.
+  const counts = new Map<number, Map<string, { n: number; key: string }>>();
+  let budget = 200_000;
+  const walk = (node: unknown, depth: number) => {
+    if (budget-- <= 0 || depth > 40) return;
+    if (Array.isArray(node)) {
+      node.slice(0, 50).forEach((v) => walk(v, depth + 1));
+      return;
+    }
+    if (!isObj(node)) return;
+    for (const [k, v] of Object.entries(node)) {
+      if (typeof v !== 'string' && typeof v !== 'number') {
+        walk(v, depth + 1);
+        continue;
+      }
+      const rank = STORE_FIELDS.findIndex((re) => re.test(fieldKey(k)));
+      const value = rank === -1 ? undefined : storeValue(v);
+      if (!value) continue;
+      const byValue = counts.get(rank) ?? new Map<string, { n: number; key: string }>();
+      const had = byValue.get(value) ?? { n: 0, key: k };
+      had.n += 1;
+      byValue.set(value, had);
+      counts.set(rank, byValue);
+    }
+  };
+  walk(json, 0);
+  const best = [...counts.keys()].sort((a, b) => a - b)[0];
+  if (best === undefined) return undefined;
+  const values = [...counts.get(best)!.entries()].sort((a, b) => b[1].n - a[1].n);
+  const total = values.reduce((sum, [, v]) => sum + v.n, 0);
+  const [id, top] = values[0];
+  return top.n * 2 > total ? { id, field: `${top.key} in the page data` } : undefined;
+}
+
 /** `value` with `from` swapped for `to`: the whole of it, or the first of a list ("1340,1920"). */
 function swapped(value: string, from: string, to: string): string {
   if (value === from) return to;
@@ -285,6 +334,28 @@ export function mergeStores(...stores: (KnownStore | undefined | null)[]): Known
 export function sameStoreId(a: string | undefined, b: string | undefined): boolean {
   const norm = (s: string | undefined) => (s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^0+/, '');
   return !!norm(a) && norm(a) === norm(b);
+}
+
+/**
+ * Whether two store names name the same store, as far as names can tell: every word of the shorter is in the longer
+ * ("Sacramento Supercenter" and "Sacramento Gerber Rd Supercenter"; "Kroger" and "Kroger On Vine"), false when the
+ * shorter has a word the longer lacks ("Secaucus Supercenter" against "Houston Heights Supercenter"), undefined when
+ * either has no words to compare.
+ */
+export function sameStoreName(a: string | undefined, b: string | undefined): boolean | undefined {
+  const words = (s: string | undefined) =>
+    new Set(
+      (s ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]+/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 1),
+    );
+  const wa = words(a);
+  const wb = words(b);
+  if (!wa.size || !wb.size) return undefined;
+  const [shorter, longer] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
+  return [...shorter].every((w) => longer.has(w));
 }
 
 /** "Sacramento Supercenter (store 3081)", "Sacramento Supercenter", or "Store 3081". */

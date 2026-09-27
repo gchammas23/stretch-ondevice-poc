@@ -642,12 +642,18 @@ export class AppStore {
 
   /**
    * Which store a search just got its prices for. Saved only when it's news: another store, a name or number it
-   * didn't have, or a minute since the last note, so a list's searches don't each write.
+   * didn't have, or a minute since the last note, so a list's searches don't each write. A search that said nothing
+   * about its store is noted too (the key and the time alone), once, so Your stores can say so.
    */
   noteSeenStore(retailerId: string, storeKey: string, store: KnownStore, at: number): void {
     const fresh = storeFields(store);
-    if (!fresh.name && !fresh.id && !fresh.address) return;
     const had = this.state.settings.seenStores[retailerId];
+    if (!fresh.name && !fresh.id && !fresh.address) {
+      // The search didn't say which store it priced: noted once, until a search under the same key does say.
+      if (had?.storeKey === storeKey) return;
+      this.setSettings({ seenStores: { ...this.state.settings.seenStores, [retailerId]: { storeKey, at } } });
+      return;
+    }
     const sameStore = !!had && had.storeKey === storeKey && (!fresh.id || !had.id || sameStoreId(fresh.id, had.id));
     const next: SeenStore = sameStore ? { ...storeFields(had), ...fresh, storeKey, at } : { ...fresh, storeKey, at };
     const unchanged = sameStore && had.name === next.name && had.address === next.address && had.id === next.id;

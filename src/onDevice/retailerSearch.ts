@@ -15,7 +15,7 @@ import { politeness } from './politeness';
 import { parseProductPage, type ProductDetails } from './productPage';
 import { applyTemplate, learnTemplate, looksRelevant, mentionsQuery, replayPayload } from './replay';
 import { bytesText, reasonWords, seconds } from './scrapeFeed';
-import { mergeStores, parseStoreLabel, pinStoreInRequest, sameStoreId, storeFromFinder, storeIdFromRequest, storeLine } from './storeIdentity';
+import { mergeStores, parseStoreLabel, pinStoreInRequest, sameStoreId, storeFromFinder, storeIdFromPageData, storeIdFromRequest, storeLine } from './storeIdentity';
 import { nearbyStores, sortNearest, withMiles, type LatLng, type NearbyStore, type StoreCard } from './storeLocator';
 import { reportAttempt } from './telemetry';
 import { SpanLog, type LoadTiming, type ReplayTiming, type SearchTiming } from './timing';
@@ -479,6 +479,8 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       );
     }
     clock.load(timing);
+    // A bot check the page passed by itself, hidden, is worth a word in the timeline.
+    if (timing.check?.unseen && timing.check.to !== undefined) clock.note(`its bot check passed by itself, in ${seconds(timing.check.to - timing.check.from)}`);
 
     let parsed = clock.time('parse', () => parser(payload, ctx));
     if (!parsed.payloadFound) {
@@ -509,8 +511,14 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       }
       if (template) lane.template = template;
     }
-    // Which store these prices are for: the number in the request that brought them, and the name the page shows.
-    const id = parsed.origin?.kind === 'response' ? storeIdFromRequest(parsed.origin.request)?.id : undefined;
+    // Which store these prices are for: the number in the request that brought them (or in the page's own data, when
+    // they were in the page), and the name the page shows.
+    const id =
+      parsed.origin?.kind === 'response'
+        ? storeIdFromRequest(parsed.origin.request)?.id
+        : parsed.origin?.kind === 'document'
+          ? storeIdFromPageData(payload.nextDataText)?.id
+          : undefined;
     const store = mergeStores(id ? { id } : undefined, parseStoreLabel(payload.store));
     lane.seenStore = store ?? null;
     // The page asked for the store the site picked, and another was chosen in the app: ask for that one's prices
@@ -705,6 +713,8 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     const api = cfg.api === 'kroger' && krogerApiConfigured();
     // How the list was had: the official API, the finder's JSON, or its page.
     let how: Strategy = api ? 'api' : 'webview';
+    // The finder's page met a bot check that passed by itself, hidden (see CHALLENGE_GRACE_MS).
+    let checkPassed = false;
     try {
       let stores: NearbyStore[] = [];
       const finder = cfg.storeFinder;
@@ -720,6 +730,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
         }
         if (!stores.length) {
           const lane = pool.lane(cfg.id, cfg.name);
+          const timing: LoadTiming = { queuedAt: Date.now() };
           try {
             const payload = await lane.run({
               url: fill(finder.url, { zip: encodeURIComponent(zip) }),
@@ -731,7 +742,9 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
               light: pool.lightPages,
               reportChallenge: true,
               task: { kind: 'listStores', zip },
+              timing,
             });
+            checkPassed = !!timing.check?.unseen;
             const cards = (payload.pageResult as { cards?: unknown } | undefined)?.cards;
             stores = nearbyStores({ ...payload, cards: Array.isArray(cards) ? (cards as StoreCard[]) : undefined }, origin);
           } finally {
@@ -743,7 +756,8 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       stores = sortNearest(stores);
       const ms = Date.now() - t0;
       record({ retailerId: cfg.id, kind: 'store', strategy: how, ok: stores.length > 0, ms, ...(stores.length ? {} : { reason: 'no_stores_listed' }) });
-      log(cfg, `stores near ${zip}`, stores.length > 0, stores.length ? `${stores.length} stores · ${seconds(ms)}` : 'no stores listed');
+      const passed = checkPassed ? ' · its bot check passed by itself' : '';
+      log(cfg, `stores near ${zip}`, stores.length > 0, stores.length ? `${stores.length} stores · ${seconds(ms)}${passed}` : `no stores listed${passed}`);
       return stores.length ? { ok: true, stores, how: api ? 'api' : 'finder' } : { ok: false, reason: 'no_stores_listed' };
     } catch (e) {
       record({ retailerId: cfg.id, kind: 'store', strategy: how, ok: false, reason: reasonOf(e), ms: Date.now() - t0 });

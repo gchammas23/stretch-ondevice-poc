@@ -444,6 +444,7 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
   // --- End to end, through the app's own search -----------------------------------------------------------------
   const setUp = (tuner = new StoreTuner()) => {
     const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
     const searcher = createRetailerSearch(pool, 'rules-9', tuner);
     const entries: AttemptEntry[] = [];
     searcher.onAttempt((e) => entries.push(e));

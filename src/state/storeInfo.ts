@@ -1,4 +1,4 @@
-import { mergeStores, sameStoreId, storeLine } from '../onDevice/storeIdentity';
+import { mergeStores, sameStoreId, sameStoreName, storeLine } from '../onDevice/storeIdentity';
 import type { KnownStore } from '../onDevice/types';
 import { ago } from '../pricing/age';
 import type { SeenStore, Settings, StoreSetup } from './appStore';
@@ -41,7 +41,10 @@ export function knownStore(
     settings.chosenStores[retailerId] ?? (setup?.how === 'auto' && setup.label ? { name: setup.label } : undefined);
   const seenRaw = settings.seenStores[retailerId];
   const seen = seenRaw && (storeKey === undefined || seenRaw.storeKey === storeKey) ? seenRaw : undefined;
-  const conflict = !!chosen?.id && !!seen?.id && !sameStoreId(chosen.id, seen.id);
+  const conflict =
+    (!!chosen?.id && !!seen?.id && !sameStoreId(chosen.id, seen.id)) ||
+    // Without both numbers, the names tell: a page naming a store the list didn't ("Secaucus" for "Houston Heights").
+    ((!chosen?.id || !seen?.id) && sameStoreName(chosen?.name, seen?.name) === false);
   return { chosen, seen, store: conflict ? mergeStores(seen) : mergeStores(chosen, seen), conflict };
 }
 
@@ -122,8 +125,18 @@ export function storeInfo(retailerId: string, retailerName: string, host: string
   let check: StoreInfo['check'];
   if (seen && conflict) {
     check = { tone: 'warn', text: `The last search got prices for ${storeLine(seen)} instead: ${host} wouldn’t take this store.` };
-  } else if (seen) {
+  } else if (seen && (seen.id || seen.name || seen.address)) {
     check = { tone: 'ok', text: `The last search’s prices were for this store (${ago(now - seen.at)}).` };
+  } else if (seen) {
+    // The search said nothing about its store: nothing in its request, nothing on its page. For a store asked for by
+    // number, that number went nowhere.
+    check = {
+      tone: 'warn',
+      text:
+        setup?.status === 'done' && setup.how === 'pinned'
+          ? `The last search’s request carried no store number, so ${host} priced the store it picks itself (${ago(now - seen.at)}).`
+          : `The last search didn’t say which store it priced (${ago(now - seen.at)}).`,
+    };
   }
   return { title, ...(detail ? { detail } : {}), how, ...(check ? { check } : {}) };
 }

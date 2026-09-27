@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
+import type { LoadTiming } from '../src/onDevice/timing';
 import { WebViewQueue } from '../src/onDevice/webviewQueue';
 
 const nonceOf = (script: string) => /var NONCE = "([^"]+)"/.exec(script)![1];
@@ -28,9 +29,11 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
   await t('bot check: shows, then passes, then reloads with a new round and nonce before resolving', async () => {
     const q = new WebViewQueue();
+    q.challengeGraceMs = 0;
     const p = q.run(job());
     const first = q.getSnapshot()!;
     q.receive(JSON.stringify({ nonce: nonceOf(first.script), kind: 'challenge' }));
+    await tick();
     const checking = q.getSnapshot()!;
     assert.equal(checking.phase, 'challenge');
     assert.notEqual(checking, first, 'new snapshot object so React re-renders');
@@ -49,10 +52,12 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
   await t('timeout, network error, page error and cancel all reject with their reason', async () => {
     const q = new WebViewQueue();
+    q.challengeGraceMs = 0;
     await assert.rejects(q.run(job({ timeoutMs: 20 })), /timeout/);
     const p2 = q.run(job()); q.networkError(); await assert.rejects(p2, /network/);
     const p3 = q.run(job()); q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'error', error: 'no_payload' })); await assert.rejects(p3, /no_payload/);
     const p4 = q.run(job()); q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    await tick();
     q.networkError(); // ignored while the user is on the check page
     assert.equal(q.getSnapshot()!.phase, 'challenge');
     q.cancel(); await assert.rejects(p4, /challenge_cancelled/);
@@ -161,11 +166,13 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
   await t('lighter pages: hidden loads block images; a bot check reloads the page in full for the user', async () => {
     const q = new WebViewQueue();
+    q.challengeGraceMs = 0;
     const p = q.run(job({ waitFor: 'auto', light: true }));
     const first = q.getSnapshot()!;
     assert.match(first.beforeScript ?? '', /__stretchLight/);
     assert.match(first.beforeScript ?? '', /__stretchCapture/, 'with the response capture');
     q.receive(JSON.stringify({ nonce: nonceOf(first.script), kind: 'challenge' }));
+    await tick();
     const shown = q.getSnapshot()!;
     assert.deepEqual([shown.phase, shown.round], ['challenge', first.round + 1], 'remounted: loaded again');
     assert.doesNotMatch(shown.beforeScript ?? '', /__stretchLight/, 'with images, for the check');
@@ -176,12 +183,70 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
     assert.equal((await p).bytes, 123_456, 'the page’s data count comes back');
   });
 
-  await t('reported bot checks fail the load at once, without covering the app', async () => {
+  await t('reported bot checks fail the load once their grace is over, without covering the app', async () => {
     const q = new WebViewQueue();
+    q.challengeGraceMs = 0;
     const p = q.run(job({ reportChallenge: true }));
     q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
     await assert.rejects(p, /challenge/);
     assert.equal(q.getSnapshot(), null);
+  });
+
+  await t('bot check grace: a check the page passes by itself stays hidden, and the load goes on from the page it moved to', async () => {
+    const q = new WebViewQueue();
+    q.challengeGraceMs = 50;
+    const timing: LoadTiming = { queuedAt: Date.now() };
+    const p = q.run(job({ reportChallenge: true, timing }));
+    const first = q.getSnapshot()!;
+    q.receive(JSON.stringify({ nonce: nonceOf(first.script), kind: 'challenge' }));
+    q.receive(JSON.stringify({ nonce: nonceOf(first.script), kind: 'challenge' })); // the same page, again: one grace
+    await tick(10);
+    assert.equal(q.getSnapshot(), first, 'still hidden, the same load');
+    assert.equal(nonceOf(q.scriptAfterNavigation()!), nonceOf(first.script), 'injected again into the page it moves on to');
+    q.loadStarted(); // The check let it through: the real page is loading.
+    assert.equal(timing.check?.unseen, true);
+    q.receive(JSON.stringify({ nonce: nonceOf(first.script), kind: 'data', href: 'h', nextDataText: '{"a":1}' }));
+    assert.equal((await p).nextDataText, '{"a":1}');
+    assert.ok(timing.check!.to! >= timing.check!.from, 'the check span ended when the page moved on');
+    await tick(60);
+    assert.equal(q.getSnapshot(), null, 'the grace timer had nothing left to do');
+
+    // Without the browser's word that a page began loading, the data itself says the check passed.
+    const quiet: LoadTiming = { queuedAt: Date.now() };
+    const p2 = q.run(job({ timing: quiet }));
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'data', href: 'h', nextDataText: '{}' }));
+    await p2;
+    assert.deepEqual([quiet.check?.unseen, typeof quiet.check?.to], [true, 'number']);
+  });
+
+  await t('bot check grace: a check that stays is shown after it for a search, reported for a hidden read; time out meanwhile counts as the check', async () => {
+    const q = new WebViewQueue();
+    q.challengeGraceMs = 30;
+    const p = q.run(job());
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    assert.equal(q.getSnapshot()!.phase, 'hidden', 'not shown yet');
+    await tick(50);
+    assert.equal(q.getSnapshot()!.phase, 'challenge', 'shown once the grace is over');
+    q.cancel();
+    await assert.rejects(p, /challenge_cancelled/);
+
+    const p2 = q.run(job({ reportChallenge: true }));
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    await tick(10);
+    assert.ok(q.getSnapshot(), 'still running during the grace');
+    await assert.rejects(p2, /challenge/);
+
+    q.challengeGraceMs = 1000;
+    const p3 = q.run(job({ reportChallenge: true, timeoutMs: 30 }));
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    await assert.rejects(p3, (e: Error) => e.message === 'challenge', 'the check, not a timeout');
+    const p4 = q.run(job({ timeoutMs: 30 }));
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    await tick(50);
+    assert.equal(q.getSnapshot()!.phase, 'challenge', 'shown, with the check’s own time');
+    q.cancel();
+    await assert.rejects(p4, /challenge_cancelled/);
   });
 
   await t('streamed results carry the most data the page counted', async () => {

@@ -7,8 +7,10 @@ import {
   parseStoreLabel,
   pinStoreInRequest,
   sameStoreId,
+  sameStoreName,
   storeFromFinder,
   storeIdFromLink,
+  storeIdFromPageData,
   storeIdFromRequest,
   storeLine,
 } from '../src/onDevice/storeIdentity';
@@ -397,6 +399,77 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(noZip('target'), { title: 'The store target.com picks for this phone', how: 'Not chosen: target.com picks one from this phone’s connection. Set your location to use the nearest store.' });
     none.noteSeenStore('target', 'k', { id: '1340' }, now);
     assert.deepEqual([noZip('target').title, noZip('target').check?.tone], ['Store 1340', 'ok']);
+  });
+
+  await t('which store: a search that said nothing about its store is noted once, and Your stores says the number went nowhere', async () => {
+    const store = await fresh();
+    store.setRetailers(['walmart', 'target']);
+    const deps = depsFor(store, fakeSearch().search);
+    await setUpStores('10001', deps);
+    const now = 10 * 60_000;
+    const info = (id: string, name: string) => storeInfo(id, name, `${id}.com`, store.getState().settings, 'k', now);
+
+    // Target is asked for by number: a search whose request carried none never applied it.
+    store.noteSeenStore('target', 'k', {}, now - 60_000);
+    assert.deepEqual(store.getState().settings.seenStores.target, { storeKey: 'k', at: now - 60_000 });
+    const before = store.getState();
+    store.noteSeenStore('target', 'k', {}, now);
+    assert.equal(store.getState(), before, 'noted once per store key');
+    assert.deepEqual(info('target', 'Target').check, {
+      tone: 'warn',
+      text: 'The last search’s request carried no store number, so target.com priced the store it picks itself (1 min ago).',
+    });
+    store.noteSeenStore('target', 'k', { id: '1340' }, now);
+    assert.equal(info('target', 'Target').check?.tone, 'ok', 'a later search that did say replaces it');
+    store.noteSeenStore('target', 'k', {}, now + 1);
+    assert.equal(store.getState().settings.seenStores.target.id, '1340', 'and isn’t replaced by one that didn’t');
+
+    // Walmart's store is set on its site: without a number, the name its page shows is what there is to go by.
+    store.noteSeenStore('walmart', 'k', {}, now);
+    assert.deepEqual(info('walmart', 'Walmart').check, { tone: 'warn', text: 'The last search didn’t say which store it priced (just now).' });
+    store.noteSeenStore('walmart', 'k', { name: 'Jersey City Supercenter' }, now + 70_000);
+    assert.deepEqual(info('walmart', 'Walmart').check, {
+      tone: 'warn',
+      text: 'The last search got prices for Jersey City Supercenter instead: walmart.com wouldn’t take this store.',
+    });
+    assert.equal(storeNote('walmart', store.getState().settings), 'Jersey City Supercenter, near 10001');
+    store.noteSeenStore('walmart', 'k', { name: 'Secaucus' }, now + 140_000);
+    assert.equal(info('walmart', 'Walmart').check?.tone, 'ok', 'a shorter form of the same name');
+    store.noteSeenStore('walmart', 'k', { id: '3520', name: 'Somewhere Else' }, now + 210_000);
+    assert.equal(info('walmart', 'Walmart').check?.tone, 'ok', 'the number settles it when both have one');
+
+    assert.deepEqual(
+      [
+        sameStoreName('Sacramento Supercenter', 'Sacramento Gerber Rd Supercenter'),
+        sameStoreName('Kroger', 'Kroger On Vine'),
+        sameStoreName('Secaucus Supercenter', 'Houston Heights Supercenter'),
+        sameStoreName('H-E-B', 'Buffalo Heights H-E-B'),
+        sameStoreName(undefined, 'Kroger'),
+      ],
+      [true, true, false, undefined, undefined],
+    );
+  });
+
+  await t('which store: the number in a page’s own data, when the products were in the page', () => {
+    // Walmart's page data, as a phone saw it (2026-09-27): the store under the page metadata, next to the ZIP.
+    const walmart = JSON.stringify({
+      props: {
+        pageProps: {
+          initialData: { searchResult: { itemStacks: [{ items: [{ id: 'a', storeIds: '3520,2280' }, { id: 'b' }] }] } },
+          initialTempoData: { data: { contentLayout: { pageMetadata: { location: { postalCode: '10016', storeId: '3520' } } } } },
+        },
+      },
+    });
+    assert.deepEqual(storeIdFromPageData(walmart), { id: '3520', field: 'storeId in the page data' });
+    assert.deepEqual(storeIdFromPageData(JSON.stringify({ stores: [{ storeId: 1 }, { storeId: 2 }], picked: { storeId: 1 } })), { id: '1', field: 'storeId in the page data' }, 'the value most fields hold');
+    assert.equal(storeIdFromPageData(JSON.stringify({ stores: [{ storeId: 1 }, { storeId: 2 }] })), undefined, 'no one store has most of them');
+    assert.deepEqual(
+      storeIdFromPageData(JSON.stringify({ a: { pricing_store_id: '1340' }, b: { storeId: '9' }, c: { storeId: '9' } })),
+      { id: '1340', field: 'pricing_store_id in the page data' },
+      'the best-ranked field wins over a commoner one',
+    );
+    assert.equal(storeIdFromPageData(JSON.stringify({ items: [{ id: 'x', price: 3, store: 'Walmart' }] })), undefined, 'not a store number');
+    assert.deepEqual([storeIdFromPageData('not json'), storeIdFromPageData(''), storeIdFromPageData(undefined)], [undefined, undefined, undefined]);
   });
 
   console.log(`\n${passed} store setup tests passed`);

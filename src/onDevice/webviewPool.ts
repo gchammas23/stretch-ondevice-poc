@@ -1,5 +1,5 @@
 import { ScrapeFeed } from './scrapeFeed';
-import { WebViewQueue } from './webviewQueue';
+import { CHALLENGE_GRACE_MS, WebViewQueue } from './webviewQueue';
 
 /**
  * Watch it scrape: 'open' shows the hidden pages as live mini windows with a feed; 'min' shrinks that to a pill;
@@ -39,6 +39,8 @@ export class WebViewPool {
   /** Diagnostics switch. On, replays ask a store for only the results the app keeps, where its request says how many (see pageSize.ts). */
   leanRequests = true;
   maxLoadedPages = MAX_LOADED_PAGES;
+  /** How long a hidden page gets to pass a bot check by itself (see CHALLENGE_GRACE_MS); tests shorten it. */
+  challengeGraceMs = CHALLENGE_GRACE_MS;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -54,6 +56,7 @@ export class WebViewPool {
     const existing = this.lanes.get(key);
     if (existing) return existing;
     const lane = new WebViewQueue(key, label);
+    lane.challengeGraceMs = this.challengeGraceMs;
     lane.beforeMount = () => this.makeRoom(lane);
     lane.subscribe(() => this.refresh(false));
     this.lanes.set(key, lane);
