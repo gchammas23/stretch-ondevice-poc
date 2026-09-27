@@ -3,24 +3,52 @@ import { parseAd, type WeeklyAd } from './adPage';
 import { parseCoupons, type Coupon, type CouponList } from './couponPage';
 import { MAX_ALTERNATIVES } from '../pricing/basket';
 import { PRODUCTS_KEPT } from '../pricing/priceCache';
-import type { AttemptEntry, AttemptKind } from './attemptLog';
+import { CONNECTION_ID, type AttemptEntry, type AttemptKind } from './attemptLog';
 import { priceEvidence, redactUrl, type PriceEvidence } from './evidence';
 import { StrategyError, buildRequest, fill, searchViaFetch } from './fetchStrategy';
 import { krogerApiConfigured, krogerStoresNear, searchKrogerApi } from './krogerApi';
 import { mergeFeeReads, parseFeePage, type FeePageRead } from './feePage';
 import { leanRequest, leanSaving, leanVerdict } from './pageSize';
 import { describePage } from './pageSummary';
-import { EVIDENCE_KEPT, PARSERS } from './parsers';
+import { EVIDENCE_KEPT, PARSERS, readWithProfile, sourceMatches } from './parsers';
 import { politeness } from './politeness';
 import { parseProductPage, type ProductDetails } from './productPage';
-import { applyTemplate, learnTemplate, looksRelevant, mentionsQuery, replayPayload } from './replay';
+import { observationOf, ProfileBook, STALE_MISSES, whereWords } from './profiles';
+import { applyTemplate, chainIds, learnChain, learnTemplate, looksRelevant, mentionsQuery, replayPayload, swapIds, type ReplayTemplate } from './replay';
 import { bytesText, reasonWords, seconds } from './scrapeFeed';
 import { mergeStores, parseStoreLabel, pinStoreInRequest, sameStoreId, storeFromFinder, storeIdFromPageData, storeIdFromRequest, storeLine } from './storeIdentity';
 import { nearbyStores, sortNearest, withMiles, type LatLng, type NearbyStore, type StoreCard } from './storeLocator';
-import { reportAttempt } from './telemetry';
+import { reportAttempt, reportNote } from './telemetry';
 import { SpanLog, type LoadTiming, type ReplayTiming, type SearchTiming } from './timing';
-import { storeTuner, tuningBase, type StoreTuner, type StoreTuning, type TuningSample } from './tuning';
-import type { Attempt, KnownStore, PageSource, ParseResult, Parser, Product, RetailerConfig, SearchOutcome, Strategy } from './types';
+import {
+  blockOf,
+  CONNECTION_WINDOW_MS,
+  coolWords,
+  isRest,
+  storeTuner,
+  tuningBase,
+  type BlockKind,
+  type ConnectionDrop,
+  type CoolDown,
+  type StoreTuner,
+  type StoreTuning,
+  type TuningSample,
+  type Way,
+} from './tuning';
+import type {
+  Attempt,
+  KnownStore,
+  ListRead,
+  PageSource,
+  ParseResult,
+  Parser,
+  ParserProfile,
+  Product,
+  ReaderNote,
+  RetailerConfig,
+  SearchOutcome,
+  Strategy,
+} from './types';
 import { PAGE_LANE, type WebViewPool } from './webviewPool';
 import type { ReplayResponse, StoreTask, WebViewPayload, WebViewQueue } from './webviewQueue';
 import { CLIP_BUTTONS, DEFAULT_CHALLENGE_MARKERS, STORE_BUTTONS, hostOf, sameSite, type ReplayRequest } from './webviewScript';
@@ -78,9 +106,6 @@ export interface SearchOptions {
 
 /** Unusable replays in a row before a retailer goes back to page loads until a new page teaches it again. */
 const REPLAY_MISSES_ALLOWED = 2;
-/** A strategy that fails this many times in a row rests for a while, and the next one in the list runs instead. */
-const FAILS_BEFORE_REST = 2;
-const REST_MS = 10 * 60_000;
 /** Loading a store finder and saving the store takes longer than a search page. */
 const STORE_SET_TIMEOUT_MS = 30_000;
 /** Streamed-in results are taken early only when there are at least this many and they fit the query. */
@@ -114,6 +139,12 @@ interface Run {
   limited: boolean;
   /** The store showed a bot check along the way, to a plain request or its page. */
   checked: boolean;
+  /** The store refused the phone along the way (a block page, HTTP 401 or 403, a nearly empty page). */
+  blocked: boolean;
+  /** Replays the store refused along the way, to cool that way down once the search ends. */
+  blocks: { kind: BlockKind; said: string }[];
+  /** This search already counted as an empty answer (see emptyBlock): one search counts once, however many ways it tried. */
+  emptied: boolean;
   /** Data that answers thrown away moved (a lean answer checked again, a replay that didn't work): it counts too. */
   extraBytes: number;
 }
@@ -134,6 +165,7 @@ function tuningSample(run: Run, ok: boolean, ms: number, strategy: Strategy, rea
     ...(replay ? { replayMs: replay.end - replay.start } : {}),
     ...(run.limited ? { limited: true } : {}),
     ...(run.checked || run.clock.spans.some((s) => s.kind === 'check') ? { checked: true } : {}),
+    ...(run.blocked ? { blocked: true } : {}),
     ...(strategy === 'api' ? { api: true } : {}),
   };
 }
@@ -256,12 +288,35 @@ async function storesFromJson(url: string, timeoutMs: number, origin?: LatLng): 
   }
 }
 
+/** What the search layer can ask of the app. */
+export interface SearchHooks {
+  /** A search for `query` gave products at the store before (in the phone's saved prices, say). */
+  worked?: (retailerId: string, query: string) => boolean;
+}
+
+/** A page this small (its elements, and its words) with no product data is nearly empty: see 'tiny_page'. */
+const TINY_PAGE = { elements: 150, chars: 400 };
+
+/** A search that isn't sent, because its store (or every way of searching it) is cooling down. */
+const coolingFailed = (strategy: Strategy, c: CoolDown) =>
+  new SearchFailed([{ strategy, ok: false, reason: 'cooling_down', detail: coolWords(c), until: c.until, ms: 0 }]);
+
+/** How a search's list was read, for "Found in" and the X-ray. */
+const readerNote = (read?: ListRead): ReaderNote | undefined =>
+  read ? { by: read.by, ...(read.missed ? { missed: true } : {}), ...(read.suspect ? { suspect: read.suspect } : {}), ...(read.preferred ? { preferred: true } : {}) } : undefined;
+
 /**
- * `tuner`: how hard each store may be pushed, from how its searches go (see tuning.ts). The app's own by default; tests
- * pass their own.
+ * `tuner`: how hard each store may be pushed, and its cool-downs, from how its searches go (see tuning.ts); the app's
+ * own by default. `profiles`: where each store's results are, learned from its searches (see profiles.ts); the app
+ * passes its own (parserProfiles), kept across rules changes; tests get a fresh one each.
  */
-export function createRetailerSearch(pool: WebViewPool, configVersion: string, tuner: StoreTuner = storeTuner): RetailerSearch {
-  const fails = new Map<string, { count: number; until: number }>();
+export function createRetailerSearch(
+  pool: WebViewPool,
+  configVersion: string,
+  tuner: StoreTuner = storeTuner,
+  profiles: ProfileBook = new ProfileBook(),
+  hooks: SearchHooks = {},
+): RetailerSearch {
   const failures: FailureRecord[] = [];
   const details = new Map<string, { at: number; value: ProductDetails }>();
   const reading = new Map<string, Promise<ProductDetails>>();
@@ -273,13 +328,57 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     attemptListeners.forEach((listener) => listener(full));
   };
 
-  const resting = (key: string) => (fails.get(key)?.until ?? 0) > Date.now();
-  /** A way of searching failed; a bot check rests it at once, since trying it again only asks for another. */
-  const failed = (key: string, botCheck = false) => {
-    const f = fails.get(key) ?? { count: 0, until: 0 };
-    f.count += 1;
-    if (botCheck || f.count >= FAILS_BEFORE_REST) f.until = Date.now() + REST_MS;
-    fails.set(key, f);
+  // Searches each store gave products for, and its empty answers in a row to searches that had given some: two of
+  // those is a quiet block (see emptyBlock).
+  const worked = new Map<string, Set<string>>();
+  const empties = new Map<string, number>();
+  const norm = (query: string) => query.trim().toLowerCase().replace(/\s+/g, ' ');
+  const workedBefore = (cfg: RetailerConfig, query: string) => !!worked.get(cfg.id)?.has(norm(query)) || !!hooks.worked?.(cfg.id, query);
+
+  /** A cool-down or rest started: in the search log (Store health, and after the app reopens) and the live feed. */
+  const noteCool = (cfg: RetailerConfig, c: CoolDown) => {
+    const way = c.way === 'replay' ? { strategy: 'webview' as const, via: 'replay' as const } : c.way ? { strategy: c.way } : {};
+    record({ retailerId: cfg.id, kind: 'cooldown', ...way, ok: false, reason: c.kind, ms: 0, until: c.until, ...(c.said ? { said: c.said } : {}) });
+    log(cfg, isRest(c) ? 'rest' : 'cool-down', false, coolWords(c));
+    const minutes = Math.round((c.until - c.from) / 60_000);
+    reportNote({ note: 'cooldown', retailer: cfg.id, ...(c.way ? { way: c.way } : {}), block: c.kind, ...(c.said ? { said: c.said } : {}), minutes, configVersion });
+  };
+
+  /** Every store failing within seconds of each other: the connection, noted once, and said in the feed. */
+  const noteDrop = (drop: ConnectionDrop) => {
+    record({ retailerId: CONNECTION_ID, kind: 'connection', ok: false, reason: 'connection', ms: drop.to - drop.from, until: drop.to + CONNECTION_WINDOW_MS, stores: drop.stores });
+    const called = drop.lifted ? `, so ${drop.lifted === 1 ? 'a cool-down was' : `${drop.lifted} cool-downs were`} called off` : '';
+    pool.feed.add({ at: Date.now(), retailerId: CONNECTION_ID, retailer: 'Connection', what: 'dropped', ok: false, text: `${drop.stores.length} stores failed within seconds: this phone’s connection, not the stores${called}` });
+    reportNote({ note: 'connection', stores: drop.stores, seconds: Math.round((drop.to - drop.from) / 1000), lifted: drop.lifted, configVersion });
+  };
+
+  /**
+   * No results for a search that gave some at the store before: a store can hide its results from a phone it doesn't
+   * want, instead of saying so. Two in a row is a quiet block, and cools the store down.
+   */
+  const emptyBlock = (cfg: RetailerConfig, query: string, run: Run, reason?: string): { kind: BlockKind; said: string } | undefined => {
+    if (reason !== undefined && reason !== 'no_payload' && reason !== 'no_products_on_page') return undefined;
+    if (run.emptied || !workedBefore(cfg, query)) return undefined;
+    run.emptied = true;
+    const n = (empties.get(cfg.id) ?? 0) + 1;
+    empties.set(cfg.id, n);
+    return n >= 2 ? { kind: 'empty', said: `no results for ${n} searches that gave some before` } : undefined;
+  };
+
+  /** What a search taught the store's profile: it matched, it missed, or one more search the general reader read. */
+  const teach = (cfg: RetailerConfig, result: StrategyResult) => {
+    const read = result.read;
+    if (!read) return;
+    if (read.by === 'profile') {
+      profiles.matched(cfg.id);
+      return;
+    }
+    if (read.missed) profiles.missed(cfg.id);
+    const o = observationOf(read, Date.now(), result.products.map((p) => p.id));
+    const learned = o ? profiles.observe(cfg.id, o) : undefined;
+    if (!learned) return;
+    log(cfg, 'profile', true, `learned where its results are: ${whereWords(learned)}`);
+    reportNote({ note: 'profile', retailer: cfg.id, where: whereWords(learned), searches: learned.searches, configVersion });
   };
 
   const missed = (lane: WebViewQueue) => {
@@ -293,10 +392,42 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
   const leanKnown = new Map<string, 'on' | 'off'>();
   const leanKey = (cfg: RetailerConfig, url: string) => `${cfg.id} ${url.replace(/[?#].*$/, '')}`;
 
+  /**
+   * How a store's search is read: its profile first, when it has one (see profiles.ts), and the general reader when
+   * that doesn't match, or when a bigger list that fits the search is there and the profile's is small or off it. Told
+   * what was searched and how many products the store usually gives, for the wrong-list rule (see judgeList). A plain
+   * request (`plain`) gets the page without the responses its scripts fetch later: a profile that reads one of those
+   * isn't tried there, and doesn't count as missing.
+   */
+  const readerFor = (cfg: RetailerConfig, query: string, plain = false): { parse?: Parser; profile?: ParserProfile } => {
+    const base = PARSERS[cfg.parser];
+    if (!base) return {};
+    const usual = profiles.usual(cfg.id);
+    const told = { query, ...(usual !== undefined ? { usual } : {}) };
+    const general: Parser = (p, ctx) => base(p, { ...ctx, ...told });
+    const profile = cfg.parser === 'autoDetect' ? profiles.get(cfg.id) : undefined;
+    if (!profile || (plain && profile.source.kind === 'request')) return { parse: general };
+    const parse: Parser = (p, ctx) => {
+      const mine = readWithProfile(profile, p, { ...ctx, ...told });
+      if (mine.payloadFound && !mine.read?.suspect) return mine;
+      const other = general(p, ctx);
+      const better = other.payloadFound && other.products.length > mine.products.length && other.read?.fits !== false && !other.read?.suspect;
+      if (mine.payloadFound && !better) return mine;
+      return other.payloadFound ? { ...other, read: { ...(other.read ?? { by: 'general' }), missed: true } } : other;
+    };
+    return { parse, profile };
+  };
+
+  /** A replay the store refused (HTTP 401, 403 or 429): that way of searching it may cool down (see search). */
+  const replayRefused = (run: Run, status: number) => {
+    if (status === 401 || status === 403 || status === 429) run.blocks.push({ kind: status === 429 ? 'limited' : 'refused', said: status === 429 ? '“too many requests” (HTTP 429)' : `HTTP ${status}` });
+  };
+
   /** Sends the search from inside the retailer's already loaded page. Null means: do a page load instead. */
   async function replaySearch(cfg: RetailerConfig, lane: WebViewQueue, parser: Parser, query: string, storeId: string, run: Run): Promise<StrategyResult | null> {
     const template = lane.template;
     if (!template) return null;
+    if (template.kind === 'chain') return chainSearch(cfg, lane, template, parser, query, storeId, run);
     let req = applyTemplate(template, cfg, query, storeId);
     if (!req) return null;
     // A store chosen in the app: its number goes in the request, in place of the one the page asked for.
@@ -316,7 +447,8 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       }
       run.clock.replay(timing);
       if (res.status === 429) run.limited = true;
-      const payload = replayPayload(res, request.expect, cfg.challengeMarkers);
+      replayRefused(run, res.status);
+      const payload = replayPayload(res, request.expect, cfg.challengeMarkers, request);
       const parsed = payload ? run.clock.time('parse', () => parser(payload, ctx)) : null;
       // An empty result only counts from a page's own data (a real "no results" page); an API reply with no
       // products is more likely the wrong request.
@@ -394,8 +526,65 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     return done(got.res, got.parsed, req);
   }
 
+  /**
+   * A replay in two steps (see learnChain): the page's search for the new query, for its results' ids, then the page's
+   * request for products by id, with those ids. Null means: do a page load instead.
+   */
+  async function chainSearch(
+    cfg: RetailerConfig,
+    lane: WebViewQueue,
+    template: Extract<ReplayTemplate, { kind: 'chain' }>,
+    parser: Parser,
+    query: string,
+    storeId: string,
+    run: Run,
+  ): Promise<StrategyResult | null> {
+    const first = applyTemplate(template, cfg, query, storeId);
+    if (!first) return null;
+    const send = async (request: ReplayRequest): Promise<ReplayResponse | { error: string }> => {
+      const timing: ReplayTiming = { askedAt: Date.now() };
+      try {
+        const res = await lane.replay(storeId ? pinStoreInRequest(request, storeId).request : request, run.tune.replayTimeoutMs, timing);
+        run.clock.replay(timing);
+        if (res.status === 429) run.limited = true;
+        replayRefused(run, res.status);
+        return res;
+      } catch (e) {
+        run.clock.replay(timing, false);
+        return { error: reasonOf(e) };
+      }
+    };
+    const from = run.clock.spans.length;
+    /** Unusable: counted in the data meter, and as a miss when it says the template is wrong. */
+    const unusable = (bytes: number, miss: boolean) => {
+      run.clock.failSince(from);
+      run.extraBytes += bytes;
+      if (miss) missed(lane);
+      return null;
+    };
+    const ids = await send(first);
+    if ('error' in ids) return ids.error === 'no_page' ? null : unusable(0, true);
+    if (!(ids.status >= 200 && ids.status < 400)) return unusable(ids.bytes ?? 0, true);
+    // No ids: maybe no results at all. The page load says.
+    const list = chainIds(template, ids.text);
+    if (!list.length) return unusable(ids.bytes ?? 0, false);
+    const second = swapIds(template.detail, template.asked, list);
+    if (!second) return unusable(ids.bytes ?? 0, true);
+    const got = await send(second);
+    if ('error' in got) return got.error === 'no_page' ? null : unusable(ids.bytes ?? 0, true);
+    const bytes = (ids.bytes ?? 0) + (got.bytes ?? 0);
+    const payload = replayPayload(got, 'json', cfg.challengeMarkers, second);
+    const parsed = payload ? run.clock.time('parse', () => parser(payload, { retailer: cfg.id, storeId })) : null;
+    if (!parsed?.payloadFound || !parsed.products.length) return unusable(bytes, true);
+    if (!looksRelevant(parsed.products, query)) return unusable(bytes, !!mentionsQuery(parsed.products, template.query));
+    lane.replayMisses = 0;
+    const id = storeId || storeIdFromRequest(second)?.id;
+    const page = lane.seenStore && (!lane.seenStore.id || !id || sameStoreId(lane.seenStore.id, id)) ? lane.seenStore : undefined;
+    return { ...parsed, via: 'replay', bytes, store: mergeStores(id ? { id } : undefined, page), request: { method: second.method, url: second.url } };
+  }
+
   async function searchViaWebView(cfg: RetailerConfig, query: string, storeId: string, opts: SearchOptions, run: Run): Promise<StrategyResult> {
-    const parser = PARSERS[cfg.parser];
+    const { parse: parser, profile } = readerFor(cfg, query);
     if (!parser) throw new StrategyError(`unknown_parser_${cfg.parser}`);
     const { clock, tune } = run;
 
@@ -415,7 +604,8 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
       const waited = Date.now();
       while (lane.loading()) await lane.settled();
       clock.add('wait', waited, Date.now());
-      if (lane.template && lane.hasPage()) {
+      // Replays that the store refused rest while they cool down: page loads go on.
+      if (lane.template && lane.hasPage() && !tuner.cooling(cfg.id, 'replay')) {
         const hit = await replaySearch(cfg, lane, parser, query, storeId, run);
         if (hit) return hit;
       }
@@ -437,21 +627,39 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
         }
         return read;
       });
-    /** The largest list that fits the query, among the responses one by one: a bigger unrelated one can't hide it. */
+    /**
+     * The largest list that fits the query, among the responses one by one: a bigger unrelated one can't hide it, and a
+     * small one the wrong-list rule suspects (a carousel beside the results) doesn't count as the results.
+     */
     const bestFitting = (reads: ParseResult[]) =>
       reads
-        .filter((r) => r.payloadFound && r.products.length > 0 && looksRelevant(r.products, query))
+        .filter((r) => r.payloadFound && r.products.length > 0 && looksRelevant(r.products, query) && !r.read?.suspect)
         .reduce<ParseResult | undefined>((best, r) => (!best || r.products.length > best.products.length ? r : best), undefined);
+    // A store whose profile reads a response waits for that response, unless the profile has stopped matching.
+    const waitsFor = profile?.source.kind === 'request' && (profile.misses ?? 0) < STALE_MISSES ? profile.source : undefined;
     const accept =
       waitFor === 'auto' && !cfg.pageScript
         ? (p: WebViewPayload): boolean | 'now' => {
             const early = bestFitting(readEach(p));
             if (!early || early.products.length < MIN_EARLY_PRODUCTS) return false;
-            // The answer to the search's own request (it carries the query), with a full page of results: whatever
-            // else the page loads now doesn't matter, so the load ends at once. Otherwise related responses get a moment.
+            // Where the store's profile says its results are; or the answer to the search's own request (it carries
+            // the query), with a full page of results: whatever else the page loads now doesn't matter, so the load ends
+            // at once. Otherwise related responses get a moment.
+            if (early.read?.by === 'profile') return 'now';
             return early.products.length >= PRODUCTS_KEPT && learnTemplate(early.origin, query)?.kind === 'json' ? 'now' : true;
           }
         : undefined;
+    // The page went quiet before any of that: a list the wrong-list rule suspects, or no sign yet of the list the
+    // store's profile reads, is waited past (the page still gives up when nothing new comes for a while).
+    const settle = accept
+      ? (p: WebViewPayload): boolean => {
+          if (waitsFor && !(p.sources ?? []).some((s) => sourceMatches(waitsFor, s))) return false;
+          const best = readEach(p)
+            .filter((r) => r.payloadFound && r.products.length > 0 && looksRelevant(r.products, query))
+            .reduce<ParseResult | undefined>((a, r) => (!a || r.products.length > a.products.length ? r : a), undefined);
+          return !best?.read?.suspect;
+        }
+      : undefined;
     const from = clock.spans.length;
     const timing: LoadTiming = { queuedAt: Date.now() };
     let payload;
@@ -466,6 +674,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
         waitFor,
         keepPage: replayable,
         accept,
+        settle,
         light: pool.lightPages,
         reportChallenge: opts.challenge === 'report',
         timing,
@@ -473,9 +682,10 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     } catch (e) {
       clock.load(timing, false);
       const reason = reasonOf(e);
+      const said = (e as { detail?: unknown } | null)?.detail;
       throw new StrategyError(
         reason,
-        reason === 'timeout' ? `${cfg.name}’s page didn’t finish within ${Math.round(tune.pageTimeoutMs / 1000)} s.` : undefined,
+        reason === 'timeout' ? `${cfg.name}’s page didn’t finish within ${Math.round(tune.pageTimeoutMs / 1000)} s.` : typeof said === 'string' ? said : undefined,
       );
     }
     clock.load(timing);
@@ -485,7 +695,10 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     let parsed = clock.time('parse', () => parser(payload, ctx));
     if (!parsed.payloadFound) {
       clock.failSince(from);
-      throw new StrategyError('no_payload', describePage(payload, cfg.name), { bytes: payload.bytes });
+      // Nearly empty, and no product data: a store that won't say it blocked the phone often answers like this.
+      const size = payload.size;
+      const tiny = !!size && size.chars >= 0 && size.elements < TINY_PAGE.elements && size.chars < TINY_PAGE.chars;
+      throw new StrategyError(tiny ? 'tiny_page' : 'no_payload', describePage(payload, cfg.name), { bytes: payload.bytes });
     }
     // The largest list isn't always the results (a carousel of deals, say): when it doesn't fit the query and one of
     // the responses has a list that does, that one is taken.
@@ -502,12 +715,20 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     }
     // A lane whose replays keep missing stays on page loads until its page is unloaded and it starts fresh.
     if (replayable && lane.replayMisses < REPLAY_MISSES_ALLOWED) {
-      const template = learnTemplate(parsed.origin, query, LEAN_TO);
+      let template = learnTemplate(parsed.origin, query, LEAN_TO);
       if (template?.kind === 'json' && template.lean) {
         // The page's own answer, to count what smaller ones save; and what this store's request did before.
-        const source = payload.sources?.find((src) => src.request === template.request);
+        const request = template.request;
+        const source = payload.sources?.find((src) => src.request === request);
         if (source) template.lean.baseline = { chars: source.text.length, products: parsed.products.length };
-        template.lean.state = leanKnown.get(leanKey(cfg, template.request.url)) ?? 'trial';
+        template.lean.state = leanKnown.get(leanKey(cfg, request.url)) ?? 'trial';
+      }
+      // Products asked for by id, after a search that answered with their ids (Instacart's storefronts): replayed in two
+      // steps, the search and then the products.
+      const origin = parsed.origin;
+      if (!template && origin?.kind === 'response' && origin.request) {
+        const text = payload.sources?.find((src) => src.request === origin.request)?.text;
+        if (text) template = learnChain(origin.request, text, payload.sources ?? [], query);
       }
       if (template) lane.template = template;
     }
@@ -532,7 +753,12 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
   }
 
   const runStrategy = (strategy: Strategy, cfg: RetailerConfig, query: string, storeId: string, opts: SearchOptions, run: Run): Promise<StrategyResult> => {
-    if (strategy === 'fetch') return searchViaFetch(cfg, query, storeId, run.clock).then((r) => ({ ...r, request: { method: 'GET', url: buildRequest(cfg, query, storeId).url } }));
+    if (strategy === 'fetch') {
+      return searchViaFetch(cfg, query, storeId, run.clock, readerFor(cfg, query, true).parse).then((r) => ({
+        ...r,
+        request: { method: 'GET', url: buildRequest(cfg, query, storeId).url },
+      }));
+    }
     if (strategy === 'webview') return searchViaWebView(cfg, query, storeId, opts, run);
     if (cfg.api === 'kroger') {
       const t0 = Date.now();
@@ -548,6 +774,23 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     const attempts: Attempt[] = [];
     const order = only ? [only] : cfg.strategies;
     const kind = opts.kind ?? 'search';
+    // A way asked for on purpose, in Diagnostics: it goes out whatever is cooling down there.
+    const asked = !!only && kind === 'search';
+    // The ways the store is searched with, for whether a block cools down one of them or the whole store.
+    const ways: Way[] = cfg.strategies.includes('webview') ? [...cfg.strategies, 'replay'] : [...cfg.strategies];
+    // A store cooling down after a block isn't asked at all until its retry time: nothing goes out, nor counts in its hour.
+    const cooling = asked ? undefined : tuner.cooling(cfg.id);
+    if (cooling) {
+      log(cfg, query, false, `not searched: ${coolWords(cooling).replace(/^Cooling/, 'cooling')}`);
+      throw coolingFailed(order[0], cooling);
+    }
+    // A way of searching it that's cooling down is skipped; one that's resting gives way when it's the last one left.
+    const held = order.map((strategy, i) => {
+      if (asked) return undefined;
+      const c = tuner.cooling(cfg.id, strategy);
+      return c && (!isRest(c) || i < order.length - 1) ? c : undefined;
+    });
+    if (held.every(Boolean)) throw coolingFailed(order[0], held.reduce((a, b) => (b!.until > a!.until ? b : a))!);
     // No more than a person would ask of one store in an hour: past that, the search doesn't go out.
     if (!politeness.take(cfg.id)) {
       log(cfg, query, false, `paused: ${politeness.perHour} searches here in the last hour`);
@@ -557,13 +800,30 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     const clock = new SpanLog();
     const timing = (): SearchTiming => ({ startedAt: started, endedAt: Date.now(), spans: clock.spans, ...(clock.notes.length ? { notes: clock.notes } : {}) });
     // How hard this store may be pushed right now, from how its searches have gone (see tuning.ts).
-    const run: Run = { clock, tune: tuner.get(cfg.id, tuningBase(cfg)), limited: false, checked: false, extraBytes: 0 };
+    const run: Run = { clock, tune: tuner.get(cfg.id, tuningBase(cfg)), limited: false, checked: false, blocked: false, blocks: [], emptied: false, extraBytes: 0 };
     // A way the store isn't searched with (asked for with `only`, to test it) says nothing about how its searches go:
     // its tuning hears of it only when the store pushed back, on a site the store is searched on (its website, for a
     // plain request or its page; an official API is another door).
     const door = (s: Strategy) => (s === 'api' ? 'api' : 'site');
     const tells = (strategy: Strategy) =>
       cfg.strategies.includes(strategy) || ((run.checked || run.limited) && cfg.strategies.some((s) => door(s) === door(strategy)));
+    // What this search teaches the store's profile: not the phone vs. server test's, nor a way asked for on purpose.
+    const learns = !only && (kind === 'search' || kind === 'coverage') && cfg.parser === 'autoDetect';
+    // Searches, the phone vs. server test's too, tell the connection from the stores (see ConnectionWatch in tuning.ts).
+    const outcomes = kind === 'search' || kind === 'coverage' || kind === 'versus';
+    /** A way the store is searched with failed: it may rest, or cool down, and the search log says so. */
+    const failedWay = (way: Way, block?: { kind: BlockKind; said?: string }) => {
+      if (way !== 'replay' && !cfg.strategies.includes(way)) return;
+      const c = tuner.failed(cfg.id, way, { ...(block ? { block } : {}), ways });
+      if (c) noteCool(cfg, c);
+    };
+    /** Replays the store refused along the way: that way of searching it cools down, while page loads go on. */
+    const refusedReplays = () => {
+      for (const block of run.blocks.splice(0)) {
+        run.blocked = true;
+        failedWay('replay', block);
+      }
+    };
     // A store that pushed back gets a pause between searches.
     const pause = tuner.delay(cfg.id, run.tune.gapMs);
     if (pause > 0) {
@@ -573,24 +833,40 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
     }
     for (let i = 0; i < order.length; i++) {
       const strategy = order[i];
-      const key = `${cfg.id}:${strategy}`;
-      // A strategy that keeps failing is skipped for a while, unless it's the last one left or was asked for.
-      if (!only && i < order.length - 1 && resting(key)) {
-        attempts.push({ strategy, ok: false, reason: 'resting', ms: 0 });
+      const hold = held[i];
+      // A way of searching that's cooling down or resting is skipped for now (see above).
+      if (hold) {
+        attempts.push({ strategy, ok: false, reason: 'resting', ms: 0, until: hold.until });
         continue;
       }
       const t0 = Date.now();
       const from = clock.spans.length;
       try {
         const found = await runStrategy(strategy, cfg, query, storeId, opts, run);
+        refusedReplays();
+        if (found.read?.suspect) clock.note(`the list may not be the results: ${found.read.suspect}`);
         // What answers thrown away along the way moved counts too.
         const result = run.extraBytes ? { ...found, bytes: (found.bytes ?? 0) + run.extraBytes } : found;
-        fails.delete(key);
+        tuner.worked(cfg.id, strategy);
         const attempt: Attempt = { strategy, ok: true, ms: Date.now() - t0, count: result.products.length, via: result.via, bytes: result.bytes };
         attempts.push(attempt);
-        reportAttempt({ ...attempt, retailer: cfg.id, configVersion });
+        const read = result.read ? { read: result.read.by === 'general' && result.read.missed ? ('missed' as const) : result.read.by, ...(result.read.suspect ? { suspect: true } : {}) } : {};
+        reportAttempt({ ...attempt, retailer: cfg.id, configVersion, ...read });
         record({ retailerId: cfg.id, kind, strategy, ok: true, ms: attempt.ms, via: result.via, bytes: result.bytes, ...(result.bytesSaved ? { bytesSaved: result.bytesSaved } : {}) });
         if (tells(strategy)) tuner.record(cfg.id, tuningSample(run, true, attempt.ms, strategy));
+        if (outcomes) tuner.outcome(cfg.id, true);
+        // Where its results are, for the store's profile.
+        if (learns) teach(cfg, result);
+        // Searches that gave products; and one that gave none, where it gave some before, may be a quiet block.
+        if (result.products.length) {
+          worked.set(cfg.id, (worked.get(cfg.id) ?? new Set<string>()).add(norm(query)));
+          empties.delete(cfg.id);
+        } else if (cfg.strategies.includes(strategy)) {
+          const quiet = emptyBlock(cfg, query, run);
+          const c = quiet ? tuner.failed(cfg.id, strategy, { block: quiet, ways }) : undefined;
+          if (c) noteCool(cfg, c);
+        }
+        const reader = readerNote(result.read);
         // What the store sent, for the price X-ray: in memory only.
         const at = Date.now();
         for (const p of result.products.slice(0, EVIDENCE_KEPT)) {
@@ -607,6 +883,7 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
             ms: attempt.ms,
             bytes: result.bytes,
             source: result.source,
+            ...(reader ? { reader } : {}),
             ...(result.request ? { request: { method: result.request.method, url: redactUrl(result.request.url) } } : {}),
           });
         }
@@ -625,26 +902,35 @@ export function createRetailerSearch(pool: WebViewPool, configVersion: string, t
           ...(result.bytesSaved ? { bytesSaved: result.bytesSaved } : {}),
           store: result.store,
           timing: timing(),
+          ...(reader ? { reader } : {}),
         };
       } catch (e) {
+        refusedReplays();
         clock.failSince(from);
         const attempt: Attempt = { strategy, ok: false, reason: reasonOf(e), detail: detailOf(e), ms: Date.now() - t0, ...infoOf(e) };
-        // A bot check or "too many requests", to any way of searching, is the store pushing back.
+        // A bot check or "too many requests", to any way of searching, is the store pushing back; a refusal, a block.
         if (BOT_CHECKS.has(attempt.reason!)) run.checked = true;
         if (/(^|_)429$/.test(attempt.reason!)) run.limited = true;
+        const block = blockOf(attempt) ?? (cfg.strategies.includes(strategy) ? emptyBlock(cfg, query, run, attempt.reason) : undefined);
+        if (block && (block.kind === 'blocked' || block.kind === 'refused' || block.kind === 'tiny')) run.blocked = true;
         attempts.push(attempt);
         reportAttempt({ ...attempt, retailer: cfg.id, configVersion });
         record({ retailerId: cfg.id, kind, strategy, ok: false, reason: attempt.reason, ms: attempt.ms });
         log(cfg, query, false, `${howWords(strategy)} failed: ${reasonWords(attempt.reason)}`);
-        failed(key, BOT_CHECKS.has(attempt.reason!));
         failures.unshift({ retailer: cfg.name, query, strategy, reason: attempt.reason!, detail: attempt.detail, at: Date.now() });
         failures.splice(MAX_FAILURES_KEPT);
+        failedWay(strategy, block);
         if (attempt.reason === 'page_crashed') tuner.crashed();
         if (attempt.reason === 'challenge_cancelled') break; // The user chose to stop.
       }
     }
     const last = attempts.filter((a) => a.reason !== 'resting').pop();
     if (last && tells(last.strategy)) tuner.record(cfg.id, tuningSample(run, false, Date.now() - started, last.strategy, last.reason));
+    // Every store failing within seconds of each other is the phone's connection, not the stores.
+    if (outcomes && last && last.reason !== 'challenge_cancelled') {
+      const drop = tuner.outcome(cfg.id, false, cfg.sisterOf ?? cfg.id);
+      if (drop) noteDrop(drop);
+    }
     throw new SearchFailed(attempts, timing());
   };
 

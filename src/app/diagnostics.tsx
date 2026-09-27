@@ -3,6 +3,7 @@ import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Alert, FlatList, Image, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { krogerApiConfigured, krogerEnvironment } from '../onDevice/krogerApi';
 import { MAX_SEARCHES_PER_HOUR, politeness } from '../onDevice/politeness';
+import { readerWords } from '../onDevice/profiles';
 import type { Product, RetailerConfig, SearchOutcome, Strategy } from '../onDevice/types';
 import { SearchFailed } from '../onDevice/useRetailerSearch';
 import { storeTuner, tuningBase, tuningWords } from '../onDevice/tuning';
@@ -787,7 +788,14 @@ function LaneLine({ lane }: { lane: WebViewQueue }) {
           ? 'bot check on screen'
           : 'user visiting';
   const t = lane.template;
-  const learned = !t ? 'nothing learned yet' : t.kind === 'document' ? 'replays: the search page’s own data' : `replays: ${t.request.method} ${t.request.url.replace(/\?.*$/, '').replace(/^https?:\/\//, '').slice(0, 70)}`;
+  const bare = (url: string) => url.replace(/\?.*$/, '').replace(/^https?:\/\//, '').slice(0, 70);
+  const learned = !t
+    ? 'nothing learned yet'
+    : t.kind === 'document'
+      ? 'replays: the search page’s own data'
+      : t.kind === 'chain'
+        ? `replays in two steps: ${t.search.method} ${bare(t.search.url)} for the results’ ids, then ${t.detail.method} ${bare(t.detail.url)} for ${t.asked.length} of them`
+        : `replays: ${t.request.method} ${bare(t.request.url)}`;
   const lean = t?.kind === 'json' ? t.lean : undefined;
   const size = !lean
     ? null
@@ -821,6 +829,8 @@ function summary(o: SearchOutcome): string {
     .join(', then ');
   const lines = [`${o.retailer}: ${o.products.length} products in ${(o.ms / 1000).toFixed(1)} s. ${trail}.`];
   if (o.source) lines.push(`Found in: ${o.source}`);
+  const reader = readerWords(o.reader, o.retailer);
+  if (reader) lines.push(reader);
   if (o.note) lines.push(o.note);
   return lines.join('\n');
 }

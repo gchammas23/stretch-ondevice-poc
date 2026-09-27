@@ -52,13 +52,17 @@ function makePage(html: string, url: string) {
     assert.deepEqual(walmartNextData({ nextDataText: p.posts[0].nextDataText }, ctx).products.map((x) => x.id), ['3']);
   });
 
-  await t('block URL or title posts a challenge even when the page has its own data', async () => {
+  await t('block URL or title posts a challenge even when the page has its own data; an “Access Denied” page is a block, not a check', async () => {
     const a = makePage(page({ props: {} }, 'Robot or human?'), 'https://www.walmart.com/blocked?url=x');
     a.run(extractionScript('n2', markers));
     const b = makePage('<html><head><title>Access Denied</title></head><body>Reference #18</body></html>', 'https://www.kroger.com/search?query=milk');
     b.run(extractionScript('n3', markers, undefined, { waitFor: 'auto' }));
+    // Cloudflare's block page: a bot-check title, but its words say it's a block.
+    const c = makePage('<html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1></body></html>', 'https://www.example.com/s?q=milk');
+    c.run(extractionScript('n3c', markers, undefined, { waitFor: 'auto' }));
     await sleep(30);
-    assert.deepEqual([a.posts.map((m) => m.kind), b.posts.map((m) => m.kind)], [['challenge'], ['challenge']]);
+    assert.deepEqual([a.posts.map((m) => m.kind), b.posts.map((m) => m.kind), c.posts.map((m) => m.kind)], [['challenge'], ['blocked'], ['blocked']]);
+    assert.deepEqual([b.posts[0].marker, c.posts[0].marker], ['Access Denied', 'Sorry, you have been blocked']);
   });
 
   await t('vendor ids in a short page body count; phrases in the body do not', async () => {
@@ -520,7 +524,7 @@ function makePage(html: string, url: string) {
     const blocked = makePage('<html><head><title>Access Denied</title></head><body>Reference #18</body></html>', 'https://www.example.com/help/fees');
     blocked.run(extractionScript('tx3', markers, undefined, { waitFor: 'text', intervalMs: 10 }));
     await sleep(50);
-    assert.deepEqual(blocked.posts.map((m) => m.kind), ['challenge']);
+    assert.deepEqual(blocked.posts.map((m) => m.kind), ['blocked'], 'a block, not a bot check');
   });
 
   console.log(`\n${passed} injected-script tests passed`);

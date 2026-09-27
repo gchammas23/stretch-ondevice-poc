@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { priceEvidence } from '../src/onDevice/evidence';
 import { createRetailerSearch, SearchFailed } from '../src/onDevice/retailerSearch';
 import { BUNDLED_CONFIG } from '../src/onDevice/retailers';
+import { StoreTuner } from '../src/onDevice/tuning';
 import type { RetailerConfig } from '../src/onDevice/types';
 import { PAGE_LANE, WebViewPool } from '../src/onDevice/webviewPool';
 import { WebViewQueue } from '../src/onDevice/webviewQueue';
@@ -11,7 +12,7 @@ import { DEFAULT_CHALLENGE_MARKERS } from '../src/onDevice/webviewScript';
 // Search events are logged for telemetry; keep them out of the test output.
 const log = console.log;
 console.log = (...args: unknown[]) => {
-  if (!String(args[0]).startsWith('[on-device-search]')) log(...args);
+  if (!String(args[0]).startsWith('[on-device-')) log(...args);
 };
 
 const nonceOf = (script: string) => /var NONCE = "([^"]+)"/.exec(script)![1];
@@ -299,27 +300,39 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     }
   });
 
-  await t('search: a different store gets a fresh page; a failing strategy rests and the next one runs', async () => {
+  await t('search: a different store gets a fresh page; a failing strategy rests and the next one runs; one refused cools down at once', async () => {
     const pool = new WebViewPool();
     const seen = fakeWebView(pool.lane('example', 'Example'));
-    const searcher = createRetailerSearch(pool, 'test');
+    const searcher = createRetailerSearch(pool, 'test', new StoreTuner());
     await searcher.search(example, 'hot dogs', 'A');
     const other = await searcher.search(example, 'ketchup', 'B');
     assert.deepEqual([other.via, seen.pageLoads, other.store?.id], ['replay', 2, 'B'], 'a fresh page, then its request asked for store B');
 
     const realFetch = globalThis.fetch;
     let fetches = 0;
-    globalThis.fetch = (async () => { fetches++; return { status: 403, ok: false, url: 'https://www.example.com/s', text: async () => '<html>no</html>' }; }) as any;
+    // A server error: not a block, so the plain request rests after two in a row.
+    globalThis.fetch = (async () => { fetches++; return { status: 500, ok: false, url: 'https://www.example.com/s', text: async () => `<html>${'error '.repeat(500)}</html>` }; }) as any;
     const both = { ...example, strategies: ['fetch', 'webview'] as RetailerConfig['strategies'] };
     const r1 = await searcher.search(both, 'eggs', 'B');
     const r2 = await searcher.search(both, 'milk', 'B');
     const r3 = await searcher.search(both, 'bread', 'B');
-    globalThis.fetch = realFetch;
     assert.equal(fetches, 2, 'the plain request rests after two failures');
     assert.deepEqual(r3.attempts.map((a) => [a.strategy, a.reason ?? 'ok']), [['fetch', 'resting'], ['webview', 'ok']]);
     assert.deepEqual([r1.strategy, r2.strategy, r3.strategy], ['webview', 'webview', 'webview']);
     const err = await searcher.search(both, 'jam', 'B', 'fetch').catch((e) => e);
     assert.ok(err instanceof SearchFailed, 'asking for a resting strategy still runs it');
+
+    // Refused (HTTP 403): a block. Plain requests cool down at once, while the store's page still works.
+    const tuner = new StoreTuner();
+    const refused = createRetailerSearch(pool, 'test', tuner);
+    fetches = 0;
+    globalThis.fetch = (async () => { fetches++; return { status: 403, ok: false, url: 'https://www.example.com/s', text: async () => '<html>no</html>' }; }) as any;
+    await refused.search(both, 'eggs', 'B');
+    const next = await refused.search(both, 'milk', 'B');
+    globalThis.fetch = realFetch;
+    assert.equal(fetches, 1, 'one refusal is enough');
+    assert.deepEqual(next.attempts.map((a) => [a.strategy, a.reason ?? 'ok']), [['fetch', 'resting'], ['webview', 'ok']]);
+    assert.deepEqual([tuner.cooling('example', 'fetch')?.kind, tuner.cooling('example', 'fetch')?.said, tuner.cooling('example')], ['refused', 'HTTP 403', undefined]);
   });
 
   await t('search: a page load finishes as soon as its results stream in, and still teaches replays', async () => {

@@ -3,6 +3,7 @@ import React from 'react';
 import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { excerpt } from '../onDevice/evidence';
+import { readerWords } from '../onDevice/profiles';
 import { howWords } from '../onDevice/retailerSearch';
 import { bytesText } from '../onDevice/scrapeFeed';
 import { hostOf, sourceWords } from '../pricing/receipt';
@@ -58,6 +59,7 @@ export default function XrayScreen() {
           <Text style={styles.small}>
             How: {howWords(e.strategy, e.via)}
             {e.source ? `. The products were in ${sourceWords(e.source)}.` : '.'}
+            {e.reader ? ` ${readerWords(e.reader, name)}` : ''}
           </Text>
         </View>
 

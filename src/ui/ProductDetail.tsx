@@ -11,6 +11,7 @@ import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
 import type { Product } from '../onDevice/types';
 import { exactFrom } from '../pricing/exact';
 import type { SearchResult } from '../pricing/pricingEngine';
+import { readerWords } from '../onDevice/profiles';
 import { changeText, hostOf, receiptFor, sourceWords, whenLabel } from '../pricing/receipt';
 import { compareSizes, type SizeNote } from '../pricing/sizes';
 import { storeNote } from '../state/storeInfo';
@@ -257,6 +258,7 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
                 {receipt.ms !== undefined && receipt.bytes ? `, using about ${bytesText(receipt.bytes)} of data` : ''}
                 {receipt.ms !== undefined ? '.' : ''}
                 {receipt.source ? ` The prices were in ${sourceWords(receipt.source)}.` : ''}
+                {receipt.reader ? ` ${readerWords(receipt.reader, name)}` : ''}
               </Text>
               {receipt.note ? <Text style={styles.small}>{receipt.note}</Text> : null}
               <Pill

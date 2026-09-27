@@ -1,4 +1,4 @@
-import type { RawProduct, Strategy } from './types';
+import type { RawProduct, ReaderNote, Strategy } from './types';
 
 // Pure TypeScript: the price X-ray. For the prices read since the app opened, the exact data the store sent the
 // phone, where the price sat in it, and how the phone asked for it. In memory only: never saved, never sent.
@@ -18,6 +18,8 @@ export interface PriceEvidence extends RawProduct {
   request?: { method: string; url: string };
   /** Which of the page's data held the products. */
   source?: string;
+  /** How the list was read: with the store's profile, or by the general reader (see profiles.ts). */
+  reader?: ReaderNote;
 }
 
 /** Prices kept: the latest few hundred, across stores. */

@@ -1,3 +1,4 @@
+import { isProfile } from './profiles';
 import type { OnlinePlan, OnlineRules, RetailerConfig, RetailerConfigBundle, Strategy } from './types';
 import { DEFAULT_CHALLENGE_MARKERS } from './webviewScript';
 
@@ -628,7 +629,8 @@ export function isRetailerConfig(v: unknown): v is RetailerConfig {
     (r.member === undefined || isMember(r.member)) &&
     (r.online === undefined || isOnlineRules(r.online)) &&
     (r.ad === undefined || isAdRules(r.ad)) &&
-    (r.coupons === undefined || isCouponRules(r.coupons))
+    (r.coupons === undefined || isCouponRules(r.coupons)) &&
+    (r.profile === undefined || isProfile(r.profile))
   );
 }
 

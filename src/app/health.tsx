@@ -6,11 +6,14 @@ import { bytesSavedToday, bytesToday, storeHealth, type StoreHealth } from '../o
 import { COVERAGE_WORDS, coverageText, type CoverageRow } from '../onDevice/coverage';
 import { summaryLine, versusSummary } from '../onDevice/phoneVsServer';
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
+import { AGREE, STALE_MISSES, whereWords } from '../onDevice/profiles';
 import { BUNDLED_CONFIG } from '../onDevice/retailers';
 import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
+import { connectionWords, coolWords, dropFromLog, isRest, storeTuner, type CoolDown } from '../onDevice/tuning';
+import type { ParserProfile } from '../onDevice/types';
 import { sessionText } from '../pricing/batteryCost';
 import { whenLabel } from '../pricing/receipt';
-import { useApp, useAttemptLog, useSettings } from '../state/AppProvider';
+import { useApp, useAttemptLog, useProfiles, useSettings } from '../state/AppProvider';
 import { useBattery } from '../state/battery';
 import { announce } from '../ui/a11y';
 import { Chip } from '../ui/bits';
@@ -21,7 +24,7 @@ import { ScreenHeader } from '../ui/ScreenHeader';
 import { colors, fonts, radius, shadow } from '../ui/theme';
 import { useNow } from '../ui/useNow';
 
-const TONE = { works: 'green', bot_check: 'red', no_products: 'orange', slow: 'orange', failed: 'red' } as const;
+const TONE = { works: 'green', bot_check: 'red', no_products: 'orange', slow: 'orange', failed: 'red', cooling: 'plain' } as const;
 
 /**
  * Store health: which stores this phone can read right now (one search at each), how reading them has gone over
@@ -122,6 +125,8 @@ export default function HealthScreen() {
           })}
         </View>
 
+        <CoolDownCard />
+
         <VersusCard />
 
         <View style={styles.card}>
@@ -140,10 +145,153 @@ export default function HealthScreen() {
         <CitizenCard />
         <Pill label="What would servers cost for this?" icon="phone" variant="outline" onPress={() => router.push('/cost')} />
 
+        <ProfilesCard />
         <RulesCard />
       </ScrollView>
     </KeyboardAvoidingView>
   );
+}
+
+/**
+ * Blocks and cool-downs: the stores (or ways of searching one) the phone leaves alone after they refused it, until when,
+ * and a dropped connection, which cools nothing down.
+ */
+function CoolDownCard() {
+  const { bundle } = useApp();
+  const log = useAttemptLog();
+  const now = useNow(15_000);
+  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const all = storeTuner.coolDowns();
+  const cools = all.filter((c) => !isRest(c));
+  const rests = all.filter(isRest);
+  const drop = storeTuner.connection() ?? dropFromLog(log.entries(), now);
+  return (
+    <View style={styles.card}>
+      <Text style={styles.title} accessibilityRole="header">
+        Blocks and cool-downs
+      </Text>
+      <Text style={styles.small}>
+        A store that refuses this {deviceWord}, openly or not (a page that says so, HTTP 403 or 429, a nearly empty page, no results for searches
+        that worked before), isn’t searched again until a retry time: 10 minutes, twice that each time within two hours, an hour at most. When
+        another way of searching it still works, only the blocked way waits. The hourly limit holds as always.
+      </Text>
+      {drop ? <Text style={[styles.small, { color: colors.amber }]}>{connectionWords(drop, nameOf, deviceWord)}</Text> : null}
+      {cools.length ? (
+        cools.map((c) => <CoolLine key={`${c.retailerId}:${c.way ?? ''}`} cool={c} name={nameOf(c.retailerId)} />)
+      ) : (
+        <Text style={styles.body}>Nothing is cooling down right now.</Text>
+      )}
+      {rests.length ? (
+        <View style={styles.rests}>
+          {rests.map((c) => (
+            <Text key={`${c.retailerId}:${c.way ?? ''}`} style={styles.small}>
+              {nameOf(c.retailerId)}: {coolWords(c)}.
+            </Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function CoolLine({ cool, name }: { cool: CoolDown; name: string }) {
+  return (
+    <View style={styles.storeRow} accessible accessibilityLabel={`${name}: ${coolWords(cool)}.${cool.way ? ' Its other searches go on.' : ''}`}>
+      <RetailerBadge retailerId={cool.retailerId} name={name} size={28} />
+      <View style={styles.flex}>
+        <Text style={styles.storeName}>{name}</Text>
+        <Text style={styles.small}>
+          {coolWords(cool)}.{cool.way ? ' Its other searches go on.' : ''}
+        </Text>
+      </View>
+      <Chip label={cool.way ? 'One way' : 'Cooling down'} tone={cool.way ? 'plain' : 'orange'} />
+    </View>
+  );
+}
+
+/**
+ * Where the phone learned each store's results are (its profile, see profiles.ts): learned when and from how many
+ * searches, when it last matched, and a reset, after which the phone learns it again.
+ */
+function ProfilesCard() {
+  const { bundle } = useApp();
+  const book = useProfiles();
+  const settings = useSettings();
+  const now = useNow(60_000);
+  const stores = bundle.retailers.filter((r) => r.enabled && r.parser === 'autoDetect' && (settings.retailerIds.includes(r.id) || book.get(r.id) || book.lastSeen(r.id)));
+  const own = bundle.retailers.filter((r) => settings.retailerIds.includes(r.id) && r.parser !== 'autoDetect');
+  return (
+    <View style={styles.card}>
+      <Text style={styles.title} accessibilityRole="header">
+        Where each store’s results are
+      </Text>
+      <Text style={styles.small}>
+        The general reader guesses on every search which list in a store’s data is its results, and where each price is. Once {AGREE} searches agree
+        (the same list, fitting what was searched), or the price truth check agrees, that’s the store’s profile: later searches read there first,
+        and when it stops matching, the phone learns again. A list much smaller than the store gives, or one that doesn’t name what was searched,
+        isn’t learned. Shared rules carry the profiles.
+      </Text>
+      {stores.map((r) => (
+        <ProfileLine key={r.id} retailerId={r.id} name={r.name} now={now} />
+      ))}
+      {own.length ? <Text style={styles.small}>{own.map((r) => r.name).join(', ')}: read with {own.length === 1 ? 'its' : 'their'} own parser or API, no profile needed.</Text> : null}
+    </View>
+  );
+}
+
+function ProfileLine({ retailerId, name, now }: { retailerId: string; name: string; now: number }) {
+  const book = useProfiles();
+  const p = book.get(retailerId);
+  const seen = book.lastSeen(retailerId);
+  const agreeing = book.progress(retailerId);
+  const reset = () => {
+    book.reset(retailerId);
+    announce(`${name}’s profile was reset. The phone learns where its results are again from its next searches.`);
+  };
+  return (
+    <View style={styles.healthRow}>
+      <View style={styles.row}>
+        <RetailerBadge retailerId={retailerId} name={name} size={28} />
+        <Text style={[styles.storeName, styles.flex]}>{name}</Text>
+        <Chip label={p ? ((p.misses ?? 0) >= STALE_MISSES ? 'Learning again' : 'Learned') : 'Learning'} tone={p && (p.misses ?? 0) < STALE_MISSES ? 'green' : 'plain'} />
+      </View>
+      {p ? (
+        <>
+          <Text style={styles.small}>Reads its results in {whereWords(p)}.</Text>
+          <Text style={styles.small}>{learnedWords(p, now)}</Text>
+          {(p.misses ?? 0) >= STALE_MISSES ? (
+            <Text style={[styles.small, { color: colors.amber }]}>
+              It didn’t match its last {p.misses} searches: the general reader read them, and the phone is learning where its results are again.
+            </Text>
+          ) : null}
+        </>
+      ) : (
+        <Text style={styles.small}>
+          {seen ? `Not learned yet: ${agreeing} of ${AGREE} searches agree so far.` : 'Not searched yet.'}
+          {seen?.suspect ? ` Its last list may not be the results: ${seen.suspect}.` : ''}
+        </Text>
+      )}
+      {p || seen ? (
+        <Pill
+          label="Reset"
+          icon="refresh"
+          small
+          variant="outline"
+          accessibilityLabel={`Reset ${name}’s profile`}
+          accessibilityHint="The phone forgets where its results are, and learns it again from its next searches"
+          onPress={reset}
+          style={styles.alignStart}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/** "Learned 2 h ago from 3 searches that agreed; last matched 5 min ago." */
+function learnedWords(p: ParserProfile, now: number): string {
+  const how = p.how === 'truth' ? 'confirmed by the price truth check' : p.how === 'rules' ? 'from the rules file' : `from ${p.searches} searches that agreed`;
+  const matched = p.matchedAt ? `; last matched ${whenLabel(p.matchedAt, now)}` : '';
+  return `Learned ${whenLabel(p.learnedAt, now)}, ${how}${matched}.`;
 }
 
 /** Phone vs. server: the last test's result, and the way to it. */
@@ -212,6 +360,7 @@ function HealthRow({ name, retailerId, h, now }: { name: string; retailerId: str
             {h.botChecks ? ` · ${h.botChecks} bot ${h.botChecks === 1 ? 'check' : 'checks'}` : ''}
             {h.bytes ? ` · ${bytesText(h.bytes)}` : ''}
             {h.bytesSaved ? ` (${bytesText(h.bytesSaved)} saved)` : ''}
+            {h.coolDowns ? ` · cooled down ${h.coolDowns === 1 ? 'once' : `${h.coolDowns} times`}` : ''}
           </Text>
           {h.lastFailure ? (
             <Text style={styles.small}>
@@ -300,6 +449,7 @@ function CitizenLine({ row, name }: { row: CitizenRow; name: string }) {
 /** Store rules: where they come from, and a hosted file that can replace them. */
 function RulesCard() {
   const { store, rules, checkRules, bundle } = useApp();
+  const book = useProfiles();
   const settings = useSettings();
   const [url, setUrl] = useState(settings.rulesUrl);
   const [busy, setBusy] = useState(false);
@@ -319,7 +469,13 @@ function RulesCard() {
       setBusy(false);
     }
   };
-  const served = bundle.retailers.filter((r) => !r.addedByUser);
+  // The rules as they stand, with what the phone learned of where each store's results are.
+  const served = bundle.retailers
+    .filter((r) => !r.addedByUser)
+    .map((r) => {
+      const profile = book.get(r.id);
+      return profile ? { ...r, profile } : r;
+    });
   return (
     <View style={styles.card}>
       <Text style={styles.title} accessibilityRole="header">
@@ -381,6 +537,8 @@ const styles = StyleSheet.create({
   body: { fontFamily: fonts.body, fontSize: 15, lineHeight: 21, color: colors.ink },
   small: { flexShrink: 1, fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.muted },
   hint: { fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.muted },
+  rests: { gap: 4, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  alignStart: { alignSelf: 'flex-start' },
   summary: { fontFamily: fonts.semibold, fontSize: 15, color: colors.ink },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

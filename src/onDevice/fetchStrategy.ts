@@ -1,6 +1,10 @@
 import { PARSERS, looksChallenged } from './parsers';
 import type { SpanLog } from './timing';
-import type { ParseResult, RetailerConfig } from './types';
+import type { ParseResult, Parser, RetailerConfig } from './types';
+import { BLOCK_MARKERS } from './webviewScript';
+
+/** A page with no product data under this many characters is nearly empty: a real search page is far bigger. */
+export const TINY_PAGE_CHARS = 2000;
 
 /** A strategy failed for a reason worth reporting (and falling back on). */
 export class StrategyError extends Error {
@@ -57,9 +61,16 @@ async function getPage(url: string, init: RequestInit, timeoutMs: number): Promi
  * One plain GET from the phone, with no rendering: the parser reads the data the page embeds.
  * `credentials: 'omit'` keeps the phone's shared cookie jar out, so the store cookie we pass is what gets sent.
  * Verify that on a device (Proxyman shows the outgoing Cookie header).
+ * `parser`: how the page is read, when the caller chose (the store's profile first: see readerFor in retailerSearch.ts);
+ * the rules' parser otherwise.
  */
-export async function searchViaFetch(cfg: RetailerConfig, query: string, storeId: string, clock?: SpanLog): Promise<ParseResult & { bytes: number }> {
-  const parser = PARSERS[cfg.parser];
+export async function searchViaFetch(
+  cfg: RetailerConfig,
+  query: string,
+  storeId: string,
+  clock?: SpanLog,
+  parser: Parser | undefined = PARSERS[cfg.parser],
+): Promise<ParseResult & { bytes: number }> {
   if (!parser) throw new StrategyError(`unknown_parser_${cfg.parser}`);
 
   const { url, cookie } = buildRequest(cfg, query, storeId);
@@ -84,9 +95,16 @@ export async function searchViaFetch(cfg: RetailerConfig, query: string, storeId
   // The page as received; over the network it was likely compressed to a fraction of that.
   if (parsed.payloadFound) return { ...parsed, bytes: page.html.length };
   const info = { status: page.status, bytes: page.html.length };
+  // A page that refuses the phone outright ("Access Denied"): its address or title says so, or a short page's words.
+  const title = /<title[^>]*>([^<]*)<\/title>/i.exec(page.html)?.[1] ?? '';
+  const short = page.html.length < 40_000 ? page.html : '';
+  const block = BLOCK_MARKERS.find((m) => looksChallenged([m], page.finalUrl, title, short));
+  if (block) throw new StrategyError('blocked', plainDetail(page, block), info);
   const marker = cfg.challengeMarkers.find((m) => looksChallenged([m], page.finalUrl, page.html));
   if (marker) throw new StrategyError('challenge', plainDetail(page, marker), info);
-  throw new StrategyError(page.ok ? 'no_payload' : `http_${page.status}`, plainDetail(page), info);
+  if (!page.ok) throw new StrategyError(`http_${page.status}`, plainDetail(page), info);
+  // Nearly empty, and no product data: a store that won't say it blocked the phone often answers like this.
+  throw new StrategyError(page.html.length < TINY_PAGE_CHARS ? 'tiny_page' : 'no_payload', plainDetail(page), info);
 }
 
 /** What a plain request got instead of products, in words: "HTTP 403, a page of 2 KB, with “Robot or human” in it." */

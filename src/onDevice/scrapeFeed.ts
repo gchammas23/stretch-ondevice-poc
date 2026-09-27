@@ -56,6 +56,10 @@ const REASONS: Record<string, string> = {
   no_clip_button: 'no clip button on the coupon',
   not_clipped: 'the page didn’t confirm it',
   busy: 'busy with searches',
+  blocked: 'refused: a page that blocks this phone',
+  tiny_page: 'a nearly empty page',
+  cooling_down: 'cooling down after a block',
+  connection: 'the connection dropped',
 };
 
 /** A failure reason in a few plain words. */

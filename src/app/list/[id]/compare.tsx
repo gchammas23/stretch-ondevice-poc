@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, Share, StyleSheet, Switch, Te
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { itemKey, listQueries, type ExactRef, type GroceryList } from '../../../lists/types';
 import { bytesText } from '../../../onDevice/scrapeFeed';
+import { connectionWords, storeTuner } from '../../../onDevice/tuning';
 import { adHits } from '../../../pricing/ads';
 import { ago, staleness, type Staleness } from '../../../pricing/age';
 import { rankBaskets, type Basket, type DriveVerdict, type RankBy, type SplitTrip } from '../../../pricing/basket';
@@ -174,6 +175,7 @@ function Compare({ list }: { list: GroceryList }) {
             onRefresh={refresh}
           />
         ) : null}
+        {run ? <ConnectionNote run={run} nameOf={nameOf} onRetry={() => engine.retry(list.id)} /> : null}
 
         {baskets.length > 1 ? (
           <View style={styles.rankRow}>
@@ -461,6 +463,36 @@ function LiveBanner({
   );
 }
 
+/**
+ * When every store failed within seconds of each other during this run: the phone's connection dropped, not the
+ * stores, so none of them is cooling down, and Try again searches them all once it's back.
+ */
+function ConnectionNote({ run, nameOf, onRetry }: { run: PricingRun; nameOf: (retailerId: string) => string; onRetry: () => void }) {
+  const now = useNow(5000);
+  const drop = storeTuner.connection();
+  const during = !!drop && drop.to >= run.startedAt && now - drop.to < 60 * 60_000;
+  // Screen readers hear it once, when it happens.
+  const told = useRef<number | null>(null);
+  useEffect(() => {
+    if (!during || !drop || told.current === drop.from) return;
+    told.current = drop.from;
+    announce('The connection dropped: every store failed within seconds. None of them is cooling down.');
+  });
+  if (!during || !drop) return null;
+  return (
+    <View style={[styles.card, styles.dropCard]}>
+      <View style={styles.pickHead}>
+        <Icon name="alert" size={16} color={colors.amber} />
+        <Text style={[styles.pickLabelInk, { color: colors.amber }]} accessibilityRole="header">
+          The connection dropped
+        </Text>
+      </View>
+      <Text style={styles.small}>{connectionWords(drop, nameOf, deviceWord)}</Text>
+      <Pill label="Try every store again" icon="refresh" small variant="outline" onPress={onRetry} style={styles.alignStart} />
+    </View>
+  );
+}
+
 function PickCard({
   by,
   basket,
@@ -713,6 +745,8 @@ function StoreRow({
   // Big text wraps instead of cutting off a status.
   const lines = (n: number) => (fontScale > 1.3 ? undefined : n);
   const s = storeRun;
+  // Cooling down after a block: its searches wait for its retry time, and are tried again then, by themselves.
+  const cooling = !!s?.retryAt && s.retryAt > now;
   let status: React.ReactNode;
   if (waitingForUser) {
     status = <Text style={[styles.small, { color: colors.amber }]}>Waiting for you to finish {name}’s check</Text>;
@@ -730,7 +764,10 @@ function StoreRow({
     );
   } else {
     status = (
-      <Text style={[styles.small, basket.failed ? { color: colors.red } : stale.notRefreshed ? { color: colors.amber } : null]} numberOfLines={lines(2)}>
+      <Text
+        style={[styles.small, cooling ? { color: colors.amber } : basket.failed ? { color: colors.red } : stale.notRefreshed ? { color: colors.amber } : null]}
+        numberOfLines={lines(cooling ? 3 : 2)}
+      >
         {s?.stoppedBecause
           ? `${s.stoppedBecause}. ${basket.found} of ${basket.itemCount} found`
           : stale.notRefreshed
@@ -745,7 +782,7 @@ function StoreRow({
       </Text>
     );
   }
-  const canRetry = s?.status === 'done' && (basket.failed > 0 || stale.notRefreshed > 0);
+  const canRetry = s?.status === 'done' && !cooling && (basket.failed > 0 || stale.notRefreshed > 0);
   // A store that doesn't take the order the way the user shops shows its total in store, set apart.
   const cannot = online?.available === false;
   const how = [mode === 'store' ? '' : cannot ? 'in store only' : MODE_WORDS[mode], withCoupons && !cannot ? 'with coupons' : ''].filter(Boolean).join(', ');
@@ -956,6 +993,7 @@ const styles = StyleSheet.create({
   shareScore: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', minHeight: 44 },
   pickWhy: { fontFamily: fonts.semibold, fontSize: 14, color: colors.ink },
   card: { backgroundColor: colors.card, borderRadius: radius.lg, padding: 16, gap: 10, ...shadow.card },
+  dropCard: { borderWidth: 1, borderColor: colors.amberTint },
   splitCard: { borderWidth: 1, borderColor: '#F7C2B3' },
   badgePair: { flexDirection: 'row', width: 58 },
   badgeOverlap: { marginLeft: -10, borderWidth: 2, borderColor: colors.card, borderRadius: 11 },

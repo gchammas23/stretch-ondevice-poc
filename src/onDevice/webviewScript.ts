@@ -10,6 +10,30 @@ export function sameSite(url: string, jobUrl: string): boolean {
   return !!host && !!site && (host === site || host.endsWith(`.${site}`));
 }
 
+/**
+ * Signs of a page that refuses the phone outright, with nothing to answer: a block, not a bot check. Checked before
+ * the bot-check signs, in the URL and title, and in the body of short pages. A search that gets one fails with
+ * 'blocked' and is never shown, and the store cools down (see tuning.ts).
+ */
+export const BLOCK_MARKERS = [
+  'Access Denied',
+  'Request unsuccessful',
+  'Sorry, you have been blocked',
+  'Error 1020',
+  'The requested URL was rejected',
+  'You don’t have permission to access',
+  "You don't have permission to access",
+  '403 Forbidden',
+];
+
+/**
+ * A bot check drawn in a frame of the page (reCAPTCHA's, hCaptcha's, DataDome's, Arkose's, GeeTest's, Cloudflare's,
+ * HUMAN's), which the page's own address and title don't give away. Only a frame that shows counts: an invisible one
+ * sits on many ordinary pages.
+ */
+export const CAPTCHA_FRAMES =
+  /recaptcha\/(api2|enterprise)\/(anchor|bframe)|hcaptcha\.com\/captcha|captcha-delivery\.com|arkoselabs\.com|funcaptcha\.com|geetest\.com|challenges\.cloudflare\.com|px-cloud\.net|captcha\.px-cdn\.net/i;
+
 /** Bot-check signs across common protection vendors. Phrases are checked in the URL and title; ids also in the body of short pages. */
 export const DEFAULT_CHALLENGE_MARKERS = [
   'Robot or human',
@@ -728,6 +752,11 @@ export interface ExtractOptions {
   progress?: boolean;
   /** Once the page has finished loading, post what's there after this long with nothing new arriving. 0: don't. */
   giveUpMs?: number;
+  /**
+   * 'auto': when the page's requests go quiet, ask the app ('quiet') instead of posting at once, and post when it says
+   * so (goScript). The app knows what the store usually gives, and can wait for a list the quiet came before.
+   */
+  askQuiet?: boolean;
   /** 'text': how long the page's text must stay the same before it's posted. */
   textSettleMs?: number;
   intervalMs?: number;
@@ -737,15 +766,21 @@ export interface ExtractOptions {
 /** Tells a page's extraction script that the app has what it needs, so it stops (see extractionScript). */
 export const stopScript = (nonce: string): string => `window.__stretchDone = ${JSON.stringify(nonce)}; true;`;
 
+/** Tells a page's extraction script that asked about its quiet (askQuiet) to post what it has now. */
+export const goScript = (nonce: string): string => `window.__stretchGo = ${JSON.stringify(nonce)}; true;`;
+
 /**
  * Runs inside the retailer's page and posts back once: page data, a bot-check notice, or an error.
  * URL and title markers go first because a block page can carry its own __NEXT_DATA__.
  */
 export function extractionScript(nonce: string, markers: string[], pageScript?: string, opts: ExtractOptions = {}): string {
-  const { mode = 'search', waitFor = 'nextData', progress = false, giveUpMs = 5000, textSettleMs = 1000, intervalMs = 250, maxTries = 60 } = opts;
+  const { mode = 'search', waitFor = 'nextData', progress = false, giveUpMs = 5000, textSettleMs = 1000, intervalMs = 250, maxTries = 60, askQuiet = false } = opts;
   return `(function () {
   var NONCE = ${JSON.stringify(nonce)};
   var MARKERS = ${JSON.stringify(markers)};
+  var BLOCK_SIGNS = ${JSON.stringify(BLOCK_MARKERS)};
+  var FRAMES = ${CAPTCHA_FRAMES.toString()};
+  var ASK_QUIET = ${askQuiet ? 'true' : 'false'}, askedFor = 0;
   var PAGE_SCRIPT = ${pageScript ? `(${pageScript})` : 'null'};
   var MODE = ${JSON.stringify(mode)}, WAIT_FOR = ${JSON.stringify(waitFor)};
   var PROGRESS = ${progress ? 'true' : 'false'}, GIVE_UP = ${Number(giveUpMs)};
@@ -784,9 +819,9 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
     } catch (e) {}
     return out.join('').slice(0, TEXT_LIMIT);
   }
-  var finished = false;
+  var finished = false, framed = false;
   function post(msg) {
-    if (msg.kind !== 'progress') finished = true;
+    if (msg.kind !== 'progress' && msg.kind !== 'quiet' && !msg.frame) finished = true;
     msg.nonce = NONCE;
     msg.href = String(location.href);
     msg.title = String(document.title || '');
@@ -835,17 +870,53 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
     for (var i = 0; i < MARKERS.length; i++) if (text.indexOf(MARKERS[i]) !== -1) return true;
     return false;
   }
-  function challenged() {
-    if (hasMarker(location.href + ' ' + document.title)) return true;
-    // Page bodies only for short pages, and only for marker ids, not phrases a normal page might show. A page of many
-    // elements isn't short, and isn't written out to find that out: that would take the page's time at every look.
-    if (document.getElementsByTagName('*').length > 1000) return false;
+  // A short page's body, or '' for a page of many elements: that isn't short, and isn't written out to find that out,
+  // which would take the page's time at every look.
+  function shortBody() {
+    if (document.getElementsByTagName('*').length > 1000) return '';
     var body = document.body ? document.body.innerHTML : '';
-    if (body.length >= 40000) return false;
-    for (var i = 0; i < MARKERS.length; i++) {
-      if (MARKERS[i].indexOf(' ') === -1 && body.indexOf(MARKERS[i]) !== -1) return true;
+    return body.length < 40000 ? body : '';
+  }
+  // A page that refuses the phone outright ("Access Denied"): its URL or title says so, or a short page's words do.
+  function blockedBy(body) {
+    var head = location.href + ' ' + document.title;
+    for (var i = 0; i < BLOCK_SIGNS.length; i++) {
+      if (head.indexOf(BLOCK_SIGNS[i]) !== -1 || (body && body.indexOf(BLOCK_SIGNS[i]) !== -1)) return BLOCK_SIGNS[i];
+    }
+    return null;
+  }
+  // A captcha in a frame of the page, big enough to see, which its URL and title don't give away.
+  function captchaFrame() {
+    var frames = document.getElementsByTagName('iframe');
+    for (var i = 0; i < frames.length && i < 60; i++) {
+      var f = frames[i], src = String(f.getAttribute('src') || '');
+      if (!FRAMES.test(src) || /invisible/i.test(src)) continue;
+      var r = f.getBoundingClientRect ? f.getBoundingClientRect() : null;
+      if (!r || r.width < 150 || r.height < 60) continue;
+      var st = window.getComputedStyle ? window.getComputedStyle(f) : null;
+      if (st && (st.visibility === 'hidden' || st.display === 'none' || st.opacity === '0')) continue;
+      return true;
     }
     return false;
+  }
+  // 'marker': the page's URL or title, or a short page's body, has a bot-check sign (ids only in the body, not phrases a
+  // normal page might show). 'frame': a captcha shows in a frame of the page.
+  function challenged(body) {
+    if (hasMarker(location.href + ' ' + document.title)) return 'marker';
+    for (var i = 0; i < MARKERS.length; i++) {
+      if (body && MARKERS[i].indexOf(' ') === -1 && body.indexOf(MARKERS[i]) !== -1) return 'marker';
+    }
+    return captchaFrame() ? 'frame' : null;
+  }
+  // How much the page is: its elements, and its words when it has few elements (-1 when it has many).
+  function pageSize() {
+    try {
+      var elements = document.getElementsByTagName('*').length, chars = -1;
+      if (elements < 400 && document.body) chars = String(document.body.innerText || document.body.textContent || '').replace(/\\s+/g, ' ').trim().length;
+      return { elements: elements, chars: chars };
+    } catch (e) {
+      return null;
+    }
   }
   function priceKeys(text) {
     var m = text ? text.match(PRICE_KEY) : null;
@@ -883,6 +954,11 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
     var cap = window.__stretchCapture;
     if (cap) for (var i = cap.items.length - 1; i >= 0; i--) add('response ' + cap.items[i].url, cap.items[i].text, cap.items[i].req);
     if (WAIT_FOR !== 'details') for (var j = 0; j < ld.length; j++) add('ld+json', ld[j]);
+    // The page's JSON script blocks (its data, as some frameworks write it: Next.js's is read on its own).
+    var blocks = document.querySelectorAll('script[type="application/json"]');
+    for (var b = 0; b < blocks.length && b < 30; b++) {
+      if (blocks[b].id !== '__NEXT_DATA__') add(blocks[b].id ? 'json script #' + blocks[b].id : 'json script', blocks[b].textContent);
+    }
     var names = ['__APOLLO_STATE__', '__PRELOADED_STATE__', '__INITIAL_STATE__', '__NUXT__'];
     for (var k = 0; k < names.length; k++) {
       try { if (window[names[k]]) add(names[k], JSON.stringify(window[names[k]])); } catch (e) {}
@@ -895,7 +971,20 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
     // The app already took what it needed from the progress posts.
     if (window.__stretchDone === NONCE) return;
     try {
-      if (MODE === 'search' && challenged()) { post({ kind: 'challenge' }); return; }
+      if (MODE === 'search') {
+        var body = shortBody();
+        var block = blockedBy(body);
+        if (block) { post({ kind: 'blocked', marker: block }); return; }
+        var check = challenged(body);
+        if (check === 'marker') { post({ kind: 'challenge' }); return; }
+        if (check === 'frame') {
+          // A captcha in a frame: the app shows the page for it (or reports it), and the frame is watched until it goes.
+          if (!framed) { framed = true; post({ kind: 'challenge', frame: true }); }
+          tries--;
+          setTimeout(attempt, INTERVAL);
+          return;
+        }
+      }
       var nd = document.getElementById('__NEXT_DATA__');
       var ndText = nd && nd.textContent ? nd.textContent : null;
       var pageResult = PAGE_SCRIPT ? PAGE_SCRIPT() : null;
@@ -928,8 +1017,16 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
       } else {
         var signals = (cap ? cap.priceKeys : 0) + priceKeys(ldTexts().join(' '));
         var quiet = !cap || !cap.lastAt || Date.now() - cap.lastAt > 600;
-        ready = (signals >= 8 && quiet) || givenUp || tries >= MAX_TRIES;
-        why = signals >= 8 && quiet ? 'quiet' : givenUp ? 'gave_up' : 'tries';
+        var go = window.__stretchGo === NONCE;
+        if (ASK_QUIET && signals >= 8 && quiet && !go && !givenUp && tries < MAX_TRIES) {
+          // Quiet: the app says whether that's the results, or a list to wait past. Asked once each time it goes quiet.
+          var spell = (cap && cap.lastAt) || loadedAt || 1;
+          if (askedFor !== spell) { askedFor = spell; post({ kind: 'quiet' }); }
+          ready = false;
+        } else {
+          ready = (signals >= 8 && quiet) || go || givenUp || tries >= MAX_TRIES;
+        }
+        why = go || (signals >= 8 && quiet) ? 'quiet' : givenUp ? 'gave_up' : 'tries';
       }
       if (ready) {
         var wantSources = MODE === 'read' || (WAIT_FOR !== 'nextData' && WAIT_FOR !== 'loaded' && WAIT_FOR !== 'text');
@@ -938,7 +1035,8 @@ export function extractionScript(nonce: string, markers: string[], pageScript?: 
           nextDataText: WAIT_FOR === 'text' ? null : ndText,
           sources: wantSources ? collect(BUDGET - (ndText ? ndText.length : 0)) : [],
           pageResult: pageResult,
-          ready: why
+          ready: why,
+          size: MODE === 'search' ? pageSize() : null
         };
         if (WAIT_FOR === 'text') msg.text = pageText();
         post(msg);

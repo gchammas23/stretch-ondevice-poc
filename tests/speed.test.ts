@@ -23,7 +23,7 @@ const engineCache = (engine: PricingEngine) => (engine as unknown as { cache: Pr
 // Search events are logged for telemetry; keep them out of the test output.
 const log = console.log;
 console.log = (...args: unknown[]) => {
-  if (!String(args[0]).startsWith('[on-device-search]')) log(...args);
+  if (!String(args[0]).startsWith('[on-device-')) log(...args);
 };
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));

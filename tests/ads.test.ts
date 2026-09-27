@@ -50,7 +50,7 @@ import { ReadBook } from '../src/pricing/readBook';
 // Search events are logged for telemetry; keep them out of the test output.
 const log = console.log;
 console.log = (...args: unknown[]) => {
-  if (!String(args[0]).startsWith('[on-device-search]')) log(...args);
+  if (!String(args[0]).startsWith('[on-device-')) log(...args);
 };
 
 let passed = 0;
