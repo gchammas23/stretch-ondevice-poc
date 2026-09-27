@@ -28,7 +28,7 @@ import {
   type RunKind,
 } from '../pricing/batteryCost';
 import { PRODUCTS_KEPT } from '../pricing/priceCache';
-import { scorecard, scorecardText, speedProfile, speedProfileText } from '../pricing/scorecard';
+import { scorecard, scorecardText, SPEED_ITEMS, SPEED_TEST, speedProfile, speedProfileText } from '../pricing/scorecard';
 import { bytesText } from '../onDevice/scrapeFeed';
 import { useApp, usePricingRun, useSettings, useStoreChoices } from '../state/AppProvider';
 import { batteryMeter, useBattery } from '../state/battery';
@@ -40,9 +40,6 @@ import { useNow } from '../ui/useNow';
 import { useScreenTimes } from '../ui/useScreenTimes';
 import { StoreWaterfall, WaterfallLegend, WhereTimeWent } from '../ui/Waterfall';
 
-/** The speed test prices these at every compared store, as a list of its own that no screen shows. */
-const SPEED_TEST = '__speedtest__';
-const SPEED_ITEMS = ['milk', 'eggs', 'bread', 'bananas', 'butter', 'coffee'];
 /** How many runs a battery test can make: more narrow its figures, within each store's hourly limit. */
 const TEST_RUNS = [5, 10, 15];
 
@@ -116,6 +113,7 @@ export default function DiagnosticsScreen() {
           <View style={styles.form}>
             <Pill label="Store health: which stores work, and how often" icon="heartPulse" small variant="outline" onPress={() => router.push('/health')} style={styles.alignStart} />
             <Pill label="What servers would cost instead" icon="phone" small variant="outline" onPress={() => router.push('/cost')} style={styles.alignStart} />
+            <Pill label="Results report: one page to share, as a PDF" icon="share" small variant="outline" onPress={() => router.push('/report')} style={styles.alignStart} />
             <StartOver />
             <SpeedTest />
             <BatteryTest />

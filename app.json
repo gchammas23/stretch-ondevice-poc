@@ -39,7 +39,8 @@
           "locationWhenInUsePermission": "Stretch uses your location once, when you ask, to find your ZIP code and the stores near it. Only the ZIP code is kept."
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      "expo-asset"
     ]
   }
 }

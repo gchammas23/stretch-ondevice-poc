@@ -31,7 +31,7 @@ const PER_STORE = [3, 5, 10];
  */
 function Truth({ list }: { list: GroceryList }) {
   const insets = useSafeAreaInsets();
-  const { search, bundle, profiles } = useApp();
+  const { search, bundle, profiles, truth } = useApp();
   const run = usePricingRun(list.id);
   const { baskets } = useComparison(list, run);
   const [perStore, setPerStore] = useState(3);
@@ -78,6 +78,8 @@ function Truth({ list }: { list: GroceryList }) {
     }
     if (alive.current) {
       const s = truthSummary(results);
+      // Kept for the results report: the last check that ran to the end.
+      truth.record({ at: Date.now(), perStore, summary: s });
       // Prices that all match confirm the list they came from: it becomes the store's profile, where it isn't already.
       setTaught(agreedStores(results).filter((a) => !!profiles.confirm(a.retailerId, a.productIds)).map((a) => a.retailerId));
       announce(s.checked ? `${s.same} of ${s.checked} prices match their product pages.` : 'No product page could be read.');

@@ -101,3 +101,60 @@ export function truthSummary(checks: TruthCheck[]): TruthSummary {
   const checked = same + different;
   return { checked, same, different, unreadable, ...(checked ? { rate: same / checked } : {}), byStore };
 }
+
+/** A finished truth check, kept for the results report (see report.ts): when, how many per store, and what agreed. */
+export interface TruthRecord {
+  at: number;
+  /** Prices sampled at each store: 3, 5 or 10. */
+  perStore: number;
+  summary: TruthSummary;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** The last finished truth check. Pure TypeScript: the app saves it with AsyncStorage, the tests keep it in memory. */
+export class TruthBook {
+  private last: TruthRecord | undefined;
+  private listeners = new Set<() => void>();
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  getSnapshot = (): TruthRecord | undefined => this.last;
+
+  record(check: TruthRecord): void {
+    this.last = check;
+    this.emit();
+  }
+
+  clear(): void {
+    if (!this.last) return;
+    this.last = undefined;
+    this.emit();
+  }
+
+  serialize(): string {
+    return JSON.stringify(this.last ?? null);
+  }
+
+  hydrate(json: string | null): void {
+    if (!json) return;
+    try {
+      const saved = JSON.parse(json) as unknown;
+      if (!isRecord(saved) || typeof saved.at !== 'number' || typeof saved.perStore !== 'number' || !isRecord(saved.summary)) return;
+      const s = saved.summary;
+      if (typeof s.checked !== 'number' || typeof s.same !== 'number' || typeof s.different !== 'number' || typeof s.unreadable !== 'number' || !isRecord(s.byStore)) return;
+      this.last = saved as unknown as TruthRecord;
+    } catch {
+      // No check to show: the report says how to run one.
+    }
+  }
+
+  private emit(): void {
+    this.listeners.forEach((listener) => listener());
+  }
+}

@@ -17,7 +17,7 @@ import { colors, fonts, radius, shadow } from '../ui/theme';
  */
 export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
-  const { cache, coverage, versus, fees, ads, coupons, startOver } = useApp();
+  const { cache, coverage, versus, truth, fees, ads, coupons, startOver } = useApp();
   const history = useHistory();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
@@ -31,7 +31,7 @@ export default function PrivacyScreen() {
   const maps = Platform.OS === 'ios' ? 'Apple’s map service' : 'the phone’s map service';
 
   const forgetPrices = () =>
-    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads and coupons read from store pages, and the store health log are erased. Lists stay.', [
+    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads and coupons read from store pages, the store health log and the last price truth check are erased. Lists stay.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Forget',
@@ -42,6 +42,7 @@ export default function PrivacyScreen() {
           log.clear();
           coverage.clear();
           versus.clear();
+          truth.clear();
           fees.clear();
           ads.clear();
           coupons.clear();
@@ -71,6 +72,7 @@ export default function PrivacyScreen() {
           <Line text={`Your ZIP code${state.settings.zip ? ` (${state.settings.zip})` : ''}, how far stores may be (${state.settings.radiusMiles} mi), your stores, ${count(Object.keys(state.usuals).length, 'usual product')} and ${state.watch.length} watched.`} />
           <Line text={`The stores ${count(listed, 'retailer')} listed near your ZIP code, and where that ZIP code is on the map (its center, not where you are).`} />
           <Line text={`${count(cache.size, 'saved search', 'saved searches')}, the price history of ${count(history.size, 'product')}, and a log of ${count(log.entries().length, 'store search', 'store searches')} for Store health.`} />
+          <Line text="How the last price truth check went (how many prices matched, at each store), for the results report." />
           <Line
             text={`How you shop (${MODE_NAMES[state.settings.shopMode].toLowerCase()}), ${count(plans, 'online plan')} you said you have, and what ${count(feesRead, 'store’s fees page', 'stores’ fees pages')} said when the phone last read ${feesRead === 1 ? 'it' : 'them'}.`}
           />
@@ -97,6 +99,7 @@ export default function PrivacyScreen() {
                 : 'No health reports: this build has no address to send them to.'
             }
           />
+          <Line text="A results report (Store health or Diagnostics), only when you make one and share it yourself: a one-page PDF of what this phone measured, with your ZIP code’s area (its first three digits). No lists, products or location go in it, and the PDF isn’t kept once you’ve shared it." />
           <Text style={styles.note}>Nothing is sent to Stretch. There’s no account.</Text>
         </Section>
 

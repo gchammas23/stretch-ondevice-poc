@@ -58,6 +58,7 @@ export default function HealthScreen() {
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScreenHeader title="Store health" subtitle={`How reading each store goes, from this ${deviceWord}.`} />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
+        <Pill label="Results report: one page to share, as a PDF" icon="share" small variant="outline" onPress={() => router.push('/report')} style={styles.alignStart} />
         <View style={styles.card}>
           <Text style={styles.title} accessibilityRole="header">
             Which stores work from here

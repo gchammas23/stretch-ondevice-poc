@@ -37,6 +37,9 @@ export const NOTES = new Set<AttemptKind>(['cooldown', 'connection']);
  */
 const NOT_PRICES = new Set<AttemptKind>(['store', 'fees', 'ad', 'coupons', 'clip', 'versus', ...NOTES]);
 
+/** Whether Store health's rates count an attempt: a try at reading prices from a search. */
+export const countsInHealth = (e: Pick<AttemptEntry, 'kind'>): boolean => !NOT_PRICES.has(e.kind);
+
 /** One try at reading a store, kept on the phone for Store health. */
 export interface AttemptEntry {
   at: number;

@@ -55,6 +55,7 @@ import { PriceHistory } from '../pricing/priceHistory';
 import { PricingEngine, type PricingRun, type StartOptions, type StoreChoice } from '../pricing/pricingEngine';
 import { ReadBook } from '../pricing/readBook';
 import { sharePlan } from '../pricing/sharing';
+import { TruthBook } from '../pricing/truth';
 import { useToday } from '../ui/useNow';
 import { AppStore, type AppState, type WatchItem } from './appStore';
 import { batteryMeter } from './battery';
@@ -71,8 +72,9 @@ const ADS_KEY = 'stretch.ads.v1';
 const COUPONS_KEY = 'stretch.coupons.v1';
 const VERSUS_KEY = 'stretch.versus.v1';
 const PROFILES_KEY = 'stretch.profiles.v1';
+const TRUTH_KEY = 'stretch.truth.v1';
 /** Every key the app saves under, for erasing it all. */
-export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY];
+export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY];
 
 /** The connection counts as down for the pricing engine's words this long after the last of its failures. */
 const DROP_FRESH_MS = 60_000;
@@ -111,6 +113,8 @@ interface AppContextValue {
   runCoverage: () => Promise<void>;
   /** The phone vs. server test: its last result, and the one running. */
   versus: PhoneVsServer;
+  /** The last finished price truth check, for the results report. */
+  truth: TruthBook;
   /** Where each store's results are, learned from its searches (see profiles.ts), and what they taught so far. */
   profiles: ProfileBook;
   /**
@@ -194,6 +198,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
   const [log] = useState(() => new AttemptLog());
   const [coverage] = useState(() => new CoverageCheck());
   const [versus] = useState(() => new PhoneVsServer());
+  const [truth] = useState(() => new TruthBook());
   const [fees] = useState(() => new FeeBook());
   const [ads] = useState(() => new ReadBook<WeeklyAd>(isWeeklyAd));
   const [coupons] = useState(() => new ReadBook<CouponList>(isCouponList));
@@ -312,8 +317,10 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     let alive = true;
     (async () => {
       await store.hydrate(AsyncStorage);
-      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead, profilesRead] = await Promise.all(
-        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY].map((k) => AsyncStorage.getItem(k).catch(() => null)),
+      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead, profilesRead, truthRead] = await Promise.all(
+        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY].map((k) =>
+          AsyncStorage.getItem(k).catch(() => null),
+        ),
       );
       cache.hydrate(prices);
       history.hydrate(past);
@@ -325,6 +332,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       parserProfiles.hydrate(profilesRead);
       coverage.hydrate(covered);
       versus.hydrate(versusRead);
+      truth.hydrate(truthRead);
       fees.hydrate(feesRead);
       ads.hydrate(adsRead);
       coupons.hydrate(couponsRead);
@@ -333,7 +341,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     return () => {
       alive = false;
     };
-  }, [store, cache, history, log, coverage, versus, fees, ads, coupons]);
+  }, [store, cache, history, log, coverage, versus, truth, fees, ads, coupons]);
 
   useEffect(() => {
     const save = (key: string, data: () => string) => () => AsyncStorage.setItem(key, data()).catch(() => {});
@@ -343,6 +351,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       { subscribe: log.subscribe, write: save(HEALTH_KEY, () => log.serialize()), ms: 3000 },
       { subscribe: coverage.subscribe, write: save(COVERAGE_KEY, () => coverage.serialize()), ms: 1500 },
       { subscribe: versus.subscribe, write: save(VERSUS_KEY, () => versus.serialize()), ms: 1500 },
+      { subscribe: truth.subscribe, write: save(TRUTH_KEY, () => truth.serialize()), ms: 1500 },
       { subscribe: parserProfiles.subscribe, write: save(PROFILES_KEY, () => parserProfiles.serialize()), ms: 3000 },
       { subscribe: fees.subscribe, write: save(FEES_KEY, () => fees.serialize()), ms: 1500 },
       { subscribe: ads.subscribe, write: save(ADS_KEY, () => ads.serialize()), ms: 1500 },
@@ -364,7 +373,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       writers.forEach((w) => w.timer.cancel());
       sub.remove();
     };
-  }, [cache, history, log, coverage, versus, fees, ads, coupons, store, engine]);
+  }, [cache, history, log, coverage, versus, truth, fees, ads, coupons, store, engine]);
 
   // Coming back to the app after a while fetches the rules file again, so a fixed store is picked up.
   useEffect(() => {
@@ -591,21 +600,22 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     log.clear();
     coverage.clear();
     versus.clear();
+    truth.clear();
     fees.clear();
     ads.clear();
     coupons.clear();
     // Saves the fresh state under its own key; the others are removed outright.
     store.reset();
     await AsyncStorage.multiRemove(STORAGE_KEYS.filter((k) => k !== 'stretch.app.v1')).catch(() => {});
-  }, [engine, pool, cache, history, log, coverage, versus, fees, ads, coupons, store]);
+  }, [engine, pool, cache, history, log, coverage, versus, truth, fees, ads, coupons, store]);
 
   const value = useMemo(
     () => ({
-      store, engine, cache, history, log, coverage, versus, profiles: parserProfiles, search, bundle, rules, checkRules, runCoverage, runVersus, fees,
-      checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
+      store, engine, cache, history, log, coverage, versus, truth, profiles: parserProfiles, search, bundle, rules, checkRules, runCoverage, runVersus,
+      fees, checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
     }),
     [
-      store, engine, cache, history, log, coverage, versus, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
+      store, engine, cache, history, log, coverage, versus, truth, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
       ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
     ],
   );

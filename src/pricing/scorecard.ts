@@ -4,6 +4,10 @@ import type { PricingRun, SearchResult } from './pricingEngine';
 
 // Pure functions only, so the tests run them in Node.
 
+/** The speed test (Diagnostics) prices these at every compared store, as a list of its own that no screen shows. */
+export const SPEED_TEST = '__speedtest__';
+export const SPEED_ITEMS = ['milk', 'eggs', 'bread', 'bananas', 'butter', 'coffee'];
+
 /** How one store's searches went in a run. Only searches run in it count, not prices saved from earlier. */
 export interface StoreScore {
   retailerId: string;
