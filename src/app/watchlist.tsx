@@ -9,7 +9,7 @@ import { couponsForItems } from '../pricing/coupons';
 import { dealsFrom } from '../pricing/deals';
 import { MAX_AGE_MS } from '../pricing/priceCache';
 import { whenLabel } from '../pricing/receipt';
-import { useApp, useCoupons, useLists, useSavingsReads, useSettings, useStoreChoices, useWatch, useWeeklyAds } from '../state/AppProvider';
+import { useApp, useCoupons, useLists, useSavingsReads, useSettings, useStoreChoices, useStoreName, useWatch, useWeeklyAds } from '../state/AppProvider';
 import { announce } from '../ui/a11y';
 import { Chip } from '../ui/bits';
 import { Pill, ProductThumb, tap } from '../ui/controls';
@@ -28,13 +28,13 @@ const watchRun = (retailerId: string) => `__watch__:${retailerId}`;
  */
 export default function WatchlistScreen() {
   const insets = useSafeAreaInsets();
-  const { store, engine, cache, bundle } = useApp();
+  const { store, engine, cache } = useApp();
   const watch = useWatch();
   const lists = useLists();
   const choices = useStoreChoices();
   const settings = useSettings();
   const now = useNow(60_000);
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
   const stores = [...new Set(watch.map((w) => w.retailerId))];
   // Re-renders as the watched stores' checks start and finish, and as prices land for the deals.
   useSyncExternalStore(engine.subscribe, () => stores.map((rid) => engine.getRun(watchRun(rid))?.finishedAt ?? (engine.getRun(watchRun(rid)) ? 'running' : 'none')).join('|'));

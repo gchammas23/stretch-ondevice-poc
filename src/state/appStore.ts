@@ -1,10 +1,12 @@
 import type { ParsedItem } from '../lists/parse';
 import { queryKey, type ExactRef, type GroceryList, type ItemPrefs, type ListItem, type Trip, type TripRecord } from '../lists/types';
+import { isObj } from '../onDevice/json';
 import { isRetailerConfig } from '../onDevice/retailers';
 import { sameStoreId } from '../onDevice/storeIdentity';
 import type { NearbyStore, ZipTie } from '../onDevice/storeLocator';
 import type { KnownStore, Product, RetailerConfig } from '../onDevice/types';
 import type { RankBy, Usuals } from '../pricing/basket';
+import { asMember } from '../pricing/member';
 import { SHOP_MODES, type ShopMode } from '../pricing/onlineCost';
 
 // Pure TypeScript. The app saves through AsyncStorage; the tests use memory.
@@ -130,6 +132,8 @@ export interface WatchItem {
   lastAt: number;
   /** The latest drop, until the price goes back above it. */
   drop?: { from: number; to: number; at: number };
+  /** Its store changed (another store, a sign-in): the next price read there starts it afresh, rather than as a drop. */
+  moved?: true;
 }
 
 export interface AppState {
@@ -173,8 +177,6 @@ export function seedLists(now = Date.now()): GroceryList[] {
     list('Pancake breakfast', ['Pancake mix', 'Maple syrup', 'Eggs', 'Butter', 'Milk', 'Blueberries'], now - 1),
   ];
 }
-
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** A saved record of records, keeping only entries that pass `ok`. */
 function records<T>(value: unknown, ok: (r: Record<string, unknown>) => boolean): Record<string, T> {
@@ -497,7 +499,8 @@ export class AppStore {
 
   // --- Watchlist and price checks ------------------------------------------------------------------
 
-  watchProduct(retailerId: string, storeKey: string, p: Product, at = Date.now()): void {
+  watchProduct(retailerId: string, storeKey: string, product: Product, at = Date.now()): void {
+    const p = this.paid(retailerId, product);
     if (typeof p.price !== 'number') return;
     const rest = this.state.watch.filter((w) => !(w.retailerId === retailerId && w.productId === p.id));
     const entry: WatchItem = {
@@ -515,6 +518,16 @@ export class AppStore {
     this.set({ ...this.state, watch: [entry, ...rest] });
   }
 
+  /**
+   * The retailer's store is now `storeKey` (another store, a sign-in, a new ZIP): its watched products follow it, and
+   * the first price read there starts them afresh (see notePrices).
+   */
+  followStore(retailerId: string, storeKey: string): void {
+    if (!this.state.watch.some((w) => w.retailerId === retailerId && w.storeKey !== storeKey)) return;
+    const watch = this.state.watch.map((w): WatchItem => (w.retailerId === retailerId && w.storeKey !== storeKey ? { ...w, storeKey, moved: true } : w));
+    this.set({ ...this.state, watch });
+  }
+
   unwatch(retailerId: string, productId: string): void {
     this.set({ ...this.state, watch: this.state.watch.filter((w) => !(w.retailerId === retailerId && w.productId === productId)) });
   }
@@ -525,13 +538,18 @@ export class AppStore {
    */
   notePrices(retailerId: string, storeKey: string, products: Product[], at: number): WatchItem[] {
     if (!this.state.watch.some((w) => w.retailerId === retailerId)) return [];
-    const byId = new Map(products.map((p) => [p.id, p]));
+    const byId = new Map(products.map((p) => [p.id, this.paid(retailerId, p)]));
     const dropped: WatchItem[] = [];
     let changed = false;
     const watch = this.state.watch.map((w) => {
       const p = w.retailerId === retailerId && w.storeKey === storeKey ? byId.get(w.productId) : undefined;
       if (!p || typeof p.price !== 'number' || at <= w.lastAt) return w;
       changed = true;
+      if (w.moved) {
+        // The first price at the store it moved to: where it starts from now, not a drop.
+        const { moved: _moved, drop: _drop, ...rest } = w;
+        return { ...rest, addedPrice: p.price, lastPrice: p.price, lastAt: at };
+      }
       let next: WatchItem = { ...w, lastPrice: p.price, lastAt: at };
       if (p.price < w.lastPrice - 0.004) {
         next = { ...next, drop: { from: w.lastPrice, to: p.price, at } };
@@ -594,6 +612,14 @@ export class AppStore {
     this.setSettings({ signedInAt: { ...this.state.settings.signedInAt, [retailerId]: at } });
   }
 
+  /** A sign-in the store's own page says didn't happen (Done, without signing in): back to how it was before it. */
+  undoSignIn(retailerId: string, before: number | undefined): void {
+    const signedInAt = { ...this.state.settings.signedInAt };
+    if (before === undefined) delete signedInAt[retailerId];
+    else signedInAt[retailerId] = before;
+    this.setSettings({ signedInAt });
+  }
+
   setLightPages(on: boolean): void {
     this.setSettings({ lightPages: on });
   }
@@ -622,8 +648,7 @@ export class AppStore {
     this.setSettings({ storePickedAt: { ...this.state.settings.storePickedAt, [retailerId]: Date.now() }, seenStores });
   }
 
-  /** A new ZIP code sets the stores again, so what searches saw is learned again too. */
-  /** A new ZIP code forgets the stores set near the old one, and what searches saw there. */
+  /** A new ZIP code forgets the stores set near the old one, and what searches saw there: they're set again for it. */
   setZip(zip: string): void {
     const clean = zip.trim();
     this.setSettings(clean === this.state.settings.zip ? { zip: clean } : { zip: clean, seenStores: {}, storeIds: {}, chosenStores: {} });
@@ -710,6 +735,14 @@ export class AppStore {
   }
 
   // --- Internals -------------------------------------------------------------------------------------
+
+  /**
+   * A product at the price the user pays there: the member price at a store whose program they belong to, as the
+   * screens show it, so a watched price is the same kind of price when it's watched and when it's read again.
+   */
+  private paid(retailerId: string, p: Product): Product {
+    return this.state.settings.memberships[retailerId] ? asMember(p) : p;
+  }
 
   private setSettings(patch: Partial<Settings>): void {
     this.set({ ...this.state, settings: { ...this.state.settings, ...patch } });

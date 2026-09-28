@@ -374,6 +374,8 @@ const EMPTY: VersusState = { query: 'milk', scope: 'compared', running: false, s
 export class PhoneVsServer {
   private state: VersusState = EMPTY;
   private listeners = new Set<() => void>();
+  /** Counts clears: a test running at one (Erase everything) stops there, and keeps nothing. */
+  private cleared = 0;
 
   constructor(private now: () => number = Date.now) {}
 
@@ -392,6 +394,7 @@ export class PhoneVsServer {
    */
   async run(stores: VersusStore[], deps: VersusDeps, opts: { query?: string; scope?: VersusScope; atOnce?: number } = {}): Promise<void> {
     if (this.state.running || !stores.length) return;
+    const epoch = this.cleared;
     const query = opts.query ?? 'milk';
     this.set({
       query,
@@ -411,27 +414,34 @@ export class PhoneVsServer {
       await deps.prepare?.();
       let next = 0;
       const worker = async () => {
-        for (let i = next++; i < stores.length; i = next++) await this.test(stores[i], deps, query);
+        for (let i = next++; i < stores.length && epoch === this.cleared; i = next++) await this.test(stores[i], deps, query, epoch);
       };
       await Promise.all(Array.from({ length: Math.min(opts.atOnce ?? 4, stores.length) }, worker));
     } finally {
-      this.set({ ...this.state, running: false, finishedAt: this.now(), doing: {} });
+      if (epoch === this.cleared) this.set({ ...this.state, running: false, finishedAt: this.now(), doing: {} });
     }
   }
 
-  private async test({ config, storeId }: VersusStore, deps: VersusDeps, query: string): Promise<void> {
+  private async test({ config, storeId }: VersusStore, deps: VersusDeps, query: string, epoch: number): Promise<void> {
     const id = config.id;
     const room = deps.roomAt(id, 2);
     if (room > this.now()) {
       this.row(id, { pausedUntil: room });
       return;
     }
+    // Erased meanwhile (see clear): nothing more is searched, nor kept.
+    const erased = () => epoch !== this.cleared;
     this.doing(id, 'waiting');
     await deps.whenFree?.(config);
+    if (erased()) return;
     this.doing(id, 'browser');
-    this.row(id, { browser: await this.side(() => deps.search(config, query, storeId, 'webview')) });
+    const browser = await this.side(() => deps.search(config, query, storeId, 'webview'));
+    if (erased()) return;
+    this.row(id, { browser });
     this.doing(id, 'plain');
-    this.row(id, { plain: await this.side(() => deps.search(config, query, storeId, 'fetch')) });
+    const plain = await this.side(() => deps.search(config, query, storeId, 'fetch'));
+    if (erased()) return;
+    this.row(id, { plain });
     this.doing(id, null);
   }
 
@@ -454,8 +464,10 @@ export class PhoneVsServer {
     this.set({ ...this.state, doing: what ? { ...rest, [retailerId]: what } : rest });
   }
 
+  /** Forgets the last test. One running stops: what it finds from here on is dropped. */
   clear(): void {
-    if (!this.state.running) this.set(EMPTY);
+    this.cleared++;
+    this.set(EMPTY);
   }
 
   serialize(): string {

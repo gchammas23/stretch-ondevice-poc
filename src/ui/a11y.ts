@@ -51,6 +51,24 @@ export function useScreenReader(): boolean {
   return on;
 }
 
+/** Whether the user asked for less motion (Reduce Motion), kept up to date: then things change without animating. */
+export function useReduceMotion(): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    AccessibilityInfo.isReduceMotionEnabled?.().then(
+      (v) => alive && setOn(v),
+      () => {},
+    );
+    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (v: boolean) => setOn(v));
+    return () => {
+      alive = false;
+      sub?.remove();
+    };
+  }, []);
+  return on;
+}
+
 /** Props that keep a decorative View, and everything in it, away from screen readers. */
 export const hiddenFromScreenReaders = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 

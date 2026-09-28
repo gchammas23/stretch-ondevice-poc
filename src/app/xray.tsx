@@ -79,7 +79,7 @@ export default function XrayScreen() {
           <Text style={styles.title} accessibilityRole="header">
             Where the price was
           </Text>
-          <View style={styles.path}>
+          <View style={styles.path} accessible accessibilityLabel={`Path: ${path.join(', then ')}, equals ${e.price !== null ? e.price : 'nothing'}`}>
             {path.map((key, i) => (
               <View key={`${key}-${i}`} style={styles.pathPart}>
                 {i ? <Icon name="forward" size={12} color={colors.faint} /> : null}
@@ -91,7 +91,7 @@ export default function XrayScreen() {
           <View
             style={styles.code}
             accessible
-            accessibilityLabel={`The product’s data, ${lines.length} lines.${highlight >= 0 ? ` The price is on line ${first + highlight + 1}.` : ''}`}
+            accessibilityLabel={`The product’s data, ${lines.length} lines.${highlight >= 0 ? ` The price is on line ${first + highlight + 1}: ${lines[highlight].trim()}` : ''}`}
           >
             <View {...hiddenFromScreenReaders}>
               {first > 0 ? <Text style={styles.codeLine}>…</Text> : null}

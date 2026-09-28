@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { dayOf } from '../onDevice/adPage';
@@ -85,6 +85,10 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
   const today = dayOf(now);
   const [message, setMessage] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  // One round of clips at a time: a second tap meanwhile would clip the same coupons again, each a page load.
+  const [clipping, setClipping] = useState(false);
+  const clipRound = useRef(false);
+  const [viewing, setViewing] = useState(false);
   const site = hostOf(config.homeUrl).replace(/^www\./, '');
 
   const adAt = adTarget(config, choice, settings.zip);
@@ -93,8 +97,9 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
   const ad = ads[config.id];
   const onLists = ad ? adDeals(lists, { [config.id]: ad }, today) : [];
   const mine = adAt && !('needs' in adAt) && adRead?.key === adAt.key ? adRead : undefined;
-  // Read today and it worked: not again until tomorrow. A read that failed can be tried again now.
-  const canAsk = !!adAt && !('needs' in adAt) && !readingAd && (!mine || !mine.ok);
+  // Read today and it worked: not again until tomorrow. A read that failed can be tried again now. The button stays
+  // while its read runs, busy, so the screen reader's place isn't lost.
+  const canAsk = !!adAt && !('needs' in adAt) && (!mine || !mine.ok);
 
   const couponAt = couponTarget(config, settings.signedInAt[config.id]);
   const couponRead = couponBook.get(config.id);
@@ -104,19 +109,49 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
   const toClip = forLists.filter((x) => !x.coupon.clipped);
 
   const clip = async (ids: string[]) => {
+    if (clipRound.current) return;
+    clipRound.current = true;
+    setClipping(true);
     tap();
     setMessage(null);
-    const got = await clipCoupons(config.id, ids);
-    const text = got.failed.length
-      ? `${got.clipped ? `Clipped ${got.clipped}. ` : ''}Couldn’t clip ${got.failed.length === 1 ? 'one' : got.failed.length} here (${reasonWords(got.reason)}): it’s being checked again, or clip it on ${site}.`
-      : `Clipped ${got.clipped} ${got.clipped === 1 ? 'coupon' : 'coupons'} to your ${config.name} account.`;
-    setMessage(text);
-    announce(text);
+    try {
+      const got = await clipCoupons(config.id, ids);
+      const text = got.failed.length
+        ? `${got.clipped ? `Clipped ${got.clipped}. ` : ''}Couldn’t clip ${got.failed.length === 1 ? 'one' : got.failed.length} here (${reasonWords(got.reason)}): it’s being checked again, or clip it on ${site}.`
+        : `Clipped ${got.clipped} ${got.clipped === 1 ? 'coupon' : 'coupons'} to your ${config.name} account.`;
+      setMessage(text);
+      announce(text);
+    } finally {
+      clipRound.current = false;
+      setClipping(false);
+    }
   };
+  const view = async () => {
+    setViewing(true);
+    try {
+      await viewCoupons(config.id);
+    } catch {
+      // Left open until its page gave up: nothing changed, and the card says where the coupons stand.
+    } finally {
+      setViewing(false);
+    }
+  };
+
+  // Reads end out of sight of VoiceOver: each is said when it's done, as the card words it.
+  const wasReadingAd = useRef(readingAd);
+  const wasReadingCoupons = useRef(readingCoupons);
+  useEffect(() => {
+    if (wasReadingAd.current && !readingAd) announce(adStatusWords(config, adAt, adRead, false, now));
+    if (wasReadingCoupons.current && !readingCoupons) announce(couponStatusWords(config, couponAt, couponRead, false, now));
+    wasReadingAd.current = readingAd;
+    wasReadingCoupons.current = readingCoupons;
+  });
   const signIn = async () => {
     setSigningIn(true);
     try {
       await signInAt(config.id);
+    } catch {
+      // Left open until its page gave up: the card says where the account stands.
     } finally {
       setSigningIn(false);
     }
@@ -149,6 +184,7 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
           icon="refresh"
           small
           variant="outline"
+          busy={readingAd}
           onPress={() => void checkAds(true, [config.id])}
           style={styles.alignStart}
         />
@@ -179,12 +215,14 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
               ) : (
                 <Pressable
                   onPress={() => void clip([coupon.id])}
+                  disabled={clipping}
                   hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
                   accessibilityRole="button"
                   accessibilityLabel={`Clip the coupon for ${itemName}: ${coupon.value}`}
                   accessibilityHint={`Clips it to your ${config.name} account, on ${config.name}’s own page`}
+                  accessibilityState={{ disabled: clipping }}
                 >
-                  <Text style={styles.clip}>Clip</Text>
+                  <Text style={[styles.clip, clipping && styles.clipWaiting]}>Clip</Text>
                 </Pressable>
               )}
             </View>
@@ -211,6 +249,7 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
                     icon="tag"
                     small
                     variant="dark"
+                    busy={clipping}
                     onPress={() => void clip(toClip.map((x) => x.coupon.id))}
                   />
                 ) : null}
@@ -230,7 +269,8 @@ function StoreSavings({ choice }: { choice: StoreChoice }) {
                   icon="external"
                   small
                   variant="outline"
-                  onPress={() => void viewCoupons(config.id)}
+                  busy={viewing}
+                  onPress={() => void view()}
                 />
                 <Pill label="Sign in again" accessibilityLabel={`Sign in again on ${site}`} icon="shield" small variant="outline" busy={signingIn} onPress={() => void signIn()} />
               </>
@@ -286,6 +326,7 @@ const styles = StyleSheet.create({
   itemRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   item: { fontFamily: fonts.medium, fontSize: 15, color: colors.ink },
   clip: { fontFamily: fonts.semibold, fontSize: 15, color: colors.green },
+  clipWaiting: { opacity: 0.45 },
   clipped: { fontFamily: fonts.medium, fontSize: 14, color: colors.green },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
 });

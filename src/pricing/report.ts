@@ -2,7 +2,7 @@ import { countsInHealth, storeHealth, type AttemptEntry, type StoreHealth } from
 import { COVERAGE_WORDS, coverageCounts, FEW_PRODUCTS, type CoverageRow, type CoverageState, type CoverageStatus } from '../onDevice/coverage';
 import { blockedLine, summaryLine, type VersusSummary } from '../onDevice/phoneVsServer';
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
-import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
+import { bytesText, reasonWords, seconds } from '../onDevice/scrapeFeed';
 import { DEFAULT_INPUTS, ESTIMATED, measuredFrom, monthlyCost, type CostInputs, type CostResult, type Measured } from './costModel';
 import type { Scorecard } from './scorecard';
 import type { TruthRecord } from './truth';
@@ -143,7 +143,6 @@ const CHECK_WORDS: Record<CoverageStatus, string> = {
   cooling: '– Cooling down',
 };
 
-const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 const pct = (share: number) => `${Math.round(share * 100)}%`;
 const count = (n: number) => n.toLocaleString('en-US');
 const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
@@ -320,9 +319,9 @@ function stats(c: Ctx): ReportStat[] {
       ? { value: pct(c.worked.length / c.tries.length), label: `of ${searches(c.tries.length)} worked, the last ${REPORT_DAYS} days${c.checkedInWindow ? ', besides the store check' : ''}` }
       : { value: '—', label: `No searches in the last ${REPORT_DAYS} days`, none: true },
     s
-      ? { value: sec(s.card.totalMs!), label: `to price ${s.items} items at ${plural(s.card.storesSearched, 'store')}${kindWords(s.kind)}, in the speed test` }
+      ? { value: seconds(s.card.totalMs!), label: `to price ${s.items} items at ${plural(s.card.storesSearched, 'store')}${kindWords(s.kind)}, in the speed test` }
       : c.medianMs !== undefined
-        ? { value: sec(c.medianMs), label: `a search, in the middle, the last ${REPORT_DAYS} days` }
+        ? { value: seconds(c.medianMs), label: `a search, in the middle, the last ${REPORT_DAYS} days` }
         : { value: '—', label: 'No speed test yet', none: true },
     t?.checked
       ? {
@@ -424,11 +423,11 @@ function storeTable(c: Ctx): Report['table'] {
       ...(check ? { check: CHECK_WORDS[check.status] } : {}),
       searches: h.attempts,
       ...(h.rate !== undefined ? { worked: pct(h.rate) } : {}),
-      ...(h.medianMs !== undefined ? { median: sec(h.medianMs) } : {}),
+      ...(h.medianMs !== undefined ? { median: seconds(h.medianMs) } : {}),
       botChecks: h.botChecks,
       ...(busiest ? { busiest: `${busiest} of ${MAX_SEARCHES_PER_HOUR}` } : {}),
       ...(h.bytes ? { data: bytesText(h.bytes) } : {}),
-      ...(speed?.totalMs !== undefined && speed.searches ? { speed: sec(speed.totalMs) } : {}),
+      ...(speed?.totalMs !== undefined && speed.searches ? { speed: seconds(speed.totalMs) } : {}),
     };
   });
   const caption = [
@@ -450,7 +449,7 @@ function tableSection(c: Ctx): ReportSection {
     title: 'Store by store',
     has: c.tries.length > 0,
     summary: c.tries.length
-      ? `${searches(c.tries.length)} at ${plural(stores, 'store')} in the last ${REPORT_DAYS} days: ${pct(c.worked.length / c.tries.length)} worked${c.medianMs !== undefined ? `, ${sec(c.medianMs)} each in the middle` : ''}.`
+      ? `${searches(c.tries.length)} at ${plural(stores, 'store')} in the last ${REPORT_DAYS} days: ${pct(c.worked.length / c.tries.length)} worked${c.medianMs !== undefined ? `, ${seconds(c.medianMs)} each in the middle` : ''}.`
       : `No searches in the last ${REPORT_DAYS} days: price a list, or run the speed test.`,
     lines: c.tries.length || c.input.compared.length ? [] : [{ text: `No store was searched in the last ${REPORT_DAYS} days.` }],
   };
@@ -463,25 +462,25 @@ function speedSection(c: Ctx): ReportSection {
     const card = s.card;
     const how = howText(card);
     lines.push({
-      lead: `${s.items} items at ${plural(card.storesSearched, 'store')} in ${sec(card.totalMs!)}${kindWords(s.kind)}`,
+      lead: `${s.items} items at ${plural(card.storesSearched, 'store')} in ${seconds(card.totalMs!)}${kindWords(s.kind)}`,
       text:
         `${s.kind === 'cold' ? '(every store’s page loaded first, as after opening the app) ' : ''}in the speed test, ${stamp(s.at, c.now)}. ` +
-        `${card.ok} of ${searches(card.searches)} worked${how ? ` (${how})` : ''}${card.firstMs !== undefined ? `, and the first price came after ${sec(card.firstMs)}` : ''}.`,
+        `${card.ok} of ${searches(card.searches)} worked${how ? ` (${how})` : ''}${card.firstMs !== undefined ? `, and the first price came after ${seconds(card.firstMs)}` : ''}.`,
     });
   } else {
     lines.push({ text: 'No speed test since the app opened: Diagnostics → Speed test prices 6 items at every compared store.' });
   }
   if (c.medianMs !== undefined) {
-    lines.push({ text: `Over the last ${REPORT_DAYS} days, a search that worked took ${sec(c.medianMs)} in the middle (of ${count(c.worked.length)}).` });
+    lines.push({ text: `Over the last ${REPORT_DAYS} days, a search that worked took ${seconds(c.medianMs)} in the middle (of ${count(c.worked.length)}).` });
   }
   return {
     id: 'speed',
     title: 'Speed',
     has: !!s || c.medianMs !== undefined,
     summary: s
-      ? `${s.items} items at ${plural(s.card.storesSearched, 'store')} in ${sec(s.card.totalMs!)}${kindWords(s.kind)}.`
+      ? `${s.items} items at ${plural(s.card.storesSearched, 'store')} in ${seconds(s.card.totalMs!)}${kindWords(s.kind)}.`
       : c.medianMs !== undefined
-        ? `No speed test since the app opened; ${sec(c.medianMs)} a search over ${REPORT_DAYS} days.`
+        ? `No speed test since the app opened; ${seconds(c.medianMs)} a search over ${REPORT_DAYS} days.`
         : 'No speed test yet: Diagnostics → Speed test.',
     lines,
   };
@@ -685,10 +684,10 @@ function costSection(c: Ctx): ReportSection {
       },
       {
         ...(measured.searches
-          ? { text: `Worked out from this ${c.device}’s average search (${bytesText(measured.bytesPerSearch)}, ${sec(measured.msPerSearch)}) and:` }
+          ? { text: `Worked out from this ${c.device}’s average search (${bytesText(measured.bytesPerSearch)}, ${seconds(measured.msPerSearch)}) and:` }
           : {
               basis: 'estimate' as const,
-              text: `Worked out from the app’s starting estimate of a search (${bytesText(measured.bytesPerSearch)}, ${sec(measured.msPerSearch)}: this ${c.device} hasn’t measured enough yet) and:`,
+              text: `Worked out from the app’s starting estimate of a search (${bytesText(measured.bytesPerSearch)}, ${seconds(measured.msPerSearch)}: this ${c.device} hasn’t measured enough yet) and:`,
             }),
         more: [
           {

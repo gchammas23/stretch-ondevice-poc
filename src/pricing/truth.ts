@@ -1,3 +1,4 @@
+import { isObj } from '../onDevice/json';
 import type { Product } from '../onDevice/types';
 import type { Basket } from './basket';
 
@@ -110,8 +111,6 @@ export interface TruthRecord {
   summary: TruthSummary;
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
 /** The last finished truth check. Pure TypeScript: the app saves it with AsyncStorage, the tests keep it in memory. */
 export class TruthBook {
   private last: TruthRecord | undefined;
@@ -145,9 +144,9 @@ export class TruthBook {
     if (!json) return;
     try {
       const saved = JSON.parse(json) as unknown;
-      if (!isRecord(saved) || typeof saved.at !== 'number' || typeof saved.perStore !== 'number' || !isRecord(saved.summary)) return;
+      if (!isObj(saved) || typeof saved.at !== 'number' || typeof saved.perStore !== 'number' || !isObj(saved.summary)) return;
       const s = saved.summary;
-      if (typeof s.checked !== 'number' || typeof s.same !== 'number' || typeof s.different !== 'number' || typeof s.unreadable !== 'number' || !isRecord(s.byStore)) return;
+      if (typeof s.checked !== 'number' || typeof s.same !== 'number' || typeof s.different !== 'number' || typeof s.unreadable !== 'number' || !isObj(s.byStore)) return;
       this.last = saved as unknown as TruthRecord;
     } catch {
       // No check to show: the report says how to run one.

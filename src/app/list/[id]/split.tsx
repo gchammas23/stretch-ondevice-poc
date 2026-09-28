@@ -6,7 +6,7 @@ import type { GroceryList } from '../../../lists/types';
 import { dollars, feesSummary, MODE_WORDS, orderable } from '../../../pricing/onlineCost';
 import { startTrip } from '../../../pricing/trips';
 import { storeNote } from '../../../state/storeInfo';
-import { useApp, useComparison, useList, usePricingRun, useSettings } from '../../../state/AppProvider';
+import { useApp, useComparison, useList, usePricingRun, useSettings, useStoreName } from '../../../state/AppProvider';
 import { useFooterHeight } from '../../../ui/a11y';
 import { Pill, ProductThumb } from '../../../ui/controls';
 import { RetailerBadge } from '../../../ui/RetailerBadge';
@@ -17,18 +17,18 @@ export default function SplitScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const list = useList(id);
   if (!list) return <ScreenHeader title="Split trip" subtitle="This list was deleted." />;
-  return <SplitView list={list} />;
+  return <SplitView key={list.id} list={list} />;
 }
 
 function SplitView({ list }: { list: GroceryList }) {
   const insets = useSafeAreaInsets();
-  const { store, bundle } = useApp();
+  const { store } = useApp();
   const settings = useSettings();
   const run = usePricingRun(list.id);
   const { split, baskets, mode, costAt, online, orderCost } = useComparison(list, run);
   // Ordering online: two orders, each with its own fees.
   const how = mode === 'store' ? '' : ` ${MODE_WORDS[mode]}`;
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
   const [footerHeight, onFooterLayout] = useFooterHeight(110 + insets.bottom);
 
   if (!split) {

@@ -278,5 +278,40 @@ const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
     q.reset();
   });
 
+  await t('Skip on a bot check: the page loads waiting behind it at the same site fail too, others don’t; searches waiting see when', async () => {
+    const q = new WebViewQueue();
+    q.challengeGraceMs = 0;
+    const first = q.run(job());
+    const behind = q.run(job({ url: 'https://www.walmart.com/search?q=eggs' }));
+    const task = q.run(job({ url: 'https://www.walmart.com/store-finder', task: { kind: 'listStores', zip: '10001' } }));
+    const elsewhere = q.run(job({ url: 'https://www.target.com/s?searchTerm=milk' }));
+    const before = Date.now();
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'challenge' }));
+    await tick();
+    assert.equal(q.getSnapshot()!.phase, 'challenge');
+    q.cancel();
+    await assert.rejects(first, /challenge_cancelled/);
+    await assert.rejects(behind, /challenge_cancelled/, 'it would only meet the check again');
+    assert.ok(q.skippedAt >= before);
+    assert.match(q.getSnapshot()!.url, /store-finder/, 'a store finder task isn’t a search: it goes on');
+    q.cancel();
+    await assert.rejects(task);
+    assert.match(q.getSnapshot()!.url, /target\.com/, 'another site’s page (the pages lane) goes on');
+    const skipped = q.skippedAt;
+    q.cancel();
+    await assert.rejects(elsewhere);
+    assert.equal(q.skippedAt, skipped, 'ending a load that isn’t on a check isn’t a Skip');
+  });
+
+  await t('reset: a page loading at a reset finishes, but isn’t kept, nor counted as the lane’s page', async () => {
+    const q = new WebViewQueue();
+    const load = q.run(job({ keepPage: true }));
+    const resets = q.resets;
+    q.reset();
+    q.receive(JSON.stringify({ nonce: nonceOf(q.getSnapshot()!.script), kind: 'data', nextDataText: '{}' }));
+    assert.equal((await load).nextDataText, '{}', 'its search gets its answer');
+    assert.deepEqual([q.hasPage(), q.getSnapshot(), q.resets], [false, null, resets + 1]);
+  });
+
   console.log(`\n${passed} queue tests passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

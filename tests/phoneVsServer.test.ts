@@ -341,6 +341,21 @@ const stubFetch = (body: string, status = 200, ms = 0) => {
     assert.equal(halfway.getSnapshot().stores.length, 0);
     again.clear();
     assert.equal(again.getSnapshot().stores.length, 0);
+    // Erase everything mid-test: it stops, and what it finds afterwards is dropped.
+    const erased = new PhoneVsServer(() => 5);
+    const searched: string[] = [];
+    const going = erased.run([{ config: rules('ralphs'), storeId: '', parentName: 'Kroger' }], {
+      ...deps,
+      search: async (cfg, q, s, only) => {
+        searched.push(only);
+        await new Promise((r) => setTimeout(r, 5));
+        return deps.search(cfg, q, s, only);
+      },
+    });
+    await new Promise((r) => setTimeout(r, 1));
+    erased.clear();
+    await going;
+    assert.deepEqual([erased.getSnapshot().running, erased.getSnapshot().rows, searched], [false, {}, ['webview']], 'no plain request after the erase');
   });
 
   await t('shared as text: what was searched, the summary, what blocked what, the datacenter, the best case, then store by store', () => {

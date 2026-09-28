@@ -1,5 +1,5 @@
 import { howWords } from './retailerSearch';
-import { reasonWords } from './scrapeFeed';
+import { reasonWords, seconds } from './scrapeFeed';
 import type { Attempt, RetailerConfig, SearchOutcome } from './types';
 
 // Pure TypeScript: which stores this phone can read right now, one search each.
@@ -88,6 +88,8 @@ const EMPTY: CoverageState = { query: 'milk', running: false, stores: [], rows: 
 export class CoverageCheck {
   private state: CoverageState = EMPTY;
   private listeners = new Set<() => void>();
+  /** Counts clears: a check running at one (Erase everything) stops there, and keeps nothing. */
+  private cleared = 0;
 
   constructor(private now: () => number = Date.now) {}
 
@@ -107,6 +109,7 @@ export class CoverageCheck {
 
   async run(stores: { config: RetailerConfig; storeId: string }[], search: CoverageSearch, query = 'milk', atOnce = 4): Promise<void> {
     if (this.state.running || !stores.length) return;
+    const epoch = this.cleared;
     this.set({
       query,
       running: true,
@@ -117,16 +120,17 @@ export class CoverageCheck {
     });
     let next = 0;
     const worker = async () => {
-      for (let i = next++; i < stores.length; i = next++) {
+      for (let i = next++; i < stores.length && epoch === this.cleared; i = next++) {
         const { config, storeId } = stores[i];
         this.set({ ...this.state, checking: [...this.state.checking, config.id] });
         const row = await this.check(config, storeId, query, search);
+        if (epoch !== this.cleared) return;
         const rows = { ...this.state.rows, [config.id]: row };
         this.set({ ...this.state, rows, checking: this.state.checking.filter((id) => id !== config.id) });
       }
     };
     await Promise.all(Array.from({ length: Math.min(atOnce, stores.length) }, worker));
-    this.set({ ...this.state, running: false, finishedAt: this.now() });
+    if (epoch === this.cleared) this.set({ ...this.state, running: false, finishedAt: this.now() });
   }
 
   private async check(config: RetailerConfig, storeId: string, query: string, search: CoverageSearch): Promise<CoverageRow> {
@@ -153,8 +157,10 @@ export class CoverageCheck {
     }
   }
 
+  /** Forgets the last check. One running stops: what it finds from here on is dropped. */
   clear(): void {
-    if (!this.state.running) this.set(EMPTY);
+    this.cleared++;
+    this.set(EMPTY);
   }
 
   serialize(): string {
@@ -179,10 +185,8 @@ export class CoverageCheck {
   }
 }
 
-const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
-
 /** "58 products in 3.2 s (page load)". */
-const gotText = (r: CoverageRow) => `${r.products} ${r.products === 1 ? 'product' : 'products'} in ${sec(r.ms)}${r.how ? ` (${r.how})` : ''}`;
+const gotText = (r: CoverageRow) => `${r.products} ${r.products === 1 ? 'product' : 'products'} in ${seconds(r.ms)}${r.how ? ` (${r.how})` : ''}`;
 
 /** A store's result in a line of text: its verdict, its reason's code, and what Store health says under it. */
 export function coverageLine(r: CoverageRow): string {

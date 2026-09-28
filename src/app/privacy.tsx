@@ -17,7 +17,7 @@ import { colors, fonts, radius, shadow } from '../ui/theme';
  */
 export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
-  const { cache, coverage, versus, truth, fees, ads, coupons, startOver } = useApp();
+  const { cache, fees, ads, coupons, forgetPrices: forget, startOver } = useApp();
   const history = useHistory();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
@@ -36,17 +36,7 @@ export default function PrivacyScreen() {
       {
         text: 'Forget',
         style: 'destructive',
-        onPress: () => {
-          cache.clear();
-          history.clear();
-          log.clear();
-          coverage.clear();
-          versus.clear();
-          truth.clear();
-          fees.clear();
-          ads.clear();
-          coupons.clear();
-        },
+        onPress: forget,
       },
     ]);
 

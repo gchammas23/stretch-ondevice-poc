@@ -32,6 +32,12 @@ export class ScrapeFeed {
     this.events = [{ ...event, id: this.nextId++ }, ...this.events].slice(0, KEPT);
     this.listeners.forEach((listener) => listener());
   }
+
+  clear(): void {
+    if (!this.events.length) return;
+    this.events = [];
+    this.listeners.forEach((listener) => listener());
+  }
 }
 
 const REASONS: Record<string, string> = {

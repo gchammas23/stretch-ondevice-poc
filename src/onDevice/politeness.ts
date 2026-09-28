@@ -60,10 +60,6 @@ export class Politeness {
     return over <= 0 ? this.now() : list[over - 1] + HOUR + 1;
   }
 
-  reset(): void {
-    this.times.clear();
-  }
-
   private recent(retailerId: string): number[] {
     const since = this.now() - HOUR;
     const list = (this.times.get(retailerId) ?? []).filter((t) => t >= since);

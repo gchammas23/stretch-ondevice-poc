@@ -32,7 +32,7 @@ import {
 import type { RetailerConfig } from '../src/onDevice/types';
 import { storeInfo, storeNote } from '../src/state/storeInfo';
 import { AppStore, type KeyValueStore } from '../src/state/appStore';
-import { storeChoices } from '../src/state/storeChoices';
+import { steadyChoices, storeChoices } from '../src/state/storeChoices';
 import { chooseStore, currentSetup, isUsZip, setUpStores, type SetupDeps } from '../src/state/storeSetup';
 
 const retailers = BUNDLED_CONFIG.retailers;
@@ -129,6 +129,25 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(pick('kroger').config.strategies, ['api'], 'with keys, no slow website fallback');
     const noKeys = storeChoices(store.getState().settings, retailers, () => false).find((c) => c.config.id === 'kroger')!;
     assert.deepEqual(noKeys.config.strategies, ['api', 'webview']);
+  });
+
+  await t('choices: the same array while the stores are chosen the same way; another store, a sign-in or new rules make new ones', async () => {
+    const store = await fresh();
+    store.setRetailers(['walmart', 'target']);
+    const first = steadyChoices(store.getState().settings, retailers);
+    // What a search saw, noted, and another setting: nothing about which stores are compared, or how.
+    store.noteSeenStore('walmart', first[0].storeKey, { name: 'Secaucus Supercenter' }, 1);
+    store.setRankBy('unit');
+    assert.equal(steadyChoices(store.getState().settings, retailers), first, 'the same choices: screens don’t price again');
+    store.setStoreId('target', '1340');
+    const second = steadyChoices(store.getState().settings, retailers);
+    assert.notEqual(second, first);
+    assert.equal(second.find((c) => c.config.id === 'target')!.storeId, '1340');
+    store.noteSignedIn('walmart', 5);
+    assert.notEqual(steadyChoices(store.getState().settings, retailers), second, 'signed in: another store key');
+    const served = retailers.map((r) => ({ ...r }));
+    const walmart = steadyChoices(store.getState().settings, served).find((c) => c.config.id === 'walmart')!;
+    assert.equal(walmart.config, served.find((r) => r.id === 'walmart'), 'a rules file: its own rules');
   });
 
   await t('set up: each retailer’s nearest store; none within the radius drops it; so does a finder that fails, until a store is set', async () => {

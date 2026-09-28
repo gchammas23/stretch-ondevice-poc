@@ -71,6 +71,8 @@ export interface PricingRun {
   retailerIds: string[];
   startedAt: number;
   finishedAt?: number;
+  /** How long it sat finished before a retry searched again: not part of how long it took (see runMs). */
+  idleMs?: number;
   stores: Record<string, StoreRun>;
   /** retailerId → queryKey → result. */
   results: Record<string, Record<string, SearchResult>>;
@@ -105,6 +107,10 @@ export interface StoreChoice {
 }
 
 export type SearchedListener = (retailerId: string, storeKey: string, products: Product[], at: number, store?: KnownStore) => void;
+
+/** How long a finished run took, searching: from its start to its end, less any time it sat finished before a retry. */
+export const runMs = (run: PricingRun): number | undefined =>
+  run.finishedAt === undefined ? undefined : run.finishedAt - run.startedAt - (run.idleMs ?? 0);
 
 /** Stores searched at once: one WebView lane each. */
 export const STORES_AT_ONCE = 4;
@@ -157,6 +163,8 @@ export class PricingEngine {
   /** Each list's items that can take another item's search (see StartOptions.share). */
   private shares = new Map<string, Record<string, string>>();
   private concurrency: Concurrency | null = null;
+  /** Counts resets: a search that was running at one ends without touching the cache, the listeners or a run. */
+  private generation = 0;
 
   constructor(
     private search: SearchFn,
@@ -241,6 +249,8 @@ export class PricingEngine {
     this.stopped.delete(listId);
     const share = opts.share ?? {};
     this.shares.set(listId, share);
+    // A store taken off the list's stores: its searches still running end without touching the run.
+    for (const r of prev?.retailerIds ?? []) if (!stores.some((s) => s.config.id === r)) this.workers.delete(`${listId}|${r}`);
 
     for (const { config, storeId, storeKey } of stores) {
       const r = config.id;
@@ -256,6 +266,12 @@ export class PricingEngine {
       const prevStore = sameStore ? prev?.stores[r] : undefined;
       const queued = Object.values(mine).some((x) => x.status === 'queued');
       // A store that had finished keeps its times when there's nothing new, and starts its clock again when there is.
+      // One that stopped (cooling down, at its hourly limit, kept failing) still says why, and still waits for its retry
+      // time, until something new is searched there.
+      const stopped =
+        !queued && prevStore?.stoppedBecause !== undefined
+          ? { stoppedBecause: prevStore.stoppedBecause, ...(prevStore.retryAt !== undefined ? { retryAt: prevStore.retryAt } : {}) }
+          : {};
       runStores[r] = storeSummary(
         {
           retailerId: r,
@@ -267,19 +283,23 @@ export class PricingEngine {
           searching: [],
           startedAt: queued && prevStore?.finishedAt !== undefined ? undefined : prevStore?.startedAt,
           finishedAt: queued ? undefined : prevStore?.finishedAt,
+          ...stopped,
         },
         mine,
         now,
       );
-      if (queued) this.streaks.set(workerKey, 0);
+      // A fresh start forgives the store's failures; pricing again while it's still searching doesn't (see FAILURES_BEFORE_STOP).
+      if (queued && (opts.refresh || !sameStore || !this.active.has(workerKey))) this.streaks.set(workerKey, 0);
     }
 
     // A run still going keeps its start; new searches after a finished run start the clock again.
     const searching = Object.values(results).some((mine) => Object.values(mine).some((x) => x.status === 'queued'));
+    const keepsStart = !!prev && (!prev.finishedAt || !searching);
     const run: PricingRun = {
       listId,
       retailerIds: stores.map((s) => s.config.id),
-      startedAt: prev && !prev.finishedAt ? prev.startedAt : searching || !prev ? now : prev.startedAt,
+      startedAt: keepsStart ? prev.startedAt : now,
+      ...(keepsStart && prev.idleMs ? { idleMs: prev.idleMs } : {}),
       stores: runStores,
       results,
     };
@@ -314,8 +334,12 @@ export class PricingEngine {
       : { status: 'queued', query, products: [], queuedAt };
   }
 
-  /** Forgets every run, as on a fresh start. Searches already running finish, and their results go nowhere. */
+  /**
+   * Forgets every run, as on a fresh start. Searches already running finish, and their results go nowhere: not into a
+   * run, the cache or the listeners (price history, the watchlist), which may have just been erased too.
+   */
   reset(): void {
+    this.generation++;
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();
     this.gaveUpAt.clear();
@@ -348,22 +372,30 @@ export class PricingEngine {
     this.stopped.delete(listId);
     const run = this.runs.get(listId);
     if (!run) return;
-    const targets = retailerId ? [retailerId] : run.retailerIds;
+    const targets = (retailerId ? [retailerId] : run.retailerIds).filter((id) => run.stores[id]);
     this.update(listId, (r) => {
+      const now = this.now();
       const results = { ...r.results };
       const stores = { ...r.stores };
+      let again = false;
       for (const id of targets) {
         const mine = { ...results[id] };
-        const queuedAt = this.now();
         for (const [k, v] of Object.entries(mine)) {
-          if (v.status === 'failed' || v.status === 'skipped') mine[k] = { status: 'queued', query: v.query, products: [], queuedAt };
-          else if (v.status === 'done' && v.reason) mine[k] = { ...v, status: 'queued', reason: undefined, detail: undefined, outcome: undefined, timing: undefined, queuedAt };
+          if (v.status === 'failed' || v.status === 'skipped') mine[k] = { status: 'queued', query: v.query, products: [], queuedAt: now };
+          else if (v.status === 'done' && v.reason) mine[k] = { ...v, status: 'queued', reason: undefined, detail: undefined, outcome: undefined, timing: undefined, queuedAt: now };
         }
+        const queued = Object.values(mine).some((x) => x.status === 'queued');
+        again ||= queued;
         results[id] = mine;
         this.streaks.set(`${listId}|${id}`, 0);
-        stores[id] = { ...storeSummary(stores[id], mine, this.now()), stoppedBecause: undefined, retryAt: undefined, finishedAt: undefined };
+        // A store that had finished starts its clock again when it's searched again (see work).
+        const restart = queued && stores[id].finishedAt !== undefined ? { startedAt: undefined } : {};
+        stores[id] = { ...storeSummary(stores[id], mine, now), stoppedBecause: undefined, retryAt: undefined, ...restart };
       }
-      return { ...r, results, stores, finishedAt: undefined };
+      // A finished run searched again keeps its start: the time it sat finished doesn't count toward how long it took
+      // (see runMs). With nothing to search again, it stays finished.
+      const idle = again && r.finishedAt !== undefined ? { idleMs: (r.idleMs ?? 0) + (now - r.finishedAt) } : {};
+      return finishIfDone({ ...r, results, stores, ...idle }, now);
     });
     for (const id of targets) void this.work(listId, id);
   }
@@ -494,9 +526,12 @@ export class PricingEngine {
     const { config, storeId, storeKey } = worker;
     // The user may pick another store while this search runs; its prices would then belong to the old one.
     const stillSameStore = () => this.workers.get(workerKey)?.storeKey === storeKey;
+    // Or erase everything (see reset): then nothing of it is kept anywhere.
+    const generation = this.generation;
     const startedAt = this.now();
     try {
       const out = await this.search(config, pending.query, storeId);
+      if (generation !== this.generation) return true;
       const at = this.now();
       const found = out.products.length;
       this.cache.set(PriceCache.key(retailerId, storeKey, key), {
@@ -516,7 +551,7 @@ export class PricingEngine {
       this.shareFrom(listId, retailerId);
       return true;
     } catch (e) {
-      if (!stillSameStore()) return true;
+      if (generation !== this.generation || !stillSameStore()) return true;
       // Cut off by the app leaving the screen, not a real failure: run it again.
       if (this.backgroundedAt >= startedAt) {
         this.setResult(listId, retailerId, key, { ...pending, status: 'queued' });
@@ -558,6 +593,7 @@ export class PricingEngine {
    * through the same hourly limit as any other.
    */
   private coolOff(listId: string, retailerId: string, cooling: { until: number; words: string }): void {
+    if (!this.runs.get(listId)?.stores[retailerId]) return; // Taken off the list's stores meanwhile.
     this.skipRest(listId, retailerId, cooling.words, 'cooling_down');
     this.update(listId, (run) => (run.stores[retailerId] ? { ...run, stores: { ...run.stores, [retailerId]: { ...run.stores[retailerId], retryAt: cooling.until } } } : run));
     const key = `${listId}|${retailerId}`;
@@ -590,6 +626,7 @@ export class PricingEngine {
   private skipRest(listId: string, retailerId: string, why: string, reason = why): void {
     if (why.startsWith(KEPT_FAILING)) this.gaveUpAt.set(`${listId}|${retailerId}`, this.now());
     this.update(listId, (run) => {
+      if (!run.stores[retailerId]) return run; // Taken off the list's stores meanwhile.
       const mine = { ...run.results[retailerId] };
       for (const [k, v] of Object.entries(mine)) if (v.status === 'queued') mine[k] = settle(v, 'skipped', reason, reason === why ? undefined : why);
       const store = { ...storeSummary(run.stores[retailerId], mine, this.now()), stoppedBecause: why };

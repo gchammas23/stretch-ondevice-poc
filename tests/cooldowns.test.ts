@@ -469,6 +469,32 @@ const failure = (p: Promise<unknown>) => p.then(() => assert.fail('expected the 
     mid.reset();
   });
 
+  await t('engine: coming back to a list whose store is cooling down keeps its words and retry time, and it’s still tried again then', async () => {
+    const searched: string[] = [];
+    const until = Date.now() + 60;
+    let cooling = true;
+    const engine = new PricingEngine(async (cfg, q): Promise<SearchOutcome> => {
+      searched.push(`${cfg.id}:${q}`);
+      return { retailer: cfg.name, products: [{ retailer: cfg.id, storeId: '', id: q, name: `Brand ${q}`, price: 2 }], strategy: 'webview', ms: 5, attempts: [] };
+    }, new PriceCache());
+    const words = `Cooling down after “Access Denied”, retrying at ${clockText(until)}`;
+    engine.setConcurrency({ searches: () => 2, stores: (max) => max, cooling: (cfg) => (cfg.id === 'kr' && cooling ? { until, words } : undefined) });
+    const stores = [
+      { config: store('kr'), storeId: '', storeKey: 'k' },
+      { config: store('wm'), storeId: '', storeKey: 'k' },
+    ];
+    engine.start('L', ['milk'], stores);
+    for (let i = 0; i < 100 && !engine.getRun('L')?.finishedAt; i++) await tick(5);
+    // The list's screen shows again, or a setting changed: the same items at the same stores, priced again.
+    engine.start('L', ['milk'], stores);
+    const run = engine.getRun('L')!;
+    assert.deepEqual([run.stores.kr.stoppedBecause, run.stores.kr.retryAt, run.results.kr.milk.status], [words, until, 'skipped'], 'still says why, and until when');
+    cooling = false;
+    for (let i = 0; i < 200 && engine.getRun('L')!.results.kr.milk.status !== 'done'; i++) await tick(10);
+    assert.equal(engine.getRun('L')!.results.kr.milk.status, 'done', 'tried again at its retry time');
+    assert.deepEqual(searched.sort(), ['kr:milk', 'wm:milk']);
+  });
+
   // --- Kept in the log, counted apart --------------------------------------------------------------------------------------------
   await t('the log: cool-downs outlive the app, but not ones a dropped connection called off; Store health counts them; notes aren’t visits', () => {
     const now = 80_000_000;

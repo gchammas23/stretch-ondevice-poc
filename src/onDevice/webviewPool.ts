@@ -109,9 +109,13 @@ export class WebViewPool {
     }
     const visit = this.all().find((l) => l.getSnapshot()?.phase === 'browse');
     const presented = visit ?? (this.checkOrder.length ? (this.lanes.get(this.checkOrder[0]) ?? null) : null);
-    // The live view shows every lane's page, so any page change is news to it.
-    if (!lanesChanged && presented === this.snapshot.presented && this.live !== 'open') return;
-    if (presented && presented !== this.snapshot.presented) presented.onPresented();
+    // The live view and presenter mode's stage show every lane's page, so any page change is news to them.
+    if (!lanesChanged && presented === this.snapshot.presented && this.live !== 'open' && this.live !== 'stage') return;
+    if (presented !== this.snapshot.presented) {
+      // A bot check's time counts only while it's on screen.
+      this.snapshot.presented?.onHidden();
+      presented?.onPresented();
+    }
     this.snapshot = { lanes: this.all(), presented, live: this.live };
     this.listeners.forEach((listener) => listener());
   }

@@ -1,22 +1,31 @@
 import React, { useEffect, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import { seconds } from '../onDevice/scrapeFeed';
 import { rankBaskets, type Basket, type RankBy, type TripCosts } from '../pricing/basket';
 import type { PricingRun, StoreRun } from '../pricing/pricingEngine';
-import { hiddenFromScreenReaders } from './a11y';
+import { hiddenFromScreenReaders, useReduceMotion } from './a11y';
 import { Icon } from './Icon';
 import { brandColor, RetailerBadge } from './RetailerBadge';
 import { colors, fonts, money, radius } from './theme';
 import { useNow } from './useNow';
 
-const seconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
+/** "3.4 seconds", as a screen reader should say a time. */
+const spokenSeconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} seconds`;
+
+/**
+ * The seconds since `from`, ticking every tenth of a second. Only this text draws again each tick, not the screen
+ * around it: the phone is busy reading the stores meanwhile.
+ */
+export function Stopwatch({ from, style }: { from: number; style?: StyleProp<TextStyle> }) {
+  const now = useNow(100);
+  return <Text style={style}>{seconds(now - from)}</Text>;
+}
 
 /**
  * The race: a lane per store that fills as its prices come in, with its own stopwatch and the basket so far. Stores
  * that finish show their place.
  */
 export function RaceLanes({ run, baskets, nameOf }: { run: PricingRun; baskets: Basket[]; nameOf: (retailerId: string) => string }) {
-  const running = !run.finishedAt;
-  const now = useNow(running ? 100 : 60_000);
   const stores = run.retailerIds.map((id) => run.stores[id]).filter((s): s is StoreRun => !!s);
   // Places by finishing time, among stores that have finished.
   const finished = stores.filter((s) => s.status === 'done' && s.finishedAt !== undefined).sort((a, b) => a.finishedAt! - b.finishedAt!);
@@ -28,8 +37,6 @@ export function RaceLanes({ run, baskets, nameOf }: { run: PricingRun; baskets: 
         const fresh = basket?.lines.filter((l) => l.status === 'found' && !l.refreshing && !l.stale) ?? [];
         const soFar = fresh.length ? Math.round(fresh.reduce((sum, l) => sum + l.lineTotal, 0) * 100) / 100 : undefined;
         const place = finished.indexOf(s);
-        const start = s.startedAt ?? run.startedAt;
-        const time = s.finishedAt !== undefined ? s.finishedAt - start : s.startedAt !== undefined ? now - start : 0;
         return (
           <Lane
             key={s.retailerId}
@@ -37,7 +44,7 @@ export function RaceLanes({ run, baskets, nameOf }: { run: PricingRun; baskets: 
             name={nameOf(s.retailerId)}
             total={soFar}
             place={place === -1 ? undefined : place + 1}
-            time={time}
+            start={s.startedAt ?? run.startedAt}
           />
         );
       })}
@@ -45,26 +52,41 @@ export function RaceLanes({ run, baskets, nameOf }: { run: PricingRun; baskets: 
   );
 }
 
-function Lane({ store, name, total, place, time }: { store: StoreRun; name: string; total?: number; place?: number; time: number }) {
+function Lane({ store, name, total, place, start }: { store: StoreRun; name: string; total?: number; place?: number; start: number }) {
   const progress = store.total ? store.settled / store.total : 0;
   const [width] = useState(() => new Animated.Value(progress));
+  const reduceMotion = useReduceMotion();
   useEffect(() => {
-    Animated.timing(width, { toValue: progress, duration: 350, useNativeDriver: false }).start();
-  }, [progress, width]);
+    if (reduceMotion) width.setValue(progress);
+    else Animated.timing(width, { toValue: progress, duration: 350, useNativeDriver: false }).start();
+  }, [progress, width, reduceMotion]);
   const done = store.status === 'done';
-  const label = `${name}: ${store.settled} of ${store.total} prices${done ? `, finished in ${seconds(time)}` : ''}${total !== undefined ? `, ${money(total)} so far` : ''}`;
+  const took = done && store.finishedAt !== undefined ? store.finishedAt - start : undefined;
+  const label = [
+    `${name}: ${store.settled} of ${store.total} prices`,
+    took !== undefined ? `finished${place ? ` ${ordinal(place)}` : ''}, in ${spokenSeconds(took)}` : '',
+    total !== undefined ? `${money(total)} so far` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
   return (
-    <View style={styles.lane} accessible accessibilityLabel={label}>
+    <View style={styles.lane} accessible accessibilityLabel={store.stoppedBecause ? `${label}. ${store.stoppedBecause}` : label}>
       <RetailerBadge retailerId={store.retailerId} name={name} size={28} />
       <View style={styles.flex} {...hiddenFromScreenReaders}>
         <View style={styles.laneHead}>
           <Text style={styles.laneName} numberOfLines={1}>
             {name}
           </Text>
-          <Text style={[styles.clock, done && styles.clockDone]}>
-            {done ? (place ? `${ordinal(place)} · ` : '') : ''}
-            {seconds(time)}
-          </Text>
+          {took !== undefined ? (
+            <Text style={[styles.clock, styles.clockDone]}>
+              {place ? `${ordinal(place)} · ` : ''}
+              {seconds(took)}
+            </Text>
+          ) : store.startedAt !== undefined && !done ? (
+            <Stopwatch from={start} style={styles.clock} />
+          ) : (
+            <Text style={styles.clock}>{seconds(0)}</Text>
+          )}
         </View>
         <View style={styles.track}>
           <Animated.View
@@ -130,6 +152,11 @@ export function Podium({
     { basket: first, place: 1, height: 64 },
     ...(third ? [{ basket: third, place: 3, height: 28 }] : []),
   ];
+  // Screen readers hear the podium in order: the picture puts first place in the middle.
+  const places = [first, second, third]
+    .filter((b): b is Basket => !!b)
+    .map((b, i) => `${ordinal(i + 1)}, ${nameOf(b.retailerId)}, ${money(cost(b))}`)
+    .join('. ');
   return (
     <View style={styles.podiumCard}>
       <View style={styles.podiumHead} accessible accessibilityRole="header">
@@ -142,7 +169,7 @@ export function Podium({
         {items} {items === 1 ? 'item' : 'items'} at {baskets.length} stores, read live on this phone in {seconds(timeMs)}.
         {how ? ` Totals ${how}.` : ''}
       </Text>
-      <View style={styles.podium} {...hiddenFromScreenReaders}>
+      <View style={styles.podium} accessible accessibilityRole="image" accessibilityLabel={places}>
         {steps.map(({ basket, place, height }) => (
           <View key={basket.retailerId} style={styles.step}>
             <RetailerBadge retailerId={basket.retailerId} name={nameOf(basket.retailerId)} size={place === 1 ? 40 : 32} />
@@ -151,13 +178,21 @@ export function Podium({
             </Text>
             <Text style={styles.stepTotal}>{money(cost(basket))}</Text>
             <View style={[styles.block, { height }, place === 1 && styles.blockWin]}>
-              <Text style={[styles.blockText, place === 1 && styles.blockTextWin]}>{place}</Text>
+              <Text style={[styles.blockText, place === 1 && styles.blockTextWin]} maxFontSizeMultiplier={1.3}>
+                {place}
+              </Text>
             </View>
           </View>
         ))}
       </View>
       {onShare ? (
-        <Pressable onPress={onShare} accessibilityRole="button" hitSlop={{ top: 10, bottom: 10 }} style={styles.share}>
+        <Pressable
+          onPress={onShare}
+          accessibilityRole="button"
+          accessibilityHint="Opens a picture of your savings to share"
+          hitSlop={{ top: 10, bottom: 10 }}
+          style={styles.share}
+        >
           <Icon name="share" size={16} color={colors.orangeText} />
           <Text style={styles.shareText}>Share your savings</Text>
         </Pressable>

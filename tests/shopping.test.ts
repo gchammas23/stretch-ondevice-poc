@@ -163,6 +163,32 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.equal(a.getState().watch.length, 0);
   });
 
+  await t('watchlist: a watched product follows its store when the store changes; its first price there starts it afresh', () => {
+    const a = new AppStore();
+    a.watchProduct('walmart', 'old', p('m', 'Milk', 3.99), 1);
+    a.notePrices('walmart', 'old', [p('m', 'Milk', 3.49)], 2);
+    assert.ok(a.getState().watch[0].drop, 'a drop at the old store');
+    // Signed in, or another store chosen: searches now run under another store key.
+    a.followStore('walmart', 'new');
+    assert.deepEqual(a.notePrices('walmart', 'old', [p('m', 'Milk', 1)], 3), [], 'a late answer for the old store says nothing now');
+    assert.deepEqual(a.notePrices('walmart', 'new', [p('m', 'Milk', 2.99)], 4), [], 'the new store’s price isn’t a drop from the old one’s');
+    const w = a.getState().watch[0];
+    assert.deepEqual([w.storeKey, w.addedPrice, w.lastPrice, w.drop, w.moved], ['new', 2.99, 2.99, undefined, undefined]);
+    assert.deepEqual(a.notePrices('walmart', 'new', [p('m', 'Milk', 2.49)], 5).map((x) => x.drop), [{ from: 2.99, to: 2.49, at: 5 }], 'from then on, drops count');
+  });
+
+  await t('watchlist: at a store whose program the user belongs to, the member price is what’s watched and read again', () => {
+    const a = new AppStore();
+    a.setMember('kroger', true);
+    const milk = (price: number, memberPrice: number) => p('m', 'Milk', price, { memberPrice, memberLabel: 'with Card' });
+    // Watched from a screen, where the price shown is the member's.
+    a.watchProduct('kroger', 'k', asMember(milk(3.99, 2.99)), 1);
+    // Searches hand over the prices as read: the regular price, with the member price beside it.
+    assert.deepEqual(a.notePrices('kroger', 'k', [milk(3.99, 2.99)], 2), [], 'the same member price is no news');
+    assert.deepEqual([a.getState().watch[0].addedPrice, a.getState().watch[0].lastPrice], [2.99, 2.99], 'not “up” to the regular price');
+    assert.deepEqual(a.notePrices('kroger', 'k', [milk(3.99, 2.49)], 3).map((w) => w.drop), [{ from: 2.99, to: 2.49, at: 3 }], 'a lower member price is a drop');
+  });
+
   await t('app store: preferences, notes and exact products per item; recent price checks; erase everything', () => {
     const a = new AppStore();
     const id = a.createList('Week', [item('Milk')]);
@@ -336,9 +362,14 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
       listId: 'L', retailerIds: ['kroger', 'target'], startedAt: 0, stores: {},
       results: { kroger: { milk: { status: 'done', query: 'Milk', products: [card] } }, target: { milk: { status: 'done', query: 'Milk', products: [card] } } },
     };
-    const mine = memberRun(run, { kroger: true });
+    const memberships = { kroger: true };
+    const mine = memberRun(run, memberships);
     assert.deepEqual([mine.results.kroger.milk.products[0].price, mine.results.target.milk.products[0].price], [2.99, 3.99]);
     assert.equal(memberRun(run, {}), run, 'no programs: the same run');
+    assert.equal(memberRun(run, memberships), mine, 'screens showing the same run share its member prices');
+    // Another price lands: the results that didn't change keep their products, so screens showing them redo nothing.
+    const next: PricingRun = { ...run, results: { ...run.results, kroger: { ...run.results.kroger, eggs: { status: 'done', query: 'Eggs', products: [] } } } };
+    assert.equal(memberRun(next, memberships).results.kroger.milk.products[0], mine.results.kroger.milk.products[0]);
     const basket = basketFor(list(item('Milk')), 'kroger', mine.results.kroger);
     assert.deepEqual([basket.total, basket.onSale, basket.saleSavings], [2.99, 1, 1]);
 
@@ -357,6 +388,13 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(store.getState().settings.memberships, { target: true });
     store.setMember('target', false);
     assert.deepEqual(store.getState().settings.memberships, {});
+    // Signed in again, but the store's page says nobody is: back to the sign-in before, and its store key.
+    const signedIn = key();
+    store.noteSignedIn('target', 5678);
+    store.undoSignIn('target', 1234);
+    assert.equal(key(), signedIn);
+    store.undoSignIn('target', undefined);
+    assert.deepEqual([key(), store.getState().settings.signedInAt], [before, {}]);
   });
 
   // --- Price truth check --------------------------------------------------------------------------------

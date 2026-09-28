@@ -10,6 +10,7 @@ import { ago, staleness } from '../../../../pricing/age';
 import { basketFor, type BasketLine } from '../../../../pricing/basket';
 import { bytesText, reasonWords } from '../../../../onDevice/scrapeFeed';
 import { couponHits, couponsFitting, couponsWords, type CouponCredit } from '../../../../pricing/coupons';
+import { exactFrom } from '../../../../pricing/exact';
 import { inStoreCaveat, MODE_WORDS, orderable, planOffers } from '../../../../pricing/onlineCost';
 import { changeText, hostOf, receiptFor } from '../../../../pricing/receipt';
 import { compareSizes, type SizeNote } from '../../../../pricing/sizes';
@@ -31,6 +32,7 @@ import {
   useSavingsReads,
   useSettings,
   useStoreChoices,
+  useStoreName,
   useUsuals,
   useWeeklyAds,
 } from '../../../../state/AppProvider';
@@ -52,12 +54,12 @@ export default function BasketScreen() {
   const { id, retailerId } = useLocalSearchParams<{ id: string; retailerId: string }>();
   const list = useList(id);
   if (!list || !retailerId) return <ScreenHeader title="Basket" subtitle="This list was deleted." />;
-  return <BasketView list={list} retailerId={retailerId} />;
+  return <BasketView key={`${list.id}|${retailerId}`} list={list} retailerId={retailerId} />;
 }
 
 function BasketView({ list, retailerId }: { list: GroceryList; retailerId: string }) {
   const insets = useSafeAreaInsets();
-  const { store, engine, bundle, checkFees, clipCoupons } = useApp();
+  const { store, engine, checkFees, clipCoupons } = useApp();
   const settings = useSettings();
   const retailer = useRetailer(retailerId);
   const run = usePricingRun(list.id);
@@ -67,8 +69,8 @@ function BasketView({ list, retailerId }: { list: GroceryList; retailerId: strin
   const { pick, running, baskets, mode, costAt, online: orders, orderCost, countCoupons, coupons: credits } = useComparison(list, run);
   const basket = basketFor(list, retailerId, run?.results[retailerId], usuals);
   const name = retailer?.name ?? retailerId;
-  // Ordering online: this basket's order, its fees and where they came from.
-  useFeeReads();
+  // Ordering online: this basket's order, its fees and where they came from, read once the stores' prices are in.
+  useFeeReads(!running);
   const fees = useFeeBook();
   const ctxOf = useFeeContexts();
   const online = costAt(retailerId, basket.total);
@@ -78,7 +80,7 @@ function BasketView({ list, retailerId }: { list: GroceryList; retailerId: strin
   const orderTotal = Math.round(((online?.available ? online.total : basket.total) - couponsOff) * 100) / 100;
   const how = !online ? '' : online.available ? MODE_WORDS[mode] : 'in store only';
   const withCoupons = couponsOff ? ', with coupons' : '';
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
   const [open, setOpen] = useState<string | null>(null);
   const now = useNow(60_000);
   // This week's ad and the account's coupons here, read on the phone once this store's prices are in.
@@ -119,8 +121,12 @@ function BasketView({ list, retailerId }: { list: GroceryList; retailerId: strin
   const choose = (line: BasketLine, product: Product) => {
     tap();
     store.setPick(list.id, line.item.id, retailerId, product.id);
+    // An item compared on the same product everywhere is compared on the one chosen now: a usual alone wouldn't change
+    // it (the same product comes first, see lineFor).
+    const exact = !!line.item.exact;
+    if (exact) store.setExact(list.id, line.item.id, exactFrom(product, retailerId));
     setOpen(null);
-    announce(`${line.item.name}: now ${product.name}`);
+    announce(`${line.item.name}: now ${product.name}${exact ? ', compared at every store' : ''}`);
   };
   const details = (line: BasketLine, product: Product) =>
     router.push({ pathname: '/list/[id]/product', params: { id: list.id, store: retailerId, item: line.item.id, product: product.id } });

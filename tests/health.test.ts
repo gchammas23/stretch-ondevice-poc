@@ -104,6 +104,12 @@ const cfg = (id: string): RetailerConfig => ({ ...BUNDLED_CONFIG.retailers.find(
     const again = new CoverageCheck();
     again.hydrate(check.serialize());
     assert.deepEqual([again.getSnapshot().running, again.rowFor('a')?.status], [false, 'works']);
+    // Erase everything mid-check: it stops, and nothing it finds afterwards is kept.
+    const erased = new CoverageCheck();
+    const going = erased.run(stores.slice(0, 4), search, 'milk', 2);
+    erased.clear();
+    await going;
+    assert.deepEqual([erased.getSnapshot().running, erased.getSnapshot().stores.length, Object.keys(erased.getSnapshot().rows)], [false, 0, []]);
     assert.deepEqual([coverageStatus('http_403'), coverageStatus('timeout'), coverageStatus('network')], ['bot_check', 'slow', 'failed']);
     assert.deepEqual([coverageStatus('kroger_no_store_near_zip'), coverageStatus('kroger_products_http_503')], ['no_store', 'failed']);
     assert.deepEqual(

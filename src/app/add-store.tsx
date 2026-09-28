@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SearchFailed } from '../onDevice/retailerSearch';
@@ -37,26 +37,33 @@ export default function AddStoreScreen() {
   const [word, setWord] = useState('');
   const [name, setName] = useState('');
   const [test, setTest] = useState<Test>({ state: 'idle' });
+  // Each test, and each change to the link, counts: a test's answer for a link since changed is dropped.
+  const tests = useRef(0);
+  const added = useRef(false);
 
   const result = link.trim() ? draftFromLink(link, word) : null;
   const draft = result?.ok ? result.draft : null;
   const cfg = draft ? storeFromDraft(draft, name, bundle.retailers.map((r) => r.id)) : null;
   const changed = <T,>(set: (v: T) => void) => (v: T) => {
     set(v);
+    tests.current++;
     setTest({ state: 'idle' });
   };
 
   const runTest = async () => {
     if (!cfg || !draft) return;
+    const mine = ++tests.current;
     setTest({ state: 'testing' });
     const t0 = Date.now();
     try {
       const out = await search.search(cfg, draft.word, '', 'webview');
+      if (mine !== tests.current) return;
       const priced = out.products.filter((p) => typeof p.price === 'number');
       const ms = Date.now() - t0;
       setTest(priced.length ? { state: 'ok', products: priced.slice(0, 3), count: priced.length, ms, source: out.source } : { state: 'empty', ms });
       announce(priced.length ? `Found ${priced.length} products with prices.` : 'The page loaded, but listed no products with prices.');
     } catch (e) {
+      if (mine !== tests.current) return;
       const failed = e instanceof SearchFailed ? e.attempts.find((a) => !a.ok) : undefined;
       setTest({ state: 'failed', reason: failed?.reason ?? String(e), detail: failed?.detail });
       announce('No prices came back.');
@@ -64,7 +71,9 @@ export default function AddStoreScreen() {
   };
 
   const add = () => {
-    if (!cfg) return;
+    // A second tap, while the screen goes, would add it again and go back past the screen under it.
+    if (!cfg || added.current) return;
+    added.current = true;
     store.addCustomRetailer(cfg);
     // Its store is chosen on its own site, like the other stores without an automatic store finder.
     if (isUsZip(settings.zip)) void setUpStores(settings.zip, { ...deps, retailers: [...deps.retailers, cfg] }, [cfg.id]);

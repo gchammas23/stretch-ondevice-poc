@@ -15,7 +15,7 @@ import { readerWords } from '../onDevice/profiles';
 import { changeText, hostOf, receiptFor, sourceWords, whenLabel } from '../pricing/receipt';
 import { compareSizes, type SizeNote } from '../pricing/sizes';
 import { storeNote } from '../state/storeInfo';
-import { useApp, useHistory, useRetailer, useSettings, useStoreChoices, useUsuals, useWatch } from '../state/AppProvider';
+import { useApp, useHistory, useRetailer, useSettings, useStoreChoices, useStoreName, useUsuals, useWatch } from '../state/AppProvider';
 import { announce, hiddenFromScreenReaders } from './a11y';
 import { Chip, SaleChip, Sparkline } from './bits';
 import { Pill, ProductThumb, tap } from './controls';
@@ -51,7 +51,7 @@ interface Live {
  */
 export function ProductDetail({ retailerId, product, result, elsewhere, openElsewhere, item }: ProductDetailProps) {
   const insets = useSafeAreaInsets();
-  const { store, search, bundle } = useApp();
+  const { store, search } = useApp();
   const cfg = useRetailer(retailerId);
   const settings = useSettings();
   const choices = useStoreChoices();
@@ -85,7 +85,7 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
   }, [cfg, product, search]);
 
   const name = cfg?.name ?? retailerId;
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
   const storeKey = choices.find((c) => c.config.id === retailerId)?.storeKey ?? '';
   const points = history.points(retailerId, storeKey, product.id);
   const change = history.change(retailerId, storeKey, product.id);
@@ -148,7 +148,8 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
         </View>
 
         <View style={styles.actions}>
-          {item ? (
+          {/* An item compared on the same product everywhere doesn't use a usual: the section below chooses for it. */}
+          {item && !exact ? (
             usual ? (
               <Pill
                 label={`Your usual for ${item.item.name}`}
@@ -193,7 +194,7 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
             />
           ) : null}
         </View>
-        {usual ? <Text style={styles.hint}>Used for “{item!.item.name}” in every list. Tap to go back to Stretch’s match.</Text> : null}
+        {usual && !exact ? <Text style={styles.hint}>Used for “{item!.item.name}” in every list. Tap to go back to Stretch’s match.</Text> : null}
         {watched ? (
           <Text style={styles.hint}>
             Watching since {money(watched.addedPrice)}. Stretch tells you when this phone reads a lower price

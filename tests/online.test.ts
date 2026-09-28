@@ -410,7 +410,7 @@ const WALMART_PLUS: OnlinePlan = { id: 'walmart-plus', name: 'Walmart+', perYear
   });
 
   // --- Saved reads --------------------------------------------------------------------------------------------------
-  await t('fee book: a read stands for a week, a failed one is retried after hours and keeps the last good figures', () => {
+  await t('fee book: a read stands for a week, a failed one is retried after hours and keeps the last good figures; one round at a time', async () => {
     let clock = 1_000_000_000;
     const url = 'https://www.walmart.com/help/fees';
     const book = new FeeBook(() => clock);
@@ -443,8 +443,16 @@ const WALMART_PLUS: OnlinePlan = { id: 'walmart-plus', name: 'Walmart+', perYear
     book.setReading('w');
     book.endRound();
     assert.deepEqual([book.reading, book.beginRound()], [null, true]);
+    // A read the user asks for meanwhile waits for the round to end; erasing everything tells a round running then.
+    let waited = false;
+    const over = book.roundOver().then(() => (waited = true));
+    await Promise.resolve();
+    const epoch = book.epoch;
     book.clear();
-    assert.deepEqual(book.all(), {});
+    assert.deepEqual([waited, book.all(), book.epoch === epoch], [false, {}, false]);
+    book.endRound();
+    await over;
+    assert.equal(waited, true);
   });
 
   // --- Store rules and settings ----------------------------------------------------------------------------------

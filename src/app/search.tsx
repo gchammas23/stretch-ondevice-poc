@@ -10,7 +10,7 @@ import { MAX_AGE_MS } from '../pricing/priceCache';
 import { barcodeIdentity, priceCheckAnswers, type KnownProduct } from '../pricing/priceCheck';
 import { unitPriceOf } from '../pricing/sizes';
 import { suggestProducts, suggestSearches, type ProductSuggestion } from '../pricing/suggest';
-import { QUICK_RUN, useApp, useAppState, useLists, usePricingRun, useStoreChoices } from '../state/AppProvider';
+import { QUICK_RUN, useApp, useAppState, useLists, usePricingRun, useStoreChoices, useStoreName } from '../state/AppProvider';
 import { announce, useFooterHeight } from '../ui/a11y';
 import { Chip, SaleChip } from '../ui/bits';
 import { IconButton, Pill, ProductThumb, tap } from '../ui/controls';
@@ -37,7 +37,7 @@ type Params = { q?: string; code?: string; like?: string; from?: string };
 export default function PriceCheckScreen() {
   const params = useLocalSearchParams<Params>();
   const insets = useSafeAreaInsets();
-  const { engine, store, cache, bundle } = useApp();
+  const { engine, store, cache } = useApp();
   const choices = useStoreChoices();
   const lists = useLists();
   const recent = useAppState((s) => s.recentSearches);
@@ -55,7 +55,7 @@ export default function PriceCheckScreen() {
   const [focused, setFocused] = useState(!query);
   /** The query whose answer screen readers were told. */
   const spoken = useRef<string | null>(null);
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
 
   // The scanned product's name, once a store's result carries the same barcode.
   const identityName = mode === 'barcode' ? barcodeIdentity(run, barcode!)?.name : undefined;

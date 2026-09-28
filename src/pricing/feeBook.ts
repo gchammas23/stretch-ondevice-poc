@@ -1,4 +1,6 @@
 import type { FeePageRead } from '../onDevice/feePage';
+import { isObj } from '../onDevice/json';
+import { Rounds } from './readBook';
 
 // Pure TypeScript: the app saves it with AsyncStorage, the tests keep it in memory.
 
@@ -22,8 +24,6 @@ export interface FeeRead {
 export const FEES_KEEP_MS = 7 * 24 * 60 * 60_000;
 export const FEES_RETRY_MS = 6 * 60 * 60_000;
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
 /** What a read found, when it's a read of `url`. */
 export const figuresOf = (read: FeeRead | undefined, url: string | undefined): FeePageRead | undefined =>
   url && read?.url === url ? read.fees : undefined;
@@ -35,7 +35,7 @@ export class FeeBook {
   private changes = 0;
   /** The store whose page is being read right now, if any. Not saved. */
   reading: string | null = null;
-  private inRound = false;
+  private rounds = new Rounds();
 
   constructor(private now: () => number = Date.now) {}
 
@@ -47,14 +47,22 @@ export class FeeBook {
 
   /** Starts a round of reads, one page at a time; false when a round is already going. */
   beginRound(): boolean {
-    if (this.inRound) return false;
-    this.inRound = true;
-    return true;
+    return this.rounds.begin();
   }
 
   endRound(): void {
-    this.inRound = false;
+    this.rounds.end();
     this.setReading(null);
+  }
+
+  /** Resolves once no round of reads is going (at once when none is): a read the user asked for waits for it. */
+  roundOver(): Promise<void> {
+    return this.rounds.over();
+  }
+
+  /** Counts clears (Erase everything): a round started before one stops there, and records nothing more. */
+  get epoch(): number {
+    return this.rounds.epoch;
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -102,6 +110,7 @@ export class FeeBook {
   }
 
   clear(): void {
+    this.rounds.clear();
     this.reads = {};
     this.emit();
   }

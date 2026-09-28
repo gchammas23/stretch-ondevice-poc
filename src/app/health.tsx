@@ -13,7 +13,7 @@ import { connectionWords, coolWords, dropFromLog, isRest, storeTuner, type CoolD
 import type { ParserProfile } from '../onDevice/types';
 import { sessionText } from '../pricing/batteryCost';
 import { whenLabel } from '../pricing/receipt';
-import { useApp, useAttemptLog, useProfiles, useSettings } from '../state/AppProvider';
+import { useApp, useAttemptLog, useProfiles, useSettings, useStoreName } from '../state/AppProvider';
 import { useBattery } from '../state/battery';
 import { announce } from '../ui/a11y';
 import { Chip } from '../ui/bits';
@@ -42,7 +42,9 @@ export default function HealthScreen() {
   const health = enabled
     .map((r) => ({ retailer: r, health: storeHealth(entries, r.id, now) }))
     .filter((h) => h.health.attempts > 0 || settings.retailerIds.includes(h.retailer.id));
-  const rows = state.stores.map((s) => state.rows[s.retailerId]).filter((r): r is CoverageRow => !!r);
+  // While a check runs, only what it found so far counts: the last check's rows wait their turn, not shown as current.
+  const current = (r: CoverageRow | undefined): r is CoverageRow => !!r && (!state.running || r.at >= (state.startedAt ?? 0));
+  const rows = state.stores.map((s) => state.rows[s.retailerId]).filter(current);
   // A store with none near the ZIP code wasn't searched: it's counted apart, not as a failure.
   const { works, searched, noStore } = coverageCounts(rows);
   const apart = noStore ? `, and ${noStore} ${noStore === 1 ? 'has' : 'have'} no store near you` : '';
@@ -101,7 +103,8 @@ export default function HealthScreen() {
             </Text>
           ) : null}
           {state.stores.map((s) => {
-            const r = state.rows[s.retailerId];
+            const had = state.rows[s.retailerId];
+            const r = current(had) ? had : undefined;
             const checking = state.checking.includes(s.retailerId);
             return (
               <View key={s.retailerId} style={styles.storeRow}>
@@ -161,10 +164,9 @@ export default function HealthScreen() {
  * and a dropped connection, which cools nothing down.
  */
 function CoolDownCard() {
-  const { bundle } = useApp();
   const log = useAttemptLog();
   const now = useNow(15_000);
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
   const all = storeTuner.coolDowns();
   const cools = all.filter((c) => !isRest(c));
   const rests = all.filter(isRest);
@@ -389,13 +391,12 @@ function HealthRow({ name, retailerId, h, now }: { name: string; retailerId: str
  * answer to "isn't this hammering the stores?".
  */
 function CitizenCard() {
-  const { bundle } = useApp();
   const log = useAttemptLog();
   const now = useNow(60_000);
   const midnight = new Date(now);
   midnight.setHours(0, 0, 0, 0);
   const rows = citizenReport(log.entries(), midnight.getTime());
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
   return (
     <View style={styles.card}>
       <Text style={styles.title} accessibilityRole="header">

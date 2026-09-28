@@ -10,7 +10,7 @@ import { useNow } from '../ui/useNow';
 import { STORES_AT_ONCE } from '../pricing/pricingEngine';
 import { storeInfo, type StoreInfo } from '../state/storeInfo';
 import type { Settings, StoreSetup } from '../state/appStore';
-import { useApp, useFeeBook, useFeeReads, useSettings, useSetupDeps, useStoreChoices } from '../state/AppProvider';
+import { useApp, useFeeBook, useFeeReads, useSettings, useSetupDeps, useStoreChoices, useStoreName } from '../state/AppProvider';
 import { LOCATE_PROBLEMS, zipFromDevice } from '../state/deviceLocation';
 import { isUsZip, setUpStores } from '../state/storeSetup';
 import { announce } from '../ui/a11y';
@@ -127,7 +127,7 @@ export default function StoresScreen() {
 
 /** Where to shop from: the phone's location or a typed ZIP code, and how far stores may be. */
 function LocationCard() {
-  const { store, bundle } = useApp();
+  const { store } = useApp();
   const settings = useSettings();
   const deps = useSetupDeps();
   const [zip, setZip] = useState(settings.zip);
@@ -135,7 +135,7 @@ function LocationCard() {
   const [message, setMessage] = useState<string | null>(null);
   const setups = settings.retailerIds.map((id) => [id, setupFor(settings, id)] as const);
   const working = setups.some(([, s]) => s?.status === 'working');
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
   const compared = useStoreChoices().map((c) => c.config.id);
   const done = setups.filter(([, s]) => s?.status === 'done').length;
   const failedIds = setups.filter(([, s]) => s?.status === 'failed').map(([id]) => id);
@@ -144,12 +144,17 @@ function LocationCard() {
   const left = failedIds.filter((id) => !compared.includes(id)).length;
   const none = setups.filter(([, s]) => s?.status === 'none').map(([id]) => nameOf(id));
 
+  // Read afresh, not from this screen's last draw: a setup may have started since (while the phone found its ZIP, say).
+  const settingUp = () => {
+    const now = store.getState().settings;
+    return now.retailerIds.some((id) => setupFor(now, id)?.status === 'working');
+  };
   const setStores = (value = zip) => {
-    if (!isUsZip(value) || working) return;
+    if (!isUsZip(value) || settingUp()) return;
     Keyboard.dismiss();
     setMessage(null);
     // The same ZIP again: its stores are looked for again, not taken from the last time.
-    void setUpStores(value, deps, undefined, { refresh: value === settings.zip });
+    void setUpStores(value, deps, undefined, { refresh: value === store.getState().settings.zip });
   };
   const fromMyLocation = async () => {
     setLocating(true);
@@ -163,10 +168,13 @@ function LocationCard() {
     setZip(found.zip);
     setStores(found.zip);
   };
+  // Not while stores are being set: a setup for the old distance could set a store beyond the new one.
   const setRadius = (miles: number) => {
+    if (settingUp()) return;
     tap();
     store.setRadius(miles);
-    if (isUsZip(settings.zip)) void setUpStores(settings.zip, deps);
+    const now = store.getState().settings.zip;
+    if (isUsZip(now)) void setUpStores(now, deps);
   };
 
   const summary = working
@@ -229,11 +237,12 @@ function LocationCard() {
             <Pressable
               key={miles}
               accessibilityRole="radio"
-              accessibilityState={{ checked: selected }}
+              accessibilityState={{ checked: selected, disabled: working }}
               accessibilityLabel={`${miles} miles`}
+              disabled={working}
               hitSlop={{ top: 6, bottom: 6 }}
               onPress={() => setRadius(miles)}
-              style={[styles.radius, selected && styles.radiusOn]}
+              style={[styles.radius, selected && styles.radiusOn, working && !selected && styles.radiusWaiting]}
             >
               <Text style={[styles.radiusText, selected && styles.radiusTextOn]}>{miles} mi</Text>
             </Pressable>
@@ -360,7 +369,8 @@ function StoreCard({ retailer, on }: { retailer: RetailerConfig; on: boolean }) 
   const signedInAt = settings.signedInAt[retailer.id];
   // Signing in happens on the store's own page, which the app leaves alone; being signed in makes you a member, and
   // the account's coupons are read then (see Weekly ads and coupons).
-  const signIn = () => signInAt(retailer.id);
+  // Left open until its page gave up (a quarter of an hour): nothing to do then.
+  const signIn = () => signInAt(retailer.id).catch(() => {});
   const listed = settings.nearbyStores[retailer.id];
   const hasList = !!listed && listed.zip === settings.zip && listed.stores.length > 0;
 
@@ -557,6 +567,7 @@ const styles = StyleSheet.create({
   radiusLabel: { fontFamily: fonts.medium, fontSize: 14, color: colors.muted },
   radius: { minHeight: 34, justifyContent: 'center', paddingHorizontal: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.card },
   radiusOn: { backgroundColor: colors.pill, borderColor: colors.pill },
+  radiusWaiting: { opacity: 0.45 },
   radiusText: { fontFamily: fonts.medium, fontSize: 14, color: colors.ink },
   radiusTextOn: { color: '#ffffff' },
   name: { fontFamily: fonts.semibold, fontSize: 17, color: colors.ink },

@@ -1,6 +1,6 @@
-import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
+import { bytesText, reasonWords, seconds } from '../onDevice/scrapeFeed';
 import { shownAt, type SearchTimeline, type SpanKind, type TimingSpan } from '../onDevice/timing';
-import type { PricingRun, SearchResult } from './pricingEngine';
+import { runMs, type PricingRun, type SearchResult } from './pricingEngine';
 
 // Pure functions only, so the tests run them in Node.
 
@@ -105,12 +105,12 @@ export function scorecard(run: PricingRun): Scorecard {
     bytes: stores.reduce((n, s) => n + s.bytes, 0),
     bytesSaved: stores.reduce((n, s) => n + s.bytesSaved, 0),
     shared: stores.reduce((n, s) => n + s.shared, 0),
-    totalMs: run.finishedAt !== undefined ? run.finishedAt - run.startedAt : undefined,
+    totalMs: runMs(run),
     firstMs: firsts.length ? Math.min(...firsts) : undefined,
   };
 }
 
-const sec = (ms: number | undefined) => (ms === undefined ? '—' : `${(ms / 1000).toFixed(1)} s`);
+const sec = (ms: number | undefined) => (ms === undefined ? '—' : seconds(ms));
 
 /** A plain-text report, for sharing. */
 export function scorecardText(card: Scorecard, heading: string): string {
@@ -344,8 +344,8 @@ export function speedProfile(run: PricingRun, shown: (t: SearchTimeline) => numb
   return profile;
 }
 
-/** Seconds, to a tenth, or to a hundredth under one second. */
-function secs(ms: number): string {
+/** Seconds, to a tenth, or to a hundredth under one second: the speed test's parts are often that short. */
+export function shortSeconds(ms: number): string {
   return ms < 1000 ? `${(ms / 1000).toFixed(2)} s` : `${(ms / 1000).toFixed(1)} s`;
 }
 
@@ -383,8 +383,8 @@ function findingsOf(p: SpeedProfile): string[] {
   if (load >= 100) {
     const parts = (['start', 'open', 'prices', 'settle', 'check'] as const)
       .filter((k) => (pace[k] ?? 0) >= 50)
-      .map((k) => `${PACE_WORDS[k]} ${secs(pace[k]!)}`);
-    out.push(`${s.name}’s page loads held it up for ${secs(load)} of its ${secs(s.endMs)}: ${parts.join(', ')}.`);
+      .map((k) => `${PACE_WORDS[k]} ${shortSeconds(pace[k]!)}`);
+    out.push(`${s.name}’s page loads held it up for ${shortSeconds(load)} of its ${shortSeconds(s.endMs)}: ${parts.join(', ')}.`);
   }
   const loads = p.stores.flatMap((st) => st.pageLoads.map((ms) => ({ ms, name: st.name })));
   if (loads.length) {
@@ -392,8 +392,8 @@ function findingsOf(p: SpeedProfile): string[] {
     const mid = median(loads.map((l) => l.ms))!;
     out.push(
       loads.length === 1
-        ? `1 page load: ${secs(mid)} (${sorted[0].name}).`
-        : `${loads.length} page loads, ${secs(mid)} each in the middle: from ${secs(sorted[0].ms)} (${sorted[0].name}) to ${secs(sorted[sorted.length - 1].ms)} (${sorted[sorted.length - 1].name}).`,
+        ? `1 page load: ${shortSeconds(mid)} (${sorted[0].name}).`
+        : `${loads.length} page loads, ${shortSeconds(mid)} each in the middle: from ${shortSeconds(sorted[0].ms)} (${sorted[0].name}) to ${shortSeconds(sorted[sorted.length - 1].ms)} (${sorted[sorted.length - 1].name}).`,
     );
   }
   // Plain requests and official API calls: how long each took, and how many went at once.
@@ -402,31 +402,31 @@ function findingsOf(p: SpeedProfile): string[] {
       const calls = st.rows.flatMap((r) => r.spans.filter((x) => x.kind === kind && x.ok !== false));
       if (!calls.length) continue;
       const took = calls.map((x) => x.end - x.start);
-      const range = calls.length === 1 ? secs(took[0]) : `${secs(Math.min(...took))} to ${secs(Math.max(...took))}`;
+      const range = calls.length === 1 ? shortSeconds(took[0]) : `${shortSeconds(Math.min(...took))} to ${shortSeconds(Math.max(...took))}`;
       out.push(`${st.name}’s ${calls.length} ${what} took ${range} each, ${atOnce(calls)} at a time at most.`);
     }
   }
   const replays = p.stores.flatMap((st) => st.replays.map((r) => ({ ...r, name: st.name })));
   if (replays.length) {
     const slowest = replays.reduce((a, b) => (b.ms > a.ms ? b : a));
-    out.push(`${replays.length} ${replays.length === 1 ? 'request' : 'requests'} from kept pages, ${secs(median(replays.map((r) => r.ms))!)} each in the middle; the slowest ${secs(slowest.ms)} (${slowest.name}, ${slowest.query}).`);
+    out.push(`${replays.length} ${replays.length === 1 ? 'request' : 'requests'} from kept pages, ${shortSeconds(median(replays.map((r) => r.ms))!)} each in the middle; the slowest ${shortSeconds(slowest.ms)} (${slowest.name}, ${slowest.query}).`);
   }
   const waited = p.sums.wait ?? 0;
-  if (waited >= 300) out.push(`Searches spent ${secs(waited)} in all waiting at their store: for a page another search was loading, or a free slot.`);
+  if (waited >= 300) out.push(`Searches spent ${shortSeconds(waited)} in all waiting at their store: for a page another search was loading, or a free slot.`);
   // Searches waiting their turn: how many go at once at a store, and how many stores at once.
   const lined = p.stores.filter((st) => (st.sums.queue ?? 0) >= 1000);
-  if (lined.length) out.push(`Searches waited their turn, in all: ${lined.map((st) => `${st.name} ${secs(st.sums.queue!)}`).join(', ')}.`);
+  if (lined.length) out.push(`Searches waited their turn, in all: ${lined.map((st) => `${st.name} ${shortSeconds(st.sums.queue!)}`).join(', ')}.`);
   const parse = p.sums.parse ?? 0;
-  if (parse >= 100) out.push(`Reading products took ${secs(parse)} of the phone’s time${p.parseDuring >= 50 ? `, ${secs(p.parseDuring)} of it checking data as it streamed in` : ''}.`);
+  if (parse >= 100) out.push(`Reading products took ${shortSeconds(parse)} of the phone’s time${p.parseDuring >= 50 ? `, ${shortSeconds(p.parseDuring)} of it checking data as it streamed in` : ''}.`);
   const shows = p.stores.flatMap((st) => st.rows.flatMap((r) => r.spans.filter((x) => x.kind === 'show').map((x) => x.end - x.start)));
-  if (shows.length) out.push(`Results reached the screen ${secs(median(shows)!)} after they were in, at most ${secs(Math.max(...shows))}.`);
+  if (shows.length) out.push(`Results reached the screen ${shortSeconds(median(shows)!)} after they were in, at most ${shortSeconds(Math.max(...shows))}.`);
   const failed = sum(p.stores.map((st) => st.pace.failed ?? 0));
   if (failed >= 100) {
     const why = [...new Set(p.stores.flatMap((st) => st.rows.filter((r) => !r.ok).map((r) => `${st.name} ${r.how.replace(/^failed: /, '')}`)))];
-    out.push(`Tries that failed held stores up for ${secs(failed)}${why.length ? ` (${why.join('; ')})` : ''}.`);
+    out.push(`Tries that failed held stores up for ${shortSeconds(failed)}${why.length ? ` (${why.join('; ')})` : ''}.`);
   }
   const idle = pace.idle ?? 0;
-  if (idle >= 200) out.push(`${secs(idle)} of ${s.name}’s time was between searches, with none running.`);
+  if (idle >= 200) out.push(`${shortSeconds(idle)} of ${s.name}’s time was between searches, with none running.`);
   return out;
 }
 
@@ -435,8 +435,8 @@ export function speedProfileText(p: SpeedProfile): string {
   const s = p.slowest;
   if (!s) return 'No searches ran in this run.';
   const lines = [
-    `Where the ${secs(p.totalMs)} went (${s.name} finished last):`,
-    `  ${paceParts(s.pace).map((x) => `${PACE_WORDS[x.kind]} ${secs(x.ms)}`).join(' · ')}`,
+    `Where the ${shortSeconds(p.totalMs)} went (${s.name} finished last):`,
+    `  ${paceParts(s.pace).map((x) => `${PACE_WORDS[x.kind]} ${shortSeconds(x.ms)}`).join(' · ')}`,
     '',
     'Biggest costs:',
     ...p.findings.map((f) => `- ${f}`),
@@ -445,7 +445,7 @@ export function speedProfileText(p: SpeedProfile): string {
   ];
   for (const st of p.stores) {
     if (!st.rows.length) continue;
-    lines.push(`${st.name}, done at ${secs(st.endMs)}:`);
+    lines.push(`${st.name}, done at ${shortSeconds(st.endMs)}:`);
     for (const r of st.rows) {
       // Parts under 5 ms would read 0.00: left out.
       const parts = r.spans.filter((x) => x.end - x.start >= 5).map((x) => `${SHORT[x.kind]} ${((x.end - x.start) / 1000).toFixed(2)}${x.ok === false ? '✗' : ''}`);

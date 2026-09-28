@@ -14,15 +14,17 @@ export interface TripOrder {
 /**
  * What shopping `from` saves against the cheapest other store that has every item it buys, at that store's prices
  * for those same items. Ordering online, each side's fees count. Null when no other finished store has them all, or
- * none costs more.
+ * none costs more. A split trip is measured against buying it all at any one store, either of its own two included:
+ * what its card says it saves.
  */
 export function tripSavings(from: Basket | SplitTrip, retailerIds: string[], baskets: Basket[], order?: TripOrder): TripSaving | null {
   const bought = from.lines.filter((l) => l.status === 'found').map((l) => l.item.id);
   if (!bought.length) return null;
   const mine = from.total + (order?.fees ?? 0);
+  const split = 'assignment' in from;
   let best: TripSaving | null = null;
   for (const b of baskets) {
-    if (retailerIds.includes(b.retailerId) || !b.complete) continue;
+    if ((!split && retailerIds.includes(b.retailerId)) || !b.complete) continue;
     const lines = bought.map((id) => b.lines.find((l) => l.item.id === id));
     if (lines.some((l) => !l || l.status !== 'found')) continue;
     const items = lines.reduce((sum, l) => sum + l!.lineTotal, 0);

@@ -22,7 +22,7 @@ import { listText, parseListText } from '../../../lists/parse';
 import { listQueries, type GroceryList, type ListItem, type TripRecord } from '../../../lists/types';
 import { MODE_WORDS } from '../../../pricing/onlineCost';
 import { addAgain } from '../../../state/appStore';
-import { useApp, useAppState, useComparison, useList, usePricingRun, useSharePlan, useStoreChoices } from '../../../state/AppProvider';
+import { useApp, useAppState, useComparison, useList, usePricingRun, useSharePlan, useStoreChoices, useStoreName } from '../../../state/AppProvider';
 import { announce, hiddenFromScreenReaders, useFooterHeight } from '../../../ui/a11y';
 import { Checkbox, IconButton, Pill, ProductThumb, ProgressRing, tap, ZigzagEdge } from '../../../ui/controls';
 import { Icon } from '../../../ui/Icon';
@@ -48,11 +48,13 @@ export default function ListScreen() {
       </View>
     );
   }
-  return <ListView list={list} startRenaming={rename === '1'} />;
+  // Keyed by the list: going back to this screen for another list (router.dismissTo) starts it afresh, not with the
+  // other list's title or draft.
+  return <ListView key={list.id} list={list} startRenaming={rename === '1'} />;
 }
 
 function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: boolean }) {
-  const { store, bundle, engine } = useApp();
+  const { store, engine } = useApp();
   const choices = useStoreChoices();
   const insets = useSafeAreaInsets();
   const [draft, setDraft] = useState('');
@@ -85,7 +87,7 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
     return () => clearTimeout(timer);
   }, [engine, list.id, names, shopping, choices, sharing]);
   useFocusEffect(priceInBackground);
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
   const checked = list.items.filter((i) => i.checked).length;
 
   const saveTitle = () => {
@@ -146,6 +148,8 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
+          // Its searches still waiting are dropped: they'd use up each store's hour for nothing.
+          engine.stop(list.id);
           store.deleteList(list.id);
           goBack();
         },

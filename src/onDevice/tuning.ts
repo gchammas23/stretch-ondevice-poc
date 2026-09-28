@@ -1,5 +1,6 @@
 import { dropWindows, inDrop, type AttemptEntry } from './attemptLog';
 import { politeness } from './politeness';
+import { seconds } from './scrapeFeed';
 import type { Attempt, RetailerConfig, Strategy } from './types';
 
 // Pure TypeScript: how hard the phone pushes each store, from how its recent searches went. A store whose searches
@@ -110,7 +111,6 @@ const CHECKS = new Set(['challenge', 'challenge_timeout', 'challenge_cancelled']
 const isLimited = (s: TuningSample) => !!s.limited || /(^|_)429$/.test(s.reason ?? '');
 const defined = (v: number | undefined): v is number => typeof v === 'number' && Number.isFinite(v);
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
 function quantile(values: number[], q: number): number | undefined {
   if (!values.length) return undefined;
@@ -184,13 +184,13 @@ function tuneFrom(samples: TuningSample[], base: TuningBase, now: number, hour?:
   if (limited.length) {
     const gapMs = Math.min(MAX_GAP_MS, LIMITED_GAP_MS * 2 ** (limited.length - 1));
     const times = limited.length === 1 ? 'once' : `${limited.length} times`;
-    return tuned('careful', `it answered “too many requests” ${times} in the last 15 minutes: one search at a time, ${secs(gapMs)} apart`, { gapMs });
+    return tuned('careful', `it answered “too many requests” ${times} in the last 15 minutes: one search at a time, ${seconds(gapMs)} apart`, { gapMs });
   }
   if (recent.some((s) => s.checked || CHECKS.has(s.reason ?? ''))) {
-    return tuned('careful', `a bot check in the last 15 minutes: one search at a time, ${secs(CHECK_GAP_MS)} apart`, { gapMs: CHECK_GAP_MS });
+    return tuned('careful', `a bot check in the last 15 minutes: one search at a time, ${seconds(CHECK_GAP_MS)} apart`, { gapMs: CHECK_GAP_MS });
   }
   if (recent.some((s) => s.blocked)) {
-    return tuned('careful', `it refused this phone in the last 15 minutes: one search at a time, ${secs(CHECK_GAP_MS)} apart`, { gapMs: CHECK_GAP_MS });
+    return tuned('careful', `it refused this phone in the last 15 minutes: one search at a time, ${seconds(CHECK_GAP_MS)} apart`, { gapMs: CHECK_GAP_MS });
   }
   if (hour && hour.perHour > 0 && hour.used >= hour.perHour * NEAR_LIMIT) {
     return tuned('careful', `near its hourly limit (${hour.used} of ${hour.perHour} searches in the last hour): one at a time`);
@@ -229,11 +229,11 @@ function tuneFrom(samples: TuningSample[], base: TuningBase, now: number, hour?:
   if (worked.length >= MIN_TO_WIDEN && !failed.length) {
     const pace =
       replayMid !== undefined
-        ? `its replays take ${secs(replayMid)}`
+        ? `its replays take ${seconds(replayMid)}`
         : api.length >= 3
-          ? `its API answers in ${secs(median(api)!)}`
+          ? `its API answers in ${seconds(median(api)!)}`
           : worked.length
-            ? `its searches take ${secs(median(worked)!)}`
+            ? `its searches take ${seconds(median(worked)!)}`
             : '';
     const plain = base.plain ? '; plain requests stay 3 at once, each a whole search page' : '';
     const ok = latest.filter((s) => s.ok).length;
@@ -249,10 +249,10 @@ const LEVEL_WORDS: Record<TuningLevel, string> = { wide: 'Wider', normal: 'Usual
 /** A store's tuning in words: "Wider: 6 searches and 6 requests at once, pages 10.0 s, requests 4.0 s. Healthy: …". */
 export function tuningWords(t: StoreTuning): string {
   if (t.cooling) return `${LEVEL_WORDS.careful}: ${coolWords(t.cooling)}.`;
-  const pause = t.gapMs ? `, ${secs(t.gapMs)} apart` : '';
+  const pause = t.gapMs ? `, ${seconds(t.gapMs)} apart` : '';
   const why = t.why.charAt(0).toUpperCase() + t.why.slice(1);
   const resting = (t.resting ?? []).map((c) => ` ${coolWords(c)}.`).join('');
-  return `${LEVEL_WORDS[t.level]}: ${t.searches} ${t.searches === 1 ? 'search' : 'searches'} and ${t.replays} ${t.replays === 1 ? 'request' : 'requests'} at once${pause}, pages ${secs(t.pageTimeoutMs)}, requests ${secs(t.replayTimeoutMs)}. ${why}.${resting}`;
+  return `${LEVEL_WORDS[t.level]}: ${t.searches} ${t.searches === 1 ? 'search' : 'searches'} and ${t.replays} ${t.replays === 1 ? 'request' : 'requests'} at once${pause}, pages ${seconds(t.pageTimeoutMs)}, requests ${seconds(t.replayTimeoutMs)}. ${why}.${resting}`;
 }
 
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);

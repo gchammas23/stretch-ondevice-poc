@@ -5,9 +5,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { GroceryList } from '../../../lists/types';
 import { onRetailerSite } from '../../../onDevice/retailerSearch';
 import { reasonWords } from '../../../onDevice/scrapeFeed';
-import { agreedStores, pricesOf, truthSample, truthSummary, verdictOf, type TruthCheck } from '../../../pricing/truth';
+import { agreedStores, pricesOf, truthSample, truthSummary, verdictOf, type TruthCheck, type TruthState } from '../../../pricing/truth';
 import { useApp, useComparison, useList, usePricingRun } from '../../../state/AppProvider';
-import { announce } from '../../../ui/a11y';
+import { announce, focusOn } from '../../../ui/a11y';
 import { Chip } from '../../../ui/bits';
 import { Pill, tap } from '../../../ui/controls';
 import { deviceWord } from '../../../ui/device';
@@ -20,10 +20,19 @@ export default function TruthScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const list = useList(id);
   if (!list) return <ScreenHeader title="Price truth check" subtitle="This list was deleted." />;
-  return <Truth list={list} />;
+  return <Truth key={list.id} list={list} />;
 }
 
 const PER_STORE = [3, 5, 10];
+
+/** Each check's state, as a screen reader says it (the screen shows an icon). */
+const STATE_WORDS: Record<TruthState, string> = {
+  waiting: 'waiting',
+  checking: 'checking now',
+  same: 'the same price',
+  different: 'a different price',
+  unreadable: 'no price read on its page',
+};
 
 /**
  * The price truth check: a sample of the list's prices at each store, each read again from the product's own page
@@ -54,6 +63,17 @@ function Truth({ list }: { list: GroceryList }) {
   const summary = checks ? truthSummary(checks) : null;
   const done = checks ? checks.filter((c) => c.state !== 'waiting' && c.state !== 'checking').length : 0;
   const running = !!checks && done < checks.length;
+  // The card changes wholesale as a check starts and when it's put away: the screen reader starts again at its top.
+  const heading = useRef<Text>(null);
+  const started = !!checks;
+  const firstDraw = useRef(true);
+  useEffect(() => {
+    if (firstDraw.current) {
+      firstDraw.current = false;
+      return;
+    }
+    return focusOn(heading);
+  }, [started]);
 
   const start = async () => {
     tap();
@@ -92,17 +112,19 @@ function Truth({ list }: { list: GroceryList }) {
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
         {!checks ? (
           <View style={styles.card}>
-            <Text style={styles.body}>
+            <Text ref={heading} style={styles.body}>
               For {list.name}, this {deviceWord} opens each sampled product’s own page on the store’s site, hidden, reads the price there, and
               compares it with the price the search got. One page at a time.
             </Text>
             <Text style={styles.label}>Prices per store</Text>
-            <View style={styles.chips} accessibilityRole="radiogroup">
+            <View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel="Prices per store">
               {PER_STORE.map((n) => (
                 <Pressable
                   key={n}
                   accessibilityRole="radio"
+                  accessibilityLabel={`${n} prices per store`}
                   accessibilityState={{ checked: perStore === n }}
+                  hitSlop={{ top: 4, bottom: 4 }}
                   onPress={() => setPerStore(n)}
                   style={[styles.chip, perStore === n && styles.chipOn]}
                 >
@@ -123,13 +145,15 @@ function Truth({ list }: { list: GroceryList }) {
           <View style={styles.card}>
             {summary && summary.checked ? (
               <>
-                <Text style={styles.big}>
+                <Text ref={heading} style={styles.big} accessibilityRole="header">
                   {summary.same} of {summary.checked} match
                 </Text>
                 <Chip label={`${Math.round((summary.rate ?? 0) * 100)}% the same as the product page`} tone={(summary.rate ?? 0) >= 0.9 ? 'green' : 'orange'} icon="check" />
               </>
             ) : (
-              <Text style={styles.big}>{running ? 'Checking…' : 'No page answered'}</Text>
+              <Text ref={heading} style={styles.big} accessibilityRole="header">
+                {running ? 'Checking…' : 'No page answered'}
+              </Text>
             )}
             {running ? (
               <View style={styles.row}>
@@ -143,7 +167,7 @@ function Truth({ list }: { list: GroceryList }) {
             ) : null}
             <View style={styles.stores}>
               {Object.entries(summary?.byStore ?? {}).map(([rid, s]) => (
-                <View key={rid} style={styles.storeChip}>
+                <View key={rid} style={styles.storeChip} accessible accessibilityLabel={`${nameOf(rid)}: ${s.same} of ${s.checked} match`}>
                   <RetailerBadge retailerId={rid} name={nameOf(rid)} size={22} />
                   <Text style={styles.small}>
                     {s.same}/{s.checked}
@@ -164,6 +188,8 @@ function Truth({ list }: { list: GroceryList }) {
           <Pressable
             key={`${c.retailerId}-${c.product.id}-${i}`}
             accessibilityRole="button"
+            accessibilityLabel={checkWords(c, nameOf(c.retailerId))}
+            accessibilityState={{ busy: c.state === 'checking' }}
             accessibilityHint="Opens the X-ray of this price"
             onPress={() => router.push({ pathname: '/xray', params: { retailerId: c.retailerId, productId: c.product.id } })}
             style={({ pressed }) => [styles.checkRow, pressed && styles.pressed]}
@@ -204,6 +230,16 @@ function Truth({ list }: { list: GroceryList }) {
       </ScrollView>
     </View>
   );
+}
+
+/** One check, as a screen reader says it: the store, the item, what the page said, and the prices. */
+function checkWords(c: TruthCheck, store: string): string {
+  const prices = [
+    `search ${c.product.price !== null ? money(c.product.price) : 'no price'}`,
+    c.pagePrice !== undefined ? `page ${money(c.pagePrice)}` : '',
+    c.state === 'unreadable' ? (c.reason ? reasonWords(c.reason) : 'the page showed no price') : '',
+  ].filter(Boolean);
+  return `${store}, ${c.itemName}: ${STATE_WORDS[c.state]}. ${c.product.name}. ${prices.join(', ')}`;
 }
 
 const styles = StyleSheet.create({

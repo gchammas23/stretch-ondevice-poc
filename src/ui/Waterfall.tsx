@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { PACE_WORDS, paceParts, type PaceKind, type SpeedProfile, type StoreProfile } from '../pricing/scorecard';
+import { PACE_WORDS, paceParts, shortSeconds as secs, type PaceKind, type SpeedProfile, type StoreProfile } from '../pricing/scorecard';
+import { hiddenFromScreenReaders } from './a11y';
 import { colors, fonts, radius } from './theme';
 
 /** A color for each kind of time: greys for waiting, oranges for a page load (lighter first), then one each. */
@@ -25,8 +26,6 @@ export const PACE_COLORS: Record<PaceKind, string> = {
 const ORDER: PaceKind[] = ['queue', 'wait', 'start', 'open', 'prices', 'settle', 'check', 'replay', 'fetch', 'api', 'parse', 'show', 'failed', 'idle'];
 const LABEL_WIDTH = 64;
 
-const secs = (ms: number) => (ms < 1000 ? `${(ms / 1000).toFixed(2)} s` : `${(ms / 1000).toFixed(1)} s`);
-
 /** Where a run's time went at the store that finished last, as one bar, then the biggest costs in words. */
 export function WhereTimeWent({ profile }: { profile: SpeedProfile }) {
   const s = profile.slowest;
@@ -37,7 +36,8 @@ export function WhereTimeWent({ profile }: { profile: SpeedProfile }) {
       <Text style={styles.title} accessibilityRole="header">
         Where the {secs(profile.totalMs)} went
       </Text>
-      <View style={styles.bar} accessible accessibilityRole="image" accessibilityLabel={`${s.name} finished last: ${words.join(', ')}.`}>
+      {/* The words under it say the same, for screen readers. */}
+      <View style={styles.bar} {...hiddenFromScreenReaders}>
         {ORDER.filter((k) => (s.pace[k] ?? 0) > 0).map((k) => (
           <View key={k} style={{ flex: s.pace[k], backgroundColor: PACE_COLORS[k] }} />
         ))}
@@ -67,6 +67,7 @@ export function StoreWaterfall({ store, profile }: { store: StoreProfile; profil
       {store.rows.map((r, i) => (
         <View key={`${r.query}-${i}`} style={styles.row}>
           <Text style={[styles.rowLabel, !r.ok && styles.rowFailed]} numberOfLines={1} maxFontSizeMultiplier={1.2}>
+            {r.ok ? '' : '✗ '}
             {r.query}
           </Text>
           <View style={styles.track}>

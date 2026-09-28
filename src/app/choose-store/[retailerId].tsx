@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import React, { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,12 +20,13 @@ export default function ChooseStoreScreen() {
   const { retailerId } = useLocalSearchParams<{ retailerId: string }>();
   const retailer = useRetailer(retailerId);
   if (!retailer) return <ScreenHeader title="Choose a store" subtitle="This store was removed." />;
-  return <StoreList retailer={retailer} />;
+  return <StoreList key={retailer.id} retailer={retailer} />;
 }
 
 /** A retailer's stores near the ZIP code, nearest first, as its own finder listed them: the one tapped is where prices come from. */
 function StoreList({ retailer }: { retailer: RetailerConfig }) {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const { store } = useApp();
   const settings = useSettings();
   const deps = useSetupDeps();
@@ -65,7 +66,8 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
     setBusy(null);
     if (ok) {
       announce(`${s.name} is your ${retailer.name} store.`);
-      router.back();
+      // Setting it can take a while: if the user went back meanwhile, going back again would leave the screen under.
+      if (navigation.isFocused()) router.back();
     } else {
       setProblem(`Couldn’t make it your store on ${site} (${reasonText(currentSetup(store, retailer.id)?.reason)}). Try again, or choose another.`);
     }

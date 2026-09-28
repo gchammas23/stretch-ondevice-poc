@@ -4,7 +4,7 @@ import { listText, parseListText } from '../src/lists/parse';
 import type { GroceryList } from '../src/lists/types';
 import { isRetailerConfig } from '../src/onDevice/retailers';
 import type { Product } from '../src/onDevice/types';
-import { basketFor, type ItemResult } from '../src/pricing/basket';
+import { basketFor, bestSplit, type ItemResult } from '../src/pricing/basket';
 import { isMatch, queryWords } from '../src/pricing/matching';
 import { PriceCache } from '../src/pricing/priceCache';
 import { PriceHistory } from '../src/pricing/priceHistory';
@@ -282,6 +282,12 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(tripSavings(cheap, ['cheap'], [cheap, mid, pricey, partial]), { retailerId: 'mid', amount: 1 });
     assert.equal(tripSavings(pricey, ['pricey'], [cheap, pricey]), null, 'nothing saved');
     assert.equal(tripSavings(cheap, ['cheap'], [cheap, partial]), null, 'no store had it all');
+    // A split trip: against all of it at one store, one of its own two included, as its card says.
+    const a = basketFor(l, 'a', { milk: done(p('1', 'Milk', 3)), eggs: done(p('2', 'Eggs', 5)) });
+    const b = basketFor(l, 'b', { milk: done(p('1', 'Milk', 5)), eggs: done(p('2', 'Eggs', 2)) });
+    const split = bestSplit([a, b])!;
+    assert.deepEqual([split.total, split.savings], [5, 2]);
+    assert.deepEqual(tripSavings(split, ['a', 'b'], [a, b]), { retailerId: 'b', amount: 2 });
   });
 
   await t('add again: finished trips first, then other lists, without what’s already on this list', () => {

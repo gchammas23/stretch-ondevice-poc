@@ -5,8 +5,11 @@ import { SearchFailed } from '../src/onDevice/retailerSearch';
 import { BUNDLED_CONFIG } from '../src/onDevice/retailers';
 import type { Product, RetailerConfig, SearchOutcome } from '../src/onDevice/types';
 import { basketFor, bestSplit, defaultPick, driveCosts, driveVerdict, lineFor, rankBaskets, stretchPick, type ItemResult } from '../src/pricing/basket';
+import type { Coupon } from '../src/onDevice/couponPage';
+import { compareStores, type ComparisonInputs } from '../src/pricing/comparison';
+import type { FeeContext } from '../src/pricing/onlineCost';
 import { PriceCache } from '../src/pricing/priceCache';
-import { PricingEngine, type StoreChoice } from '../src/pricing/pricingEngine';
+import { PricingEngine, runMs, type PricingRun, type StoreChoice } from '../src/pricing/pricingEngine';
 import { AppStore, type KeyValueStore } from '../src/state/appStore';
 
 const cfg = (id: string): RetailerConfig => ({ ...BUNDLED_CONFIG.retailers.find((r) => r.id === 'target')!, id, name: id.toUpperCase() });
@@ -126,6 +129,34 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     const withDrive = bestSplit([a, b], { a: 0.5, b: 0.5 })!;
     assert.deepEqual([withDrive.total, withDrive.driving, withDrive.savings], [7, 1, 3.5], 'b alone: $11 + 50¢ driving; the split: $7 + $1');
     assert.equal(bestSplit([a, b], { a: 3, b: 0.5 }), null, 'a second stop that far saves only $1');
+  });
+
+  await t('comparison: Find a store’s pick, which the “list is priced” banner names too: by unit price when ranked so, less coupons when counted', () => {
+    const l = list('Milk');
+    const milk = (id: string, name: string, price: number) => p(id, price, { name });
+    const run: PricingRun = {
+      listId: 'L',
+      retailerIds: ['a', 'b'],
+      startedAt: 0,
+      finishedAt: 1,
+      stores: {},
+      results: {
+        a: { milk: { status: 'done', query: 'Milk', products: [milk('a1', 'Whole Milk, 1/2 gal', 2.5)] } },
+        b: { milk: { status: 'done', query: 'Milk', products: [milk('b1', 'Whole Milk, 1 gal', 3.5)] } },
+      },
+    };
+    const inputs: ComparisonInputs = {
+      usuals: {}, rankBy: 'total', drive: { on: false, perMile: 0.7 }, chosen: {}, mode: 'store', ctxOf: () => ({}) as FeeContext,
+      countCoupons: false, couponLists: {}, today: '2026-09-28',
+    };
+    assert.equal(compareStores(l, run, inputs).pick?.retailerId, 'a', 'less, as sold');
+    assert.equal(compareStores(l, run, { ...inputs, rankBy: 'unit' }).pick?.retailerId, 'b', 'less in the same size');
+    const coupon: Coupon = { id: 'c1', title: 'Save $1.50 on Whole Milk', off: 1.5, value: '$1.50 off', clipped: true };
+    const withCoupon = { ...inputs, couponLists: { b: [coupon] } };
+    assert.equal(compareStores(l, run, withCoupon).pick?.retailerId, 'a', 'a coupon shown, not counted');
+    const counted = compareStores(l, run, { ...withCoupon, countCoupons: true });
+    assert.deepEqual([counted.pick?.retailerId, counted.orderTotal(counted.pick!)], ['b', 2], 'counted: $3.50 less $1.50');
+    assert.deepEqual(compareStores(undefined, run, inputs).baskets, [], 'no list: nothing to compare');
   });
 
   // --- Pricing engine ---------------------------------------------------------------------------------------
@@ -289,6 +320,93 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     engine.stop('L');
     await until(() => !!engine.getRun('L')!.finishedAt);
     assert.deepEqual(Object.values(engine.getRun('L')!.results.s1).map((r) => r.status), ['done', 'skipped', 'skipped']);
+  });
+
+  await t('engine: a store that stopped still says why when its list is priced again with nothing new; a new item starts it again', async () => {
+    const f = fakeSearch({ fail: (s) => (s === 's1' ? 'timeout' : null) });
+    const engine = new PricingEngine(f.search, new PriceCache(), 4, 1);
+    engine.start('L', names.slice(0, 4), stores('s1', 's2'));
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    assert.match(engine.getRun('L')!.stores.s1.stoppedBecause ?? '', /^Kept failing \(timeout\)/);
+    // Coming back to the list's screen, or another setting changing, prices it again: nothing new to search.
+    engine.start('L', names.slice(0, 4), stores('s1', 's2'));
+    assert.match(engine.getRun('L')!.stores.s1.stoppedBecause ?? '', /^Kept failing \(timeout\)/, 'still says why');
+    assert.equal(f.calls.length, 6, 'and nothing was searched again');
+    engine.start('L', [...names.slice(0, 4), 'zz'], stores('s1', 's2'));
+    assert.equal(engine.getRun('L')!.stores.s1.stoppedBecause, undefined, 'a new item is searched there');
+    await until(() => !!engine.getRun('L')!.finishedAt);
+  });
+
+  await t('engine: pricing a list again while a store is still failing doesn’t forgive it: two failures in a row still stop it', async () => {
+    const f = fakeSearch({ delay: 10, fail: (s) => (s === 's1' ? 'timeout' : null) });
+    const engine = new PricingEngine(f.search, new PriceCache(), 4, 1);
+    engine.start('L', names.slice(0, 4), stores('s1'));
+    await until(() => engine.getRun('L')!.results.s1.a.status === 'failed');
+    // Its second search is running: the screen shows again, or a setting changes, and the list is priced again.
+    engine.start('L', names.slice(0, 4), stores('s1'));
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    assert.deepEqual([f.calls.length, engine.getRun('L')!.stores.s1.stoppedBecause], [2, 'Kept failing (timeout)']);
+  });
+
+  await t('engine: trying a finished run again restarts that store’s clock; the run leaves out the time it sat finished; with nothing to try, it stays finished', async () => {
+    let clock = 5_000_000;
+    let fail = true;
+    const search = async (c: RetailerConfig, q: string): Promise<SearchOutcome> => {
+      await tick(3);
+      clock += 1000;
+      if (fail && c.id === 's1') throw new SearchFailed([{ strategy: 'webview', ok: false, reason: 'timeout', ms: 1 }]);
+      return { retailer: c.name, products: [p(q, 1)], strategy: 'webview', ms: 1000, attempts: [] };
+    };
+    const engine = new PricingEngine(search, new PriceCache(undefined, () => clock), 4, 1, () => clock);
+    engine.start('L', ['milk', 'eggs'], stores('s1', 's2'));
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    const first = engine.getRun('L')!;
+    // Five minutes later, "Try S1 again" (or its retry time, after a cool-down).
+    clock += 5 * 60_000;
+    fail = false;
+    engine.retry('L', 's1');
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    const again = engine.getRun('L')!;
+    assert.equal(again.stores.s1.finishedAt! - again.stores.s1.startedAt!, 2000, 'two searches, two seconds: not the five minutes before');
+    // The run took its first searches' time plus the retry's, not the five minutes it sat finished in between.
+    assert.deepEqual([again.startedAt, again.idleMs, runMs(again)], [first.startedAt, 5 * 60_000, runMs(first)! + 2000]);
+    engine.retry('L');
+    assert.equal(engine.getRun('L')!.finishedAt, again.finishedAt, 'nothing to try again: still finished, not checking forever');
+  });
+
+  await t('engine: a store taken off a list while it searches leaves nothing in the run, even when its search fails', async () => {
+    const f = fakeSearch({ delay: 15, fail: (s) => (s === 's2' ? 'polite_limit' : null) });
+    const engine = new PricingEngine(f.search, new PriceCache(), 4, 1);
+    engine.start('L', ['milk', 'eggs'], stores('s1', 's2'));
+    await tick(5);
+    engine.start('L', ['milk', 'eggs'], stores('s1'));
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    await tick(30);
+    const run = engine.getRun('L')!;
+    assert.deepEqual([Object.keys(run.stores), Object.keys(run.results), run.retailerIds], [['s1'], ['s1'], ['s1']]);
+  });
+
+  await t('engine: searches running at a reset keep nothing: not in a run, the cache or the listeners', async () => {
+    const f = fakeSearch({ delay: 10 });
+    const cache = new PriceCache();
+    const engine = new PricingEngine(f.search, cache);
+    const heard: string[] = [];
+    engine.onSearched((rid) => heard.push(rid));
+    engine.start('L', ['milk'], stores('s1'));
+    await tick(3);
+    // Erase everything: the engine forgets, the saved prices go.
+    engine.reset();
+    cache.clear();
+    await tick(30);
+    assert.deepEqual([heard, cache.list().length, engine.getRun('L')], [[], 0, undefined]);
+
+    // Priced again at once (the welcome's run after Start over, say): its own search's prices, not the old one's.
+    engine.start('L', ['milk'], stores('s1'));
+    await tick(3);
+    engine.reset();
+    engine.start('L', ['milk'], stores('s1'));
+    await until(() => !!engine.getRun('L')!.finishedAt);
+    assert.deepEqual([f.calls.length, heard.length, engine.getRun('L')!.results.s1.milk.status], [3, 1, 'done']);
   });
 
   await t('engine: older prices show at once while fresh ones load; a failed refresh keeps them until a retry', async () => {

@@ -1,3 +1,5 @@
+import { isObj } from '../onDevice/json';
+
 // Pure TypeScript: the app saves it with AsyncStorage, the tests keep it in memory.
 
 /** A page of a store's, as the phone last read it: its weekly ad, or the account's coupons. */
@@ -21,7 +23,40 @@ export interface PageRead<T> {
   valueAt?: number;
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/**
+ * One round of page reads at a time (stores' ads, coupons or fees, one page after another), and a count of clears that
+ * a round running then checks, to stop and record nothing more (Erase everything).
+ */
+export class Rounds {
+  private going = false;
+  private waiters: (() => void)[] = [];
+  private cleared = 0;
+
+  /** Starts a round; false when one is already going. */
+  begin(): boolean {
+    if (this.going) return false;
+    this.going = true;
+    return true;
+  }
+
+  end(): void {
+    this.going = false;
+    this.waiters.splice(0).forEach((resolve) => resolve());
+  }
+
+  /** Resolves once no round is going (at once when none is): a read the user asked for waits for it. */
+  over(): Promise<void> {
+    return this.going ? new Promise((resolve) => this.waiters.push(resolve)) : Promise.resolve();
+  }
+
+  get epoch(): number {
+    return this.cleared;
+  }
+
+  clear(): void {
+    this.cleared++;
+  }
+}
 
 /**
  * Each store's last read of one kind of page, by retailer, with what the last read that worked found. `valid` checks a
@@ -31,7 +66,7 @@ export class ReadBook<T> {
   private reads: Record<string, PageRead<T>> = {};
   private listeners = new Set<() => void>();
   private changes = 0;
-  private inRound = false;
+  private rounds = new Rounds();
   private marks = new Set<string>();
   /** The store whose page is being read right now, if any. Not saved. */
   reading: string | null = null;
@@ -78,14 +113,22 @@ export class ReadBook<T> {
 
   /** Starts a round of reads, one page at a time; false when a round is already going. */
   beginRound(): boolean {
-    if (this.inRound) return false;
-    this.inRound = true;
-    return true;
+    return this.rounds.begin();
   }
 
   endRound(): void {
-    this.inRound = false;
+    this.rounds.end();
     this.setReading(null);
+  }
+
+  /** Resolves once no round of reads is going (at once when none is): a read the user asked for waits for it. */
+  roundOver(): Promise<void> {
+    return this.rounds.over();
+  }
+
+  /** Counts clears (Erase everything): a round started before one stops there, and records nothing more. */
+  get epoch(): number {
+    return this.rounds.epoch;
   }
 
   /** A read just tried. One that didn't work keeps what the last good read of the same key found. */
@@ -113,6 +156,7 @@ export class ReadBook<T> {
   }
 
   clear(): void {
+    this.rounds.clear();
     this.reads = {};
     this.emit();
   }

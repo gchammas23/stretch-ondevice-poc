@@ -9,7 +9,7 @@ import { dealsFrom } from '../pricing/deals';
 import { MAX_AGE_MS } from '../pricing/priceCache';
 import { whenLabel } from '../pricing/receipt';
 import { MODE_WORDS } from '../pricing/onlineCost';
-import { useApp, useAppState, useComparison, useLists, usePricingRun, useStoreChoices, useTrips, useWatch, useWeeklyAds } from '../state/AppProvider';
+import { useApp, useAppState, useComparison, useLists, usePricingRun, useStoreChoices, useStoreName, useTrips, useWatch, useWeeklyAds } from '../state/AppProvider';
 import { hiddenFromScreenReaders } from '../ui/a11y';
 import { IconButton, Pill } from '../ui/controls';
 import { Icon } from '../ui/Icon';
@@ -137,11 +137,10 @@ function WatchCard() {
 
 /** The savings tracker: what trips at Stretch's pick saved against the next-cheapest store for the same items. */
 function Savings() {
-  const { bundle } = useApp();
   const { fontScale } = useWindowDimensions();
   const trips = useTrips();
   const now = useNow(60_000);
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
   if (!trips.length) {
     return (
       <View style={[styles.savings, styles.savingsEmpty]}>
@@ -169,10 +168,9 @@ function Savings() {
 }
 
 function ListCard({ list }: { list: GroceryList }) {
-  const { bundle } = useApp();
   const run = usePricingRun(list.id);
   const { pick, running, mode, orderTotal, countCoupons, coupons } = useComparison(list, run);
-  const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const nameOf = useStoreName();
 
   let detail: string | null = null;
   if (list.trip) detail = `Shopping at ${list.trip.retailerIds.map(nameOf).join(' + ')}`;

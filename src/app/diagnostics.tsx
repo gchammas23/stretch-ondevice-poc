@@ -130,10 +130,12 @@ export default function DiagnosticsScreen() {
                   <Pressable
                     key={r.id}
                     accessibilityRole="radio"
-                    accessibilityState={{ checked: selected }}
+                    // Not while a search runs: its results would show under another store's name.
+                    accessibilityState={{ checked: selected, disabled: busy }}
+                    disabled={busy}
                     hitSlop={{ top: 6, bottom: 6 }}
                     onPress={() => pickRetailer(r.id)}
-                    style={[styles.chip, selected && styles.chipOn]}
+                    style={[styles.chip, selected && styles.chipOn, busy && !selected && styles.chipWaiting]}
                   >
                     <Text style={[styles.chipText, selected && styles.chipTextOn]}>{r.name}</Text>
                   </Pressable>
@@ -905,6 +907,7 @@ const styles = StyleSheet.create({
   chips: { gap: 8, paddingVertical: 4 },
   chip: { borderWidth: 1, borderColor: colors.line, backgroundColor: colors.card, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
   chipOn: { backgroundColor: colors.ink, borderColor: colors.ink },
+  chipWaiting: { opacity: 0.45 },
   chipText: { fontFamily: fonts.medium, fontSize: 14, color: colors.ink },
   chipTextOn: { color: '#ffffff' },
   segmented: { flexDirection: 'row', borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, overflow: 'hidden', marginTop: 8, backgroundColor: colors.card },

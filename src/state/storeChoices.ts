@@ -52,3 +52,27 @@ export function storeChoices(settings: Settings, retailers: RetailerConfig[], ap
     return [{ config, storeId, storeKey: `${storeId}@${settings.storePickedAt[id] ?? 0}${signedIn}` }];
   });
 }
+
+/** The last choices made from each set of rules (see steadyChoices). */
+const lastChoices = new WeakMap<RetailerConfig[], StoreChoice[]>();
+/** The choices made from each settings snapshot (settings are replaced, never changed): asked again, nothing is redone. */
+const bySettings = new WeakMap<Settings, { retailers: RetailerConfig[]; choices: StoreChoice[] }>();
+
+const sameChoice = (a: StoreChoice, b: StoreChoice) =>
+  a.config.id === b.config.id && a.storeId === b.storeId && a.storeKey === b.storeKey && a.config.strategies.join() === b.config.strategies.join();
+
+/**
+ * The stores to compare (see storeChoices), as the same array for as long as they're chosen the same way from the same
+ * rules: screens price a list again when its stores change, and shouldn't every time another setting changes (the
+ * store a search saw, noted, say).
+ */
+export function steadyChoices(settings: Settings, retailers: RetailerConfig[]): StoreChoice[] {
+  const cached = bySettings.get(settings);
+  if (cached?.retailers === retailers) return cached.choices;
+  const next = storeChoices(settings, retailers);
+  const prev = lastChoices.get(retailers);
+  const choices = prev && prev.length === next.length && prev.every((c, i) => sameChoice(c, next[i])) ? prev : next;
+  lastChoices.set(retailers, choices);
+  bySettings.set(settings, { retailers, choices });
+  return choices;
+}

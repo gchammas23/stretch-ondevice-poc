@@ -4,7 +4,7 @@ import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Switch, 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { itemKey, queryKey, searchText, type GroceryList, type ListItem } from '../../../../lists/types';
 import { parseSize } from '../../../../pricing/sizes';
-import { useApp, useList, usePricingRun, useUsuals } from '../../../../state/AppProvider';
+import { useApp, useList, usePricingRun, useStoreName, useUsuals } from '../../../../state/AppProvider';
 import { announce } from '../../../../ui/a11y';
 import { Pill, QtyStepper } from '../../../../ui/controls';
 import { RetailerBadge } from '../../../../ui/RetailerBadge';
@@ -16,7 +16,7 @@ export default function ItemScreen() {
   const list = useList(id);
   const item = list?.items.find((i) => i.id === itemId);
   if (!list || !item) return <ScreenHeader title="Item" subtitle="This item isn’t on the list anymore." />;
-  return <ItemView list={list} item={item} />;
+  return <ItemView key={`${list.id}|${item.id}`} list={list} item={item} />;
 }
 
 /**
@@ -25,14 +25,14 @@ export default function ItemScreen() {
  */
 function ItemView({ list, item }: { list: GroceryList; item: ListItem }) {
   const insets = useSafeAreaInsets();
-  const { store, bundle } = useApp();
+  const { store } = useApp();
   const usuals = useUsuals();
   const run = usePricingRun(list.id);
   const [name, setName] = useState(item.name);
   const [note, setNote] = useState(item.note ?? '');
   const [brand, setBrand] = useState(item.prefs?.brand ?? '');
   const [size, setSize] = useState(item.prefs?.size ?? '');
-  const nameOf = (rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? rid;
+  const nameOf = useStoreName();
   const parsed = size.trim() ? parseSize(size) : null;
   const sizeNote = !size.trim()
     ? null

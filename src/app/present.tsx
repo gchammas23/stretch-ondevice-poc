@@ -1,16 +1,19 @@
 import { router } from 'expo-router';
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listQueries, type GroceryList } from '../lists/types';
+import { seconds } from '../onDevice/scrapeFeed';
 import { laneStatus, stageLayout, STAGE } from '../onDevice/WebViewFetcher';
+import type { WebViewQueue } from '../onDevice/webviewQueue';
 import { stretchPick } from '../pricing/basket';
 import { MODE_WORDS, orderable } from '../pricing/onlineCost';
+import { runMs, type PricingRun } from '../pricing/pricingEngine';
 import { scorecard } from '../pricing/scorecard';
 import { pricesOf, verdictOf } from '../pricing/truth';
 import { hostOf } from '../pricing/receipt';
-import { useApp, useComparison, useLists, usePricingRun, useSettings, useSharePlan, useStoreChoices } from '../state/AppProvider';
-import { announce, useScreenReader } from '../ui/a11y';
+import { useApp, useComparison, useLists, usePricingRun, useSettings, useSharePlan, useStoreChoices, useStoreName } from '../state/AppProvider';
+import { announce, focusOn, hiddenFromScreenReaders, useScreenReader } from '../ui/a11y';
 import { IconButton, Pill, tap } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { Icon } from '../ui/Icon';
@@ -19,6 +22,9 @@ import { colors, fonts, money, radius, shadow } from '../ui/theme';
 import { useNow } from '../ui/useNow';
 
 type Stage = 'pick' | 'intro' | 'race' | 'result';
+
+/** How long the race took: the result keeps it, whatever the run does afterwards (a store tried again, say). */
+type Finish = { ms: number };
 
 /**
  * Presenter mode: a one-minute live demo, the same steps every time. A list is priced at the user's stores with the
@@ -36,9 +42,18 @@ export default function PresentScreen() {
   const share = useSharePlan(list);
   const [step, setStep] = useState<Stage>('pick');
   const [count, setCount] = useState(3);
+  const [finish, setFinish] = useState<Finish | null>(null);
   const run = usePricingRun(list?.id);
-  // Once every price is in, the race is over.
-  const stage: Stage = step === 'race' && run?.finishedAt ? 'result' : step;
+  // Once every price is in, the race is over, and stays over: a store cooling down may be tried again at its retry
+  // time, long after the podium showed.
+  const stage: Stage = step === 'race' && (finish || run?.finishedAt) ? 'result' : step;
+  useEffect(() => {
+    if (step !== 'race' || !listId) return;
+    return engine.subscribe(() => {
+      const r = engine.getRun(listId);
+      if (r?.finishedAt) setFinish((had) => had ?? { ms: runMs(r)! });
+    });
+  }, [step, listId, engine]);
 
   // Leaving the screen puts the store pages back out of sight.
   useEffect(() => () => pool.setLiveView('off'), [pool]);
@@ -66,6 +81,7 @@ export default function PresentScreen() {
   const begin = () => {
     tap();
     setCount(3);
+    setFinish(null);
     setStep('intro');
   };
   const close = () => {
@@ -78,7 +94,9 @@ export default function PresentScreen() {
       <View style={styles.top}>
         <View style={styles.live}>
           <View style={styles.liveDot} />
-          <Text style={styles.liveText}>{stage === 'race' ? 'Live from this phone' : 'Presenter mode'}</Text>
+          <Text style={styles.liveText} maxFontSizeMultiplier={1.3}>
+            {stage === 'race' ? 'Live from this phone' : 'Presenter mode'}
+          </Text>
         </View>
         <IconButton name="close" label="Close presenter mode" onPress={close} />
       </View>
@@ -89,7 +107,7 @@ export default function PresentScreen() {
       ) : stage === 'race' ? (
         <Race list={list} />
       ) : (
-        <Result list={list} onAgain={begin} onClose={close} />
+        <Result list={list} finish={finish ?? (run?.finishedAt ? { ms: runMs(run)! } : null)} onAgain={begin} onClose={close} />
       )}
     </View>
   );
@@ -120,14 +138,16 @@ function Pick({
         price checked against the product’s own page. The same steps every time.
       </Text>
       <Text style={styles.label}>List</Text>
-      <View style={styles.chips} accessibilityRole="radiogroup">
+      <View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel="List">
         {lists.map((l) => {
           const on = l.id === listId;
           return (
             <Pressable
               key={l.id}
               accessibilityRole="radio"
+              accessibilityLabel={`${l.name}, ${l.items.length} ${l.items.length === 1 ? 'item' : 'items'}`}
               accessibilityState={{ checked: on }}
+              hitSlop={{ top: 2, bottom: 2 }}
               onPress={() => setListId(l.id)}
               style={[styles.chip, on && styles.chipOn]}
             >
@@ -140,7 +160,16 @@ function Pick({
       </View>
       <Text style={styles.label}>Stores</Text>
       <Text style={styles.body}>{stores.length ? stores.join(', ') : 'None switched on: choose some in Your stores.'}</Text>
-      <Pill label="Start" icon="zap" variant="orange" disabled={!ready} onPress={onStart} style={styles.cta} />
+      <Pill
+        label="Start"
+        accessibilityLabel="Start the live demo"
+        accessibilityHint={ready ? undefined : stores.length ? 'Choose a list with items first' : 'Switch on some stores in Your stores first'}
+        icon="zap"
+        variant="orange"
+        disabled={!ready}
+        onPress={onStart}
+        style={styles.cta}
+      />
       <Text style={styles.note}>Every price is read fresh, from each store’s own website. Tip: turn on Do Not Disturb, and share the screen.</Text>
     </ScrollView>
   );
@@ -152,9 +181,13 @@ function Intro({ count }: { count: number }) {
   }, [count]);
   return (
     <View style={styles.intro}>
-      <Text style={styles.introText}>Every price you’re about to see is read live, right now, by this {deviceWord}.</Text>
-      <Text style={styles.introSub}>From each store’s own website. No server in between.</Text>
-      <Text style={styles.count} accessibilityElementsHidden>
+      <Text style={styles.introText} maxFontSizeMultiplier={1.3}>
+        Every price you’re about to see is read live, right now, by this {deviceWord}.
+      </Text>
+      <Text style={styles.introSub} maxFontSizeMultiplier={1.3}>
+        From each store’s own website. No server in between.
+      </Text>
+      <Text style={styles.count} maxFontSizeMultiplier={1.3} {...hiddenFromScreenReaders}>
         {count || ''}
       </Text>
     </View>
@@ -166,51 +199,40 @@ function Race({ list }: { list: GroceryList }) {
   const { pool } = useApp();
   const run = usePricingRun(list.id);
   const { baskets } = useComparison(list, run);
-  const choices = useStoreChoices();
   const feed = useSyncExternalStore(pool.feed.subscribe, pool.feed.getSnapshot);
   const { lanes } = useSyncExternalStore(pool.subscribe, pool.getSnapshot);
   const screenReader = useScreenReader();
   const { width, height } = useWindowDimensions();
   const geo = stageLayout(width, height, insets.top);
-  const now = useNow(100);
+  const nameOf = useStoreName(run);
+  // What the phone did since the race started: the caption's steps, and the last lines under the lanes.
+  const since = run ? feed.filter((e) => e.at >= run.startedAt) : [];
+  const caption = run ? captionOf(run, since) : '';
+  // VoiceOver doesn't read a caption changing by itself: each step is said once, as it comes.
+  useEffect(() => announce(caption), [caption]);
   if (!run) return null;
-  const nameOf = (rid: string) => choices.find((c) => c.config.id === rid)?.config.name ?? run.stores[rid]?.name ?? rid;
   const stores = Object.values(run.stores);
   const total = stores.reduce((n, s) => n + s.total, 0);
   const settled = stores.reduce((n, s) => n + s.settled, 0);
-  const since = feed.filter((e) => e.at >= run.startedAt);
-  const reusing = since.some((e) => e.text.includes('reused its page'));
-  const first = since.length ? since[since.length - 1] : undefined;
-  const caption = !settled
-    ? `Opening ${joinNames(stores.map((s) => s.name))}’s own websites on this ${deviceWord}`
-    : reusing
-      ? 'Now each store’s page is reused: the next searches skip the reload, and send the store’s own request'
-      : `First price after ${seconds(first ? first.at - run.startedAt : now - run.startedAt)}`;
   // The pages on stage, in the order the live view draws them.
   const shown = screenReader ? [] : lanes.filter((l) => l.getSnapshot()).slice(0, 4);
 
   return (
     <View style={styles.flex}>
       <View style={[styles.stageHead, { height: STAGE.header - 44 }]}>
-        <Text style={styles.caption} accessibilityLiveRegion="polite" numberOfLines={3}>
+        <Text style={styles.caption} numberOfLines={3} maxFontSizeMultiplier={1.3}>
           {caption}
         </Text>
         <View style={styles.counters}>
-          <Counter value={`${settled}/${total}`} label="prices" />
-          <Counter value={String(stores.length)} label="stores" />
-          <Counter value={seconds(now - run.startedAt)} label="on this phone" />
+          <Counter value={`${settled}/${total}`} label="prices" spoken={`${settled} of ${total} prices`} />
+          <Counter value={String(stores.length)} label="stores" spoken={`${stores.length} ${stores.length === 1 ? 'store' : 'stores'}`} />
+          <TimeCounter from={run.startedAt} />
         </View>
       </View>
       {/* The store pages are drawn over this space by the live view (see stageLayout). */}
       <View style={{ height: geo.height }}>
         {shown.map((lane, i) => (
-          <Text
-            key={lane.key}
-            numberOfLines={1}
-            style={[styles.tileLabel, { left: geo.tiles[i].x, top: geo.tiles[i].y - geo.top + geo.tileH + 3, width: geo.tileW }]}
-          >
-            {lane.label} · {laneStatus(lane)}
-          </Text>
+          <TileLabel key={lane.key} lane={lane} style={{ left: geo.tiles[i].x, top: geo.tiles[i].y - geo.top + geo.tileH + 3, width: geo.tileW }} />
         ))}
       </View>
       <ScrollView contentContainerStyle={[styles.raceBox, { paddingBottom: insets.bottom + 24 }]}>
@@ -225,12 +247,48 @@ function Race({ list }: { list: GroceryList }) {
   );
 }
 
-function Counter({ value, label }: { value: string; label: string }) {
+/** What the stage says, step by step: opening the stores' sites, the first price, then pages reused. */
+function captionOf(run: PricingRun, since: { at: number; text: string }[]): string {
+  // The first price read in this run: the feed's oldest line since it started, else the first result that landed.
+  const reads = Object.values(run.results)
+    .flatMap((r) => Object.values(r))
+    .filter((r) => r.status === 'done' && !r.cached && r.at !== undefined && r.at >= run.startedAt)
+    .map((r) => r.at!);
+  const firstAt = since.length ? since[since.length - 1].at : reads.length ? Math.min(...reads) : undefined;
+  if (firstAt === undefined) return `Opening ${joinNames(Object.values(run.stores).map((s) => s.name))}’s own websites on this ${deviceWord}`;
+  if (since.some((e) => e.text.includes('reused its page'))) {
+    return 'Now each store’s page is reused: the next searches skip the reload, and send the store’s own request';
+  }
+  return `First price after ${seconds(firstAt - run.startedAt)}`;
+}
+
+function Counter({ value, label, spoken }: { value: ReactNode; label: string; spoken: string }) {
   return (
-    <View style={styles.counter}>
-      <Text style={styles.counterValue}>{value}</Text>
-      <Text style={styles.counterLabel}>{label}</Text>
+    <View style={styles.counter} accessible accessibilityLabel={spoken}>
+      <Text style={styles.counterValue} maxFontSizeMultiplier={1.3}>
+        {value}
+      </Text>
+      <Text style={styles.counterLabel} maxFontSizeMultiplier={1.3}>
+        {label}
+      </Text>
     </View>
+  );
+}
+
+/** The race's time so far, ticking every tenth of a second: only this counter draws again, not the stage. */
+function TimeCounter({ from }: { from: number }) {
+  const now = useNow(100);
+  const s = seconds(now - from);
+  return <Counter value={s} label="on this phone" spoken={`${s.replace(/ s$/, ' seconds')} on this phone`} />;
+}
+
+/** A page's name and what it's doing, under its tile. Replays come and go without the page changing, so it looks again. */
+function TileLabel({ lane, style }: { lane: WebViewQueue; style: object }) {
+  useNow(500);
+  return (
+    <Text numberOfLines={1} style={[styles.tileLabel, style]} maxFontSizeMultiplier={1.3}>
+      {lane.label} · {laneStatus(lane)}
+    </Text>
   );
 }
 
@@ -239,14 +297,13 @@ interface Proof {
   pagePrice?: number;
 }
 
-function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => void; onClose: () => void }) {
+function Result({ list, finish, onAgain, onClose }: { list: GroceryList; finish: Finish | null; onAgain: () => void; onClose: () => void }) {
   const insets = useSafeAreaInsets();
   const { search, bundle } = useApp();
   const settings = useSettings();
   const run = usePricingRun(list.id);
   const { baskets, extra, online, mode, countCoupons } = useComparison(list, run);
-  const choices = useStoreChoices();
-  const nameOf = (rid: string) => choices.find((c) => c.config.id === rid)?.config.name ?? run?.stores[rid]?.name ?? rid;
+  const nameOf = useStoreName(run);
   // The same pick as Find a store's: by how the user shops, driving and online fees included when they count.
   const contenders = orderable(baskets, online);
   const winner = stretchPick(contenders.filter((b) => b.complete), settings.rankBy, extra);
@@ -254,7 +311,14 @@ function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => 
   const line = winner?.lines.find((l) => l.status === 'found' && l.product?.url && l.product.price !== null);
   const product = line?.product ?? undefined;
   const cfg = winner ? bundle.retailers.find((r) => r.id === winner.retailerId) : undefined;
-  const [proof, setProof] = useState<Proof>({ state: 'checking' });
+  const host = product?.url ? hostOf(product.url).replace(/^www\./, '') : '';
+  // The check is for one product: another winner's product is checked afresh, not shown with this one's answer.
+  const checking = cfg && product ? `${cfg.id}|${product.id}` : '';
+  const [proof, setProof] = useState<Proof & { of: string }>({ of: '', state: 'checking' });
+  const shownProof: Proof = proof.of === checking ? proof : { state: 'checking' };
+  // The screen changes wholesale: the screen reader starts at the result.
+  const heading = useRef<Text>(null);
+  useEffect(() => focusOn(heading), []);
 
   useEffect(() => {
     if (!cfg || !product) return;
@@ -264,24 +328,30 @@ function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => 
         if (!alive) return;
         const pagePrice = details.price;
         const verdict = verdictOf(pricesOf(product), pagePrice);
-        setProof(verdict === 'unreadable' ? { state: 'failed' } : { state: verdict, pagePrice });
+        setProof(verdict === 'unreadable' ? { of: checking, state: 'failed' } : { of: checking, state: verdict, pagePrice });
+        if (verdict === 'same') announce(`${host}’s own product page shows the same price.`);
+        else if (verdict === 'different' && pagePrice !== undefined) announce(`The product page shows ${money(pagePrice)}.`);
+        else announce('The product’s page couldn’t be read just now.');
       },
-      () => alive && setProof({ state: 'failed' }),
+      () => {
+        if (!alive) return;
+        setProof({ of: checking, state: 'failed' });
+        announce('The product’s page couldn’t be read just now.');
+      },
     );
     return () => {
       alive = false;
     };
-  }, [cfg, product, search]);
+  }, [cfg, product, search, checking, host]);
 
-  if (!run?.finishedAt) return null;
+  if (!run || !finish) return null;
   // Products read, as Find a store's banner counts them.
   const read = scorecard(run).products;
-  const host = product?.url ? hostOf(product.url).replace(/^www\./, '') : '';
 
   return (
     <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
-      <Text style={styles.hero} accessibilityRole="header">
-        {read} prices in {seconds(run.finishedAt - run.startedAt)}
+      <Text ref={heading} style={styles.hero} accessibilityRole="header">
+        {read} prices in {seconds(finish.ms)}
       </Text>
       <Text style={styles.body}>
         From {Object.keys(run.stores).length} stores’ own websites, read on this {deviceWord}, with no server in between.
@@ -292,29 +362,31 @@ function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => 
         extra={extra}
         how={[mode === 'store' ? '' : `${MODE_WORDS[mode]}, fees included`, countCoupons ? 'clipped coupons counted' : ''].filter(Boolean).join(', ') || undefined}
         nameOf={nameOf}
-        timeMs={run.finishedAt - run.startedAt}
+        timeMs={finish.ms}
         items={list.items.length}
         onShare={() => router.push(`/list/${list.id}/share`)}
       />
       {winner && product && cfg ? (
         <View style={styles.proof}>
-          <Text style={styles.proofTitle}>Is that price real?</Text>
+          <Text style={styles.proofTitle} accessibilityRole="header">
+            Is that price real?
+          </Text>
           <Text style={styles.body}>
             {line!.item.name} at {cfg.name}: {money(product.price!)}, {product.name}.
           </Text>
-          {proof.state === 'checking' ? (
+          {shownProof.state === 'checking' ? (
             <View style={styles.row}>
               <ActivityIndicator size="small" color={colors.orange} />
               <Text style={styles.note}>Opening the product’s own page on {host}, on this {deviceWord}…</Text>
             </View>
-          ) : proof.state === 'same' ? (
+          ) : shownProof.state === 'same' ? (
             <View style={styles.row}>
               <Icon name="check" size={18} color={colors.green} strokeWidth={2.6} />
               <Text style={[styles.note, styles.flex, { color: colors.green }]}>{host}’s own product page shows the same price, just now.</Text>
             </View>
-          ) : proof.state === 'different' ? (
+          ) : shownProof.state === 'different' ? (
             <Text style={[styles.note, { color: colors.amber }]}>
-              The product page shows {money(proof.pagePrice!)}: search results and product pages can differ, or be for another store.
+              The product page shows {money(shownProof.pagePrice!)}: search results and product pages can differ, or be for another store.
             </Text>
           ) : (
             <Text style={styles.note}>The product’s page couldn’t be read just now: the X-ray still shows the data the price came in.</Text>
@@ -344,8 +416,6 @@ function Result({ list, onAgain, onClose }: { list: GroceryList; onAgain: () => 
     </ScrollView>
   );
 }
-
-const seconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
 
 /** "Walmart, Target and ALDI". */
 function joinNames(names: string[]): string {

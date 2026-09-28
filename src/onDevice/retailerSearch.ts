@@ -258,6 +258,11 @@ export interface RetailerSearch {
   prepareSuggestions(cfg: RetailerConfig): Promise<boolean>;
   /** What the retailer's own search box suggests for `text`, typed into its page, hidden. Empty if nothing. */
   suggest(cfg: RetailerConfig, text: string): Promise<string[]>;
+  /**
+   * Erase everything: searches running now end without adding to anything (the search log, the store tuning, profiles,
+   * X-rays, the live feed), and what this search remembers in memory goes.
+   */
+  reset(): void;
 }
 
 /** A page on the retailer's own site (its search or home page's domain), where the app may open product pages. */
@@ -323,6 +328,10 @@ export function createRetailerSearch(
   hooks: SearchHooks = {},
 ): RetailerSearch {
   const failures: FailureRecord[] = [];
+  // Counts resets (see reset): a search running at one ends without adding to anything.
+  let epoch = 0;
+  // Searches that never went out: the user skipped the store's bot check while they waited to load a page.
+  const unsent = new WeakSet<Error>();
   const details = new Map<string, { at: number; value: ProductDetails }>();
   const reading = new Map<string, Promise<ProductDetails>>();
   const attemptListeners = new Set<(entry: AttemptEntry) => void>();
@@ -589,6 +598,7 @@ export function createRetailerSearch(
   }
 
   async function searchViaWebView(cfg: RetailerConfig, query: string, storeId: string, opts: SearchOptions, run: Run): Promise<StrategyResult> {
+    const began = Date.now();
     const { parse: parser, profile } = readerFor(cfg, query);
     if (!parser) throw new StrategyError(`unknown_parser_${cfg.parser}`);
     const { clock, tune } = run;
@@ -668,6 +678,14 @@ export function createRetailerSearch(
       : undefined;
     const from = clock.spans.length;
     const timing: LoadTiming = { queuedAt: Date.now() };
+    // The user skipped this store's bot check since this search began: its page load would only meet the check again.
+    if (lane.skippedAt >= began) {
+      const skipped = new StrategyError('challenge_cancelled', `${cfg.name}’s bot check was skipped`);
+      unsent.add(skipped);
+      throw skipped;
+    }
+    // Another store chosen, or everything erased, while the page loads: nothing is kept from it in the lane.
+    const resets = lane.resets;
     let payload;
     try {
       payload = await lane.run({
@@ -687,6 +705,12 @@ export function createRetailerSearch(
       });
     } catch (e) {
       clock.load(timing, false);
+      // Waiting behind a page load whose bot check the user skipped: it never loaded (see WebViewQueue.cancel).
+      if ((e as { unsent?: unknown } | null)?.unsent === true) {
+        const skipped = new StrategyError('challenge_cancelled', `${cfg.name}’s bot check was skipped`);
+        unsent.add(skipped);
+        throw skipped;
+      }
       const reason = reasonOf(e);
       const said = (e as { detail?: unknown } | null)?.detail;
       throw new StrategyError(
@@ -719,8 +743,9 @@ export function createRetailerSearch(
       const streamed = (timing.streamed ?? []).some((label) => label.replace(/\?.*$/, '').slice(0, 120) === where);
       clock.note(`its products were in ${where.replace(/^response /, '')}, which ${streamed ? 'streamed in' : 'never streamed in'}`);
     }
+    const current = lane.resets === resets;
     // A lane whose replays keep missing stays on page loads until its page is unloaded and it starts fresh.
-    if (replayable && lane.replayMisses < REPLAY_MISSES_ALLOWED) {
+    if (current && replayable && lane.replayMisses < REPLAY_MISSES_ALLOWED) {
       let template = learnTemplate(parsed.origin, query, LEAN_TO);
       if (template?.kind === 'json' && template.lean) {
         // The page's own answer, to count what smaller ones save; and what this store's request did before.
@@ -747,10 +772,10 @@ export function createRetailerSearch(
           ? storeIdFromPageData(payload.nextDataText)?.id
           : undefined;
     const store = mergeStores(id ? { id } : undefined, parseStoreLabel(payload.store));
-    lane.seenStore = store ?? null;
+    if (current) lane.seenStore = store ?? null;
     // The page asked for the store the site picked, and another was chosen in the app: ask for that one's prices
     // from this page, with its number in the request. If the site won't have it, the page's prices stand, and say so.
-    if (storeId && id && !sameStoreId(id, storeId) && lane.template?.kind === 'json') {
+    if (current && storeId && id && !sameStoreId(id, storeId) && lane.template?.kind === 'json') {
       const pinned = await replaySearch(cfg, lane, parser, query, storeId, run);
       if (pinned) return pinned;
     }
@@ -778,6 +803,9 @@ export function createRetailerSearch(
   const search = async (cfg: RetailerConfig, query: string, storeId: string, only?: Strategy, opts: SearchOptions = {}): Promise<SearchOutcome> => {
     const started = Date.now();
     const attempts: Attempt[] = [];
+    // Everything erased while this search runs (see reset): it ends there, and adds to nothing.
+    const mine = epoch;
+    const stopped = (strategy: Strategy) => new SearchFailed([...attempts, { strategy, ok: false, reason: 'reset', ms: Date.now() - started }]);
     const order = only ? [only] : cfg.strategies;
     const kind = opts.kind ?? 'search';
     // A way asked for on purpose, in Diagnostics: it goes out whatever is cooling down there.
@@ -836,6 +864,7 @@ export function createRetailerSearch(
       const t0 = Date.now();
       await new Promise((resolve) => setTimeout(resolve, pause));
       clock.add('wait', t0, Date.now());
+      if (mine !== epoch) throw stopped(order[0]);
     }
     for (let i = 0; i < order.length; i++) {
       const strategy = order[i];
@@ -849,6 +878,7 @@ export function createRetailerSearch(
       const from = clock.spans.length;
       try {
         const found = await runStrategy(strategy, cfg, query, storeId, opts, run);
+        if (mine !== epoch) throw stopped(strategy);
         refusedReplays();
         if (found.read?.suspect) clock.note(`the list may not be the results: ${found.read.suspect}`);
         // What answers thrown away along the way moved counts too.
@@ -911,6 +941,9 @@ export function createRetailerSearch(
           ...(reader ? { reader } : {}),
         };
       } catch (e) {
+        if (mine !== epoch) throw stopped(strategy);
+        // It never went out: the store's bot check was skipped while it waited. Nothing to learn from, nor count.
+        if (unsent.has(e as Error)) throw new SearchFailed([...attempts, { strategy, ok: false, reason: 'challenge_cancelled', ms: 0 }], timing());
         refusedReplays();
         clock.failSince(from);
         const attempt: Attempt = { strategy, ok: false, reason: reasonOf(e), detail: detailOf(e), ms: Date.now() - t0, ...infoOf(e) };
@@ -1132,6 +1165,9 @@ export function createRetailerSearch(
     if (pending) return pending;
 
     const read = (async () => {
+      // One page load at a time at each store: a page load of the store's own searches goes first.
+      const storeLane = pool.lane(cfg.id, cfg.name);
+      while (storeLane.loading()) await storeLane.settled();
       const t0 = Date.now();
       try {
         const payload = await pageLane().run({
@@ -1403,6 +1439,16 @@ export function createRetailerSearch(
     };
   };
 
+  const reset = () => {
+    epoch += 1;
+    failures.length = 0;
+    details.clear();
+    worked.clear();
+    empties.clear();
+    leanKnown.clear();
+    sessionStores.clear();
+  };
+
   return {
     search,
     readFromSite,
@@ -1422,5 +1468,6 @@ export function createRetailerSearch(
     onAttempt,
     prepareSuggestions,
     suggest,
+    reset,
   };
 }

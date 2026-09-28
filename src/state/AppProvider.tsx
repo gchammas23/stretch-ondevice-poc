@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useIsFocused } from 'expo-router';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { AppState as RNAppState } from 'react-native';
 import type { GroceryList } from '../lists/types';
-import { listQueries, queryKey } from '../lists/types';
+import { queryKey } from '../lists/types';
 import type { WeeklyAd } from '../onDevice/adPage';
 import { AttemptLog } from '../onDevice/attemptLog';
 import type { Coupon, CouponList } from '../onDevice/couponPage';
 import { CoverageCheck } from '../onDevice/coverage';
+import { isObj } from '../onDevice/json';
 import { krogerApiConfigured, warmUpKroger } from '../onDevice/krogerApi';
 import { priceEvidence } from '../onDevice/evidence';
 import { PhoneVsServer, plainConfig, versusIds, type VersusScope } from '../onDevice/phoneVsServer';
@@ -20,39 +22,15 @@ import type { RetailerConfig, RetailerConfigBundle } from '../onDevice/types';
 import { useRetailerSearch, type RetailerSearch } from '../onDevice/useRetailerSearch';
 import { useWebViewPool } from '../onDevice/WebViewFetcher';
 import type { WebViewPool } from '../onDevice/webviewPool';
-import {
-  basketFor,
-  bestSplit,
-  driveCosts,
-  driveVerdict,
-  stretchPick,
-  withUnitTotals,
-  type Basket,
-  type DriveVerdict,
-  type OrderCost,
-  type SplitTrip,
-  type TripCosts,
-} from '../pricing/basket';
 import { adDue, adTarget } from '../pricing/ads';
-import { couponCredits, couponsDue, couponTarget, withCoupons, type CouponCredit } from '../pricing/coupons';
+import { compareStores, couponListsFor, type Comparison } from '../pricing/comparison';
+import { couponsDue, couponTarget } from '../pricing/coupons';
 import { FeeBook, figuresOf } from '../pricing/feeBook';
 import { PriceCache } from '../pricing/priceCache';
 import { memberRun } from '../pricing/member';
-import {
-  extrasOf,
-  feeContexts,
-  feesKey,
-  onlineCost,
-  onlineCosts,
-  orderable,
-  orderCostFn,
-  tripCosts,
-  type FeeContext,
-  type OnlineCost,
-  type ShopMode,
-} from '../pricing/onlineCost';
+import { feeContexts, feesKey, type FeeContext } from '../pricing/onlineCost';
 import { PriceHistory } from '../pricing/priceHistory';
-import { PricingEngine, type PricingRun, type StartOptions, type StoreChoice } from '../pricing/pricingEngine';
+import { PricingEngine, type PricingRun, type StoreChoice } from '../pricing/pricingEngine';
 import { ReadBook } from '../pricing/readBook';
 import { sharePlan } from '../pricing/sharing';
 import { TruthBook } from '../pricing/truth';
@@ -60,7 +38,7 @@ import { useToday } from '../ui/useNow';
 import { AppStore, type AppState, type WatchItem } from './appStore';
 import { batteryMeter } from './battery';
 import { locateZip } from './deviceLocation';
-import { storeChoices } from './storeChoices';
+import { steadyChoices, storeChoices } from './storeChoices';
 import { isUsZip, setUpStores, type SetupDeps } from './storeSetup';
 
 const PRICES_KEY = 'stretch.prices.v1';
@@ -79,10 +57,9 @@ export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_K
 /** The connection counts as down for the pricing engine's words this long after the last of its failures. */
 const DROP_FRESH_MS = 60_000;
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** A saved weekly ad, and a saved list of coupons: the shapes the readers give. */
-const isWeeklyAd = (v: unknown): v is WeeklyAd => isRecord(v) && Array.isArray(v.items);
-const isCouponList = (v: unknown): v is CouponList => isRecord(v) && Array.isArray(v.coupons);
+const isWeeklyAd = (v: unknown): v is WeeklyAd => isObj(v) && Array.isArray(v.items);
+const isCouponList = (v: unknown): v is CouponList => isObj(v) && Array.isArray(v.coupons);
 
 /** Asked for by the user, a read waits this long for its store's searches to finish. */
 const ASKED_WAIT_MS = 60_000;
@@ -157,6 +134,11 @@ interface AppContextValue {
   /** Called with watched products whose price just dropped. */
   onDrops: (listener: (items: WatchItem[]) => void) => () => void;
   pool: WebViewPool;
+  /**
+   * Saved prices and history, what was read from store pages, the search log and the last checks go (Forget prices and
+   * history); lists stay. Searches running now keep nothing, and lists are priced afresh.
+   */
+  forgetPrices: () => void;
   /**
    * Everything on this phone back to a first launch: lists, trips, stores, prices, history and health. The welcome
    * shows next. Stores chosen on a retailer's own site stay chosen there, in that site's cookies.
@@ -236,8 +218,15 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     return { ...served, retailers: [...served.retailers, ...custom.filter((r) => !ids.has(r.id))] };
   }, [served, custom]);
 
+  // The rules file set now: an answer for one set before it (a slow "Check now") doesn't replace the newer one's.
+  const latestUrl = useRef(url);
+  useEffect(() => {
+    latestUrl.current = url;
+  }, [url]);
+
   /** Takes a fetched rules file, or keeps the rules in use and says why the file wasn't taken. */
   const applyRules = useCallback((from: string, got: Awaited<ReturnType<typeof fetchRules>>) => {
+    if (from !== latestUrl.current) return;
     setFetched((had) => {
       const at = Date.now();
       if ('bundle' in got) return { url: from, bundle: got.bundle, status: { source: 'served', url: from, version: got.bundle.version, checkedAt: at } };
@@ -314,12 +303,16 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     () =>
       engine.onSearched((retailerId, storeKey, products, at, seen) => {
         history.record(retailerId, storeKey, products, at);
+        // Prices for the retailer's store as it is now: its watched products follow it there, if it changed. A search for
+        // a store it had before, landing late, says nothing about the one it has now.
+        const current = steadyChoices(store.getState().settings, bundle.retailers).find((c) => c.config.id === retailerId)?.storeKey === storeKey;
+        if (current) store.followStore(retailerId, storeKey);
         const dropped = store.notePrices(retailerId, storeKey, products, at);
         if (dropped.length) dropListeners.forEach((listener) => listener(dropped));
         // Noted even when the search said nothing about its store: Your stores then says so.
-        store.noteSeenStore(retailerId, storeKey, seen ?? {}, at);
+        if (current) store.noteSeenStore(retailerId, storeKey, seen ?? {}, at);
       }),
-    [engine, history, store, dropListeners],
+    [engine, history, store, dropListeners, bundle.retailers],
   );
 
   useEffect(() => search.onAttempt((entry) => log.add(entry)), [search, log]);
@@ -405,32 +398,9 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     );
   }, [store, bundle.retailers, coverage, search]);
 
-  const checkFees = useCallback(
-    async (force = false, retailerIds?: string[]) => {
-      if (!fees.beginRound()) return;
-      try {
-        for (const { config } of storeChoices(store.getState().settings, bundle.retailers)) {
-          const url = feesKey(config.online);
-          if (!url || (retailerIds && !retailerIds.includes(config.id)) || (!force && !fees.due(config.id, url))) continue;
-          fees.setReading(config.id);
-          try {
-            const got = await search.readFees(config);
-            const found = { pickup: got.pickup, delivery: got.delivery, quotes: got.quotes, count: got.count, ...(got.markup ? { markup: got.markup } : {}) };
-            fees.record(config.id, { url, at: Date.now(), ok: got.count > 0, ms: got.ms, bytes: got.bytes, ...(got.count > 0 ? { fees: found } : { reason: 'no_fees' }) });
-          } catch (e) {
-            fees.record(config.id, { url, at: Date.now(), ok: false, reason: failureOf(e) });
-          }
-        }
-      } finally {
-        fees.endRound();
-      }
-    },
-    [store, bundle.retailers, fees, search],
-  );
-
   /**
-   * Whether a store's lane is free for a page of its own (its ad, its coupons): no list is searching it and nothing runs
-   * in its lane. Asked for by the user, it's waited for, a minute at most. One page load at a time at each store.
+   * Whether a store is free for a page of its own (its ad, its coupons, its fees): no list is searching it and nothing
+   * runs in its lane. Asked for by the user, it's waited for, a minute at most. One page load at a time at each store.
    */
   const storeFree = useCallback(
     async (config: RetailerConfig, wait: boolean) => {
@@ -440,6 +410,40 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       return free();
     },
     [engine, pool],
+  );
+
+  const checkFees = useCallback(
+    async (force = false, retailerIds?: string[]) => {
+      // A read the user asked for waits for one going on its own, rather than being dropped.
+      while (!fees.beginRound()) {
+        if (!force) return;
+        await fees.roundOver();
+      }
+      // Everything erased meanwhile: the round stops, and records nothing more.
+      const epoch = fees.epoch;
+      try {
+        for (const { config } of storeChoices(store.getState().settings, bundle.retailers)) {
+          const url = feesKey(config.online);
+          if (!url || (retailerIds && !retailerIds.includes(config.id)) || (!force && !fees.due(config.id, url))) continue;
+          // The fees page is on the store's own site: not while the store is being searched.
+          if (!(await storeFree(config, force))) continue;
+          if (fees.epoch !== epoch) break;
+          fees.setReading(config.id);
+          try {
+            const got = await search.readFees(config);
+            if (fees.epoch !== epoch) break;
+            const found = { pickup: got.pickup, delivery: got.delivery, quotes: got.quotes, count: got.count, ...(got.markup ? { markup: got.markup } : {}) };
+            fees.record(config.id, { url, at: Date.now(), ok: got.count > 0, ms: got.ms, bytes: got.bytes, ...(got.count > 0 ? { fees: found } : { reason: 'no_fees' }) });
+          } catch (e) {
+            if (fees.epoch !== epoch) break;
+            fees.record(config.id, { url, at: Date.now(), ok: false, reason: failureOf(e) });
+          }
+        }
+      } finally {
+        fees.endRound();
+      }
+    },
+    [store, bundle.retailers, fees, search, storeFree],
   );
 
   const runVersus = useCallback(
@@ -476,7 +480,13 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
 
   const checkAds = useCallback(
     async (asked = false, retailerIds?: string[]) => {
-      if (!ads.beginRound()) return;
+      // A read the user asked for waits for one going on its own, rather than being dropped.
+      while (!ads.beginRound()) {
+        if (!asked) return;
+        await ads.roundOver();
+      }
+      // Everything erased meanwhile: the round stops, and records nothing more.
+      const epoch = ads.epoch;
       try {
         const settings = store.getState().settings;
         for (const choice of storeChoices(settings, bundle.retailers)) {
@@ -484,13 +494,16 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
           const target = adTarget(config, choice, settings.zip);
           if (!target || 'needs' in target || (retailerIds && !retailerIds.includes(config.id))) continue;
           if (!adDue(ads.get(config.id), target.key, Date.now(), asked) || !(await storeFree(config, asked))) continue;
+          if (ads.epoch !== epoch) break;
           ads.setReading(config.id);
           try {
             const got = await search.readAd(config, target.url);
+            if (ads.epoch !== epoch) break;
             const ad: WeeklyAd = { items: got.items, ...(got.from ? { from: got.from } : {}), ...(got.to ? { to: got.to } : {}), ...(got.source ? { source: got.source } : {}) };
             const ok = ad.items.length > 0;
             ads.record(config.id, { key: target.key, url: target.url, at: Date.now(), ok, ms: got.ms, bytes: got.bytes, ...(ok ? { value: ad } : { reason: 'no_ad' }) });
           } catch (e) {
+            if (ads.epoch !== epoch) break;
             ads.record(config.id, { key: target.key, url: target.url, at: Date.now(), ok: false, reason: failureOf(e) });
           }
         }
@@ -503,19 +516,28 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
 
   const checkCoupons = useCallback(
     async (asked = false, retailerIds?: string[]) => {
-      if (!coupons.beginRound()) return;
+      // A read the user asked for (after signing in, clipping, or the coupons page) waits for one going on its own.
+      while (!coupons.beginRound()) {
+        if (!asked) return;
+        await coupons.roundOver();
+      }
+      // Everything erased meanwhile: the round stops before reading any more of the accounts' pages.
+      const epoch = coupons.epoch;
       try {
         const settings = store.getState().settings;
         for (const { config } of storeChoices(settings, bundle.retailers)) {
           const target = couponTarget(config, settings.signedInAt[config.id]);
           if (!target || 'needs' in target || (retailerIds && !retailerIds.includes(config.id))) continue;
           if (!couponsDue(coupons.get(config.id), target.key, Date.now(), asked) || !(await storeFree(config, asked))) continue;
+          if (coupons.epoch !== epoch) break;
           coupons.setReading(config.id);
           try {
             const got = await search.readCoupons(config);
+            if (coupons.epoch !== epoch) break;
             const list: CouponList = { coupons: got.coupons, ...(got.signedOut ? { signedOut: true } : {}), ...(got.source ? { source: got.source } : {}) };
             coupons.record(config.id, { key: target.key, url: target.url, at: Date.now(), ok: true, ms: got.ms, bytes: got.bytes, value: list });
           } catch (e) {
+            if (coupons.epoch !== epoch) break;
             coupons.record(config.id, { key: target.key, url: target.url, at: Date.now(), ok: false, reason: failureOf(e) });
           }
         }
@@ -578,13 +600,26 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     async (retailerId: string) => {
       const config = bundle.retailers.find((r) => r.id === retailerId);
       if (!config) return;
+      const had = store.getState().settings;
+      const before = had.signedInAt[retailerId];
+      const wasMember = !!had.memberships[retailerId];
       await search.signIn(config);
-      store.noteSignedIn(retailerId, Date.now());
+      const at = Date.now();
+      store.noteSignedIn(retailerId, at);
       if (config.member) store.setMember(retailerId, true);
+      if (!config.coupons) return;
       // Signed in: the account's coupons can be read, on the store's coupons page, hidden.
-      if (config.coupons) await checkCoupons(true, [retailerId]);
+      await checkCoupons(true, [retailerId]);
+      // That page says nobody is signed in (Done was tapped without signing in): no account, and no member prices it
+      // turned on, but a membership the user set themselves stays.
+      const read = coupons.get(retailerId);
+      const signedOut = !!read && read.at >= at && (read.reason === 'signed_out' || !!read.value?.signedOut);
+      if (signedOut && store.getState().settings.signedInAt[retailerId] === at) {
+        store.undoSignIn(retailerId, before);
+        if (config.member && !wasMember) store.setMember(retailerId, false);
+      }
     },
-    [bundle.retailers, search, store, checkCoupons],
+    [bundle.retailers, search, store, checkCoupons, coupons],
   );
 
   const onDrops = useCallback(
@@ -601,11 +636,10 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     if (ready) onReady?.();
   }, [ready, onReady]);
 
-  const startOver = useCallback(async () => {
+  const forgetPrices = useCallback(() => {
+    // Nothing running adds to what's erased: runs are forgotten, searches, checks and reads under way keep nothing.
     engine.reset();
-    pool.resetAll();
-    storeTuner.reset();
-    parserProfiles.clear();
+    search.reset();
     priceEvidence.clear();
     cache.clear();
     history.clear();
@@ -616,19 +650,28 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     fees.clear();
     ads.clear();
     coupons.clear();
+  }, [engine, search, cache, history, log, coverage, versus, truth, fees, ads, coupons]);
+
+  const startOver = useCallback(async () => {
+    forgetPrices();
+    // Kept pages go too: a page loading now finishes, but isn't kept (see WebViewQueue.reset).
+    pool.resetAll();
+    pool.feed.clear();
+    storeTuner.reset();
+    parserProfiles.clear();
     // Saves the fresh state under its own key; the others are removed outright.
     store.reset();
     await AsyncStorage.multiRemove(STORAGE_KEYS.filter((k) => k !== 'stretch.app.v1')).catch(() => {});
-  }, [engine, pool, cache, history, log, coverage, versus, truth, fees, ads, coupons, store]);
+  }, [forgetPrices, pool, store]);
 
   const value = useMemo(
     () => ({
       store, engine, cache, history, log, coverage, versus, truth, profiles: parserProfiles, search, bundle, rules, checkRules, runCoverage, runVersus,
-      fees, checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
+      fees, checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, forgetPrices, startOver,
     }),
     [
       store, engine, cache, history, log, coverage, versus, truth, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
-      ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, startOver,
+      ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, forgetPrices, startOver,
     ],
   );
   if (!ready) return null;
@@ -656,11 +699,18 @@ export function useList(id: string | undefined): GroceryList | undefined {
   return useAppState((s) => s.lists.find((l) => l.id === id));
 }
 
-/** A list's pricing run, with member prices at the stores whose loyalty program the user belongs to. */
+const noUpdates = () => () => {};
+
+/**
+ * A list's pricing run, with member prices at the stores whose loyalty program the user belongs to. A screen that
+ * isn't showing (one under another in the stack) doesn't draw again as each price lands, while the phone is busy
+ * reading the stores: it catches up when it shows again.
+ */
 export function usePricingRun(listId: string | undefined): PricingRun | undefined {
   const { engine } = useApp();
+  const focused = useIsFocused();
   const memberships = useAppState((s) => s.settings.memberships);
-  const run = useSyncExternalStore(engine.subscribe, () => (listId ? engine.getRun(listId) : undefined));
+  const run = useSyncExternalStore(focused ? engine.subscribe : noUpdates, () => (listId ? engine.getRun(listId) : undefined));
   return useMemo(() => (run ? memberRun(run, memberships) : undefined), [run, memberships]);
 }
 
@@ -685,10 +735,11 @@ export function useAttemptLog(): AttemptLog {
   return log;
 }
 
+/** The stores to compare: the same array until they change (see steadyChoices), so screens don't price again meanwhile. */
 export function useStoreChoices(): StoreChoice[] {
   const settings = useSettings();
   const { bundle } = useApp();
-  return useMemo(() => storeChoices(settings, bundle.retailers), [settings, bundle.retailers]);
+  return useMemo(() => steadyChoices(settings, bundle.retailers), [settings, bundle.retailers]);
 }
 
 /**
@@ -701,53 +752,7 @@ export function useSharePlan(list: GroceryList | undefined): Record<string, stri
   return useMemo(() => JSON.parse(key) as Record<string, string>, [key]);
 }
 
-/**
- * Prices the list at the chosen stores: only what isn't already known, unless refreshing. Items that can take
- * another item's search do (see sharing.ts).
- */
-export function usePriceList() {
-  const { engine } = useApp();
-  const choices = useStoreChoices();
-  const usuals = useUsuals();
-  return (list: GroceryList, opts?: StartOptions) => engine.start(list.id, listQueries(list), choices, { ...opts, share: sharePlan(list, usuals) });
-}
-
-export interface Comparison {
-  baskets: Basket[];
-  /** The best basket among stores that have finished; until one has, the best so far. */
-  pick: Basket | null;
-  /** The pick's store has finished, so it can be shopped while slower stores keep checking. */
-  pickReady: boolean;
-  /** The best split among stores that have finished, when it's worth it. */
-  split: SplitTrip | null;
-  /** Some store is still searching, or refreshing older prices. */
-  running: boolean;
-  /** When driving counts: each store's round trip, by retailer (stores whose distance is known). Not for delivery. */
-  driving?: TripCosts;
-  /** When driving counts: whether the pick's prices make up for the drive. */
-  verdict: DriveVerdict | null;
-  /** How the user shops. */
-  mode: ShopMode;
-  /** Ordering online: each store's order, by retailer: its items at online prices, fees and total. */
-  online?: Record<string, OnlineCost>;
-  /** Everything each store costs beyond its basket, by retailer, for ranking: driving, and ordering online. */
-  extra?: TripCosts;
-  /** Ordering online: whether a store's fees and online prices cost it the pick. */
-  feesVerdict: DriveVerdict | null;
-  /**
-   * What the basket costs the way the user shops, as sold: its items, plus online prices and fees, less its clipped
-   * coupons when the user counts them. Not driving.
-   */
-  orderTotal: (b: Basket) => number;
-  /** The user counts clipped coupons in totals, and in ranking stores (see coupons.ts). */
-  countCoupons: boolean;
-  /** Each store's coupons for its basket, by retailer: the stores whose coupons the phone has read. Counted or not. */
-  coupons: Record<string, CouponCredit>;
-  /** What ordering `items` worth online costs at a store, for a part of the list (split trips). */
-  costAt: (retailerId: string, items: number) => OnlineCost | undefined;
-  /** Ordering online: what an order of a given size adds at each store, for split trips and trip savings. */
-  orderCost?: OrderCost;
-}
+export type { Comparison } from '../pricing/comparison';
 
 /** The fee math's view of each store: its rules, what the phone read of its fees page, and the user's plans. */
 export function useFeeContexts(): (retailerId: string) => FeeContext {
@@ -764,20 +769,22 @@ export function useFeeBook(): FeeBook {
   return fees;
 }
 
-/** While the user shops online, reads the fees pages of the compared stores that are due, once per screen visit. */
-export function useFeeReads(): void {
+/**
+ * While the user shops online, reads the fees pages of the compared stores that are due, once per screen visit, when
+ * `ready` (screens that price a list wait for it: one page load at a time at each store).
+ */
+export function useFeeReads(ready = true): void {
   const { checkFees } = useApp();
   const mode = useAppState((s) => s.settings.shopMode);
   const ids = useAppState((s) => s.settings.retailerIds.join());
   useEffect(() => {
-    if (mode !== 'store') void checkFees();
-  }, [mode, ids, checkFees]);
+    if (ready && mode !== 'store') void checkFees();
+  }, [ready, mode, ids, checkFees]);
 }
 
 /**
  * Every store's basket for the list, with the user's usuals, Stretch's pick and the best split, from the latest
- * prices. Ranked by total, or by total in the same sizes everywhere, as the user chose on Find a store; and by what
- * each costs the way they shop: driving there, and ordering online, fees included.
+ * prices (see compareStores): what Find a store and the other screens show.
  */
 export function useComparison(list: GroceryList | undefined, run: PricingRun | undefined): Comparison {
   const usuals = useUsuals();
@@ -789,50 +796,10 @@ export function useComparison(list: GroceryList | undefined, run: PricingRun | u
   const couponLists = useCoupons();
   const today = useToday();
   const ctxOf = useFeeContexts();
-  return useMemo(() => {
-    const way = mode === 'store' ? null : mode;
-    const costAt = (retailerId: string, items: number) => (way ? onlineCost(retailerId, way, items, ctxOf(retailerId)) : undefined);
-    const empty = {
-      baskets: [], pick: null, pickReady: false, split: null, running: false, verdict: null, feesVerdict: null, mode, orderTotal: (b: Basket) => b.total, costAt,
-      countCoupons, coupons: {},
-    };
-    if (!list || !run) return empty;
-    const baskets = withUnitTotals(run.retailerIds.map((id) => basketFor(list, id, run.results[id], usuals)));
-    const running = baskets.some((b) => !b.complete || b.refreshing > 0);
-    // Driving there and back, from each store's distance as its finder gave it. Nobody drives for a delivery.
-    const driving = drive.on && mode !== 'delivery' ? driveCosts(Object.fromEntries(run.retailerIds.map((id) => [id, chosen[id]?.miles])), drive.perMile) : undefined;
-    // Ordering online: each store's order, at its online prices with its fees. A store that doesn't take orders that
-    // way can't be the pick, nor half of a split.
-    const online = way ? onlineCosts(baskets, way, ctxOf) : undefined;
-    // The coupons the phone read for each store's account, on its basket; they come off totals only when the user says.
-    const coupons = couponCredits(baskets, (id) => couponLists[id], today);
-    const counted = countCoupons ? coupons : undefined;
-    const extra = withCoupons(tripCosts(driving, online), counted);
-    const can = orderable(baskets, online);
-    // A slow store doesn't hold the answer back: the pick comes from the stores that are done, and changes if the
-    // slow one turns out cheaper.
-    const pick = stretchPick(can.filter((b) => b.complete), rankBy, extra) ?? stretchPick(can, rankBy, extra);
-    const fees = online ? extrasOf(online) : undefined;
-    const orderCost = way ? orderCostFn(way, ctxOf) : undefined;
-    return {
-      baskets,
-      pick,
-      pickReady: !!pick?.complete,
-      split: bestSplit(can, driving, orderCost),
-      running,
-      driving,
-      verdict: driving ? driveVerdict(can, rankBy, driving, withCoupons(fees, counted)) : null,
-      mode,
-      online,
-      extra,
-      feesVerdict: fees ? driveVerdict(can, rankBy, fees, withCoupons(driving, counted)) : null,
-      orderTotal: (b: Basket) => Math.round(((online?.[b.retailerId]?.total ?? b.total) - (counted?.[b.retailerId]?.amount ?? 0)) * 100) / 100,
-      costAt,
-      orderCost,
-      countCoupons,
-      coupons,
-    };
-  }, [list, run, usuals, rankBy, drive, chosen, mode, ctxOf, countCoupons, couponLists, today]);
+  return useMemo(
+    () => compareStores(list, run, { usuals, rankBy, drive, chosen, mode, ctxOf, countCoupons, couponLists, today }),
+    [list, run, usuals, rankBy, drive, chosen, mode, ctxOf, countCoupons, couponLists, today],
+  );
 }
 
 /** Re-renders when a weekly ad is read, or starts or stops being read. */
@@ -872,15 +839,7 @@ export function useCoupons(): Record<string, Coupon[] | undefined> {
   const reads = useSyncExternalStore(coupons.subscribe, coupons.all);
   const choices = useStoreChoices();
   const signedInAt = useAppState((s) => s.settings.signedInAt);
-  return useMemo(() => {
-    const out: Record<string, Coupon[] | undefined> = {};
-    for (const c of choices) {
-      const target = couponTarget(c.config, signedInAt[c.config.id]);
-      const read = reads[c.config.id];
-      out[c.config.id] = target && !('needs' in target) && read?.key === target.key ? read.value?.coupons : undefined;
-    }
-    return out;
-  }, [reads, choices, signedInAt]);
+  return useMemo(() => couponListsFor(choices, reads, signedInAt), [reads, choices, signedInAt]);
 }
 
 /**
@@ -889,20 +848,32 @@ export function useCoupons(): Record<string, Coupon[] | undefined> {
  */
 export function useSavingsReads(ready = true): void {
   const { checkAds, checkCoupons } = useApp();
-  const ids = useAppState((s) => s.settings.retailerIds.join());
-  const signedIn = useAppState((s) => Object.keys(s.settings.signedInAt).join());
+  // Another store, a new ZIP or a sign-in has its own ad and coupons: they're read when those change too.
+  const zip = useAppState((s) => s.settings.zip);
+  const stores = useStoreChoices()
+    .map((c) => `${c.config.id}:${c.storeKey}`)
+    .join();
   useEffect(() => {
     if (!ready) return;
     void (async () => {
       await checkAds();
       await checkCoupons();
     })();
-  }, [ready, ids, signedIn, checkAds, checkCoupons]);
+  }, [ready, zip, stores, checkAds, checkCoupons]);
 }
 
 export function useRetailer(id: string | undefined): RetailerConfig | undefined {
   const { bundle } = useApp();
   return bundle.retailers.find((r) => r.id === id);
+}
+
+/**
+ * A store's name, by retailer id: as the rules give it; for a store they no longer have (one added and removed), as
+ * `run` recorded it; else its id.
+ */
+export function useStoreName(run?: PricingRun): (retailerId: string) => string {
+  const { bundle } = useApp();
+  return useCallback((rid: string) => bundle.retailers.find((r) => r.id === rid)?.name ?? run?.stores[rid]?.name ?? rid, [bundle.retailers, run]);
 }
 
 /** What the store setup functions in storeSetup.ts need. */

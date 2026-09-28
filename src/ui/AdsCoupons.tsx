@@ -4,10 +4,8 @@ import type { WeeklyAd } from '../onDevice/adPage';
 import { adLineWords, type AdHit } from '../pricing/ads';
 import { couponChip, couponStateWords, type CouponHit } from '../pricing/coupons';
 import { Chip } from './bits';
+import { TEXT_BUTTON_SLOP } from './controls';
 import { colors, fonts, money } from './theme';
-
-/** Text-sized buttons reach 44 pt to touch. */
-const TEXT_BUTTON_SLOP = { top: 12, bottom: 12, left: 8, right: 8 };
 
 /** A basket line in the store's weekly ad: "In this week's ad", then the ad's deal and when it ends. */
 export function AdNote({ hit, ad, productPrice }: { hit: AdHit; ad: WeeklyAd | undefined; productPrice?: number }) {

@@ -49,7 +49,6 @@ export default function CostScreen() {
   const setUsers = (users: number) => {
     tap();
     setInputs((i) => ({ ...i, users }));
-    setTexts((t) => ({ ...t, users: String(users) }));
   };
 
   const summary = [
@@ -64,19 +63,19 @@ export default function CostScreen() {
       <ScreenHeader title="What servers would cost" subtitle="Reading the same prices from servers, against on your users’ phones." />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
         <View style={styles.hero}>
-          <View style={styles.side}>
+          <View style={styles.side} accessible accessibilityLabel={`From servers: about ${dollars(result.total)} a month, about ${dollars(result.perUser)} per user`}>
             <Text style={styles.sideLabel}>From servers</Text>
-            <Text style={styles.big} accessibilityLabel={`From servers: about ${dollars(result.total)} a month`}>
-              {dollars(result.total)}
-            </Text>
+            <Text style={styles.big}>{dollars(result.total)}</Text>
             <Text style={styles.small}>a month, about {dollars(result.perUser)} per user</Text>
           </View>
           <View style={styles.divider} />
-          <View style={styles.side}>
+          <View
+            style={styles.side}
+            accessible
+            accessibilityLabel={`On phones: nothing to Stretch. Each phone uses about ${bytesText(result.phoneBytesPerUserMonth)} a month.`}
+          >
             <Text style={styles.sideLabel}>On phones</Text>
-            <Text style={[styles.big, { color: colors.green }]} accessibilityLabel="On phones: nothing to Stretch">
-              $0
-            </Text>
+            <Text style={[styles.big, { color: colors.green }]}>$0</Text>
             <Text style={styles.small}>to Stretch. Each phone uses about {bytesText(result.phoneBytesPerUserMonth)} a month.</Text>
           </View>
         </View>
@@ -100,14 +99,16 @@ export default function CostScreen() {
           <Text style={styles.title} accessibilityRole="header">
             Users
           </Text>
-          <View style={styles.chips}>
+          <View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel="Users">
             {USERS.map((u) => {
               const on = inputs.users === u;
               return (
                 <Pressable
                   key={u}
                   accessibilityRole="radio"
+                  accessibilityLabel={`${count(u)} users`}
                   accessibilityState={{ checked: on }}
+                  hitSlop={{ top: 4, bottom: 4 }}
                   onPress={() => setUsers(u)}
                   style={[styles.chip, on && styles.chipOn]}
                 >
@@ -139,7 +140,7 @@ export default function CostScreen() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.row}>
+    <View style={styles.row} accessible accessibilityLabel={`${label}: ${value}`}>
       <Text style={[styles.body, styles.flex]}>{label}</Text>
       <Text style={styles.value}>{value}</Text>
     </View>
@@ -197,6 +198,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     paddingHorizontal: 10,
     paddingVertical: 8,
+    minHeight: 44,
   },
 });
 

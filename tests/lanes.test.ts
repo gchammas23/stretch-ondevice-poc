@@ -8,6 +8,8 @@ import type { RetailerConfig } from '../src/onDevice/types';
 import { PAGE_LANE, WebViewPool } from '../src/onDevice/webviewPool';
 import { WebViewQueue } from '../src/onDevice/webviewQueue';
 import { DEFAULT_CHALLENGE_MARKERS } from '../src/onDevice/webviewScript';
+import { PriceCache } from '../src/pricing/priceCache';
+import { PricingEngine } from '../src/pricing/pricingEngine';
 
 // Search events are logged for telemetry; keep them out of the test output.
 const log = console.log;
@@ -656,6 +658,14 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     await p;
     assert.ok(news >= 3, 'the tile follows the page load');
     pool.setLiveView('off');
+
+    // Presenter mode's stage draws the pages too: one loaded after the stage opened is news, so it's put on stage.
+    lane.reset();
+    pool.setLiveView('stage');
+    news = 0;
+    await searcher.search(example, 'jam', '');
+    assert.ok(news >= 1, 'the stage follows the page load');
+    pool.setLiveView('off');
   });
 
   await t('fees page: read hidden on the page lane for its words; a bot check fails the read, unseen; Store health hears of it', async () => {
@@ -868,6 +878,124 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     // No store set: nothing to send.
     await searcher.search(wholefoods, 'rice', '');
     assert.equal(seen.requests.length, 1);
+  });
+
+  // --- Skipping a bot check, checks waiting their turn, erasing, one page load per store -------------------------------------
+  await t('Skip: a store’s other searches waiting to load its page don’t meet its bot check again; the check shows once', async () => {
+    // A store whose searches replay wait for its page; one that can't replay queues its page loads in the lane: both ways.
+    for (const config of [example, { ...example, replay: false }]) {
+      const pool = new WebViewPool();
+      pool.challengeGraceMs = 0;
+      const lane = pool.lane('example', 'Example');
+      let lastLoad = -1;
+      let lastCheck = '';
+      let loads = 0;
+      let shown = 0;
+      // Every page load of this store meets a bot check, and the user taps “Skip Example” on it.
+      lane.subscribe(() => {
+        const s = lane.getSnapshot();
+        if (!s) return;
+        if (s.phase === 'hidden' && s.id !== lastLoad) {
+          lastLoad = s.id;
+          loads++;
+          setTimeout(() => lane.receive(JSON.stringify({ nonce: nonceOf(s.script), kind: 'challenge' })), 5);
+        }
+        if (s.phase === 'challenge' && `${s.id}:${s.round}` !== lastCheck) {
+          lastCheck = `${s.id}:${s.round}`;
+          shown++;
+          setTimeout(() => lane.cancel(), 5);
+        }
+      });
+      const searcher = createRetailerSearch(pool, 'test', new StoreTuner());
+      const heard: string[] = [];
+      searcher.onAttempt((e) => heard.push(`${e.kind}:${e.reason}`));
+      const engine = new PricingEngine((cfg, q, id) => searcher.search(cfg, q, id), new PriceCache(), 4, 3);
+      engine.start('L', ['milk', 'eggs', 'bread', 'rice', 'jam'], [{ config, storeId: '', storeKey: 'k' }]);
+      for (let i = 0; i < 300 && !engine.getRun('L')?.finishedAt; i++) await tick(10);
+      const run = engine.getRun('L')!;
+      const how = config.replay === false ? 'queued in the lane' : 'waiting for its page';
+      assert.deepEqual([shown, loads, run.stores.example.stoppedBecause], [1, 1, 'You skipped the bot check'], how);
+      assert.equal(heard.filter((h) => h === 'search:challenge_cancelled').length, 1, `${how}: one skip in the search log, not one for each search that waited`);
+    }
+  });
+
+  await t('a bot check’s time counts only while it’s on screen: one behind a store visit waits, then gets its full time', async () => {
+    const pool = new WebViewPool();
+    pool.challengeGraceMs = 0;
+    const visit = pool.lane('kroger', 'Kroger');
+    const other = pool.lane('target', 'Target');
+    other.challengeTimeoutMs = 30;
+    const signingIn = visit.browse({ url: 'https://www.kroger.com/signin', retailerName: 'Kroger', purpose: 'signin' });
+    let outcome = 'pending';
+    const search = other.run(job({ url: 'https://www.target.com/s?searchTerm=milk', timeoutMs: 20 })).then(
+      () => 'ok',
+      (e: Error) => e.message,
+    );
+    void search.then((o) => (outcome = o));
+    other.receive(JSON.stringify({ nonce: nonceOf(other.getSnapshot()!.script), kind: 'challenge' }));
+    await tick(60);
+    assert.deepEqual([outcome, other.getSnapshot()?.phase, pool.getSnapshot().presented], ['pending', 'challenge', visit], 'not on screen, so not out of time');
+    visit.closeBrowse();
+    await signingIn;
+    assert.equal(pool.getSnapshot().presented, other);
+    assert.equal(await search, 'challenge_timeout', 'its own time, once on screen');
+  });
+
+  await t('erasing everything mid-search: the search then running adds nothing anywhere, and the lane keeps no page from it', async () => {
+    priceEvidence.clear();
+    for (const q of ['milk', 'eggs']) {
+      const pool = new WebViewPool();
+      const lane = pool.lane('example', 'Example');
+      // Page loads answer 60 ms after they start: milk with products, eggs with a page that refuses the phone.
+      let last = -1;
+      lane.subscribe(() => {
+        const s = lane.getSnapshot();
+        if (!s || s.phase !== 'hidden' || s.id === last) return;
+        last = s.id;
+        const query = queryOf(s.url);
+        const request = { method: 'GET', url: apiUrl(query), headers: {}, credentials: 'include' };
+        const msg =
+          query === 'eggs'
+            ? { nonce: nonceOf(s.script), kind: 'blocked', marker: 'Access Denied' }
+            : { nonce: nonceOf(s.script), kind: 'data', href: s.url, sources: [{ label: `response ${request.url}`, text: apiJson(query), request }] };
+        setTimeout(() => lane.receive(JSON.stringify(msg)), 60);
+      });
+      lane.attach(() => {});
+      const tuner = new StoreTuner();
+      const searcher = createRetailerSearch(pool, 'test', tuner);
+      const heard: string[] = [];
+      searcher.onAttempt((e) => heard.push(e.kind));
+      const searching = searcher.search(example, q, '').catch((e: unknown) => e);
+      await tick(20);
+      // Erase everything (see startOver in AppProvider.tsx), as far as the search layer goes.
+      searcher.reset();
+      pool.resetAll();
+      const feed = pool.feed.getSnapshot().length;
+      const out = await searching;
+      assert.ok(out instanceof SearchFailed && out.attempts.some((a) => a.reason === 'reset'), `${q}: it ends as erased`);
+      assert.deepEqual(
+        [heard, tuner.cooling('example')?.kind, priceEvidence.get('example', `${q}-0`), pool.feed.getSnapshot().length - feed, lane.hasPage(), lane.template],
+        [[], undefined, undefined, 0, false, null],
+        `${q}: no log, no cool-down, no X-ray, no feed, no kept page`,
+      );
+    }
+  });
+
+  await t('a product page waits for its store’s own page load: one page load at a time at each store', async () => {
+    const pool = new WebViewPool();
+    const lane = pool.lane('example', 'Example');
+    const pages = pool.lane(PAGE_LANE, 'Pages');
+    const searcher = createRetailerSearch(pool, 'test');
+    const loading = lane.run(job());
+    const product = searcher.readProduct(example, { retailer: 'example', storeId: '', id: 'p1', name: 'Milk', price: 2, url: 'https://www.example.com/p/1' });
+    await tick(5);
+    assert.equal(pages.getSnapshot(), null, 'the product page waits');
+    data(lane);
+    await loading;
+    await tick(5);
+    assert.equal(pages.getSnapshot()?.url, 'https://www.example.com/p/1', 'then loads');
+    data(pages);
+    await product.catch(() => {});
   });
 
   log(`\n${passed} lane and search tests passed`);

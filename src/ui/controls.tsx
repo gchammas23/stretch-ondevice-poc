@@ -8,6 +8,9 @@ import { colors, fonts, radius } from './theme';
 
 export const tap = () => void Haptics.selectionAsync().catch(() => {});
 
+/** Around a small text button ("Stop", "Watch"), so it's at least 44 points tall to tap. */
+export const TEXT_BUTTON_SLOP = { top: 12, bottom: 12, left: 8, right: 8 };
+
 type Variant = 'orange' | 'dark' | 'light' | 'outline';
 
 const VARIANTS: Record<Variant, { bg: string; fg: string; border?: string }> = {

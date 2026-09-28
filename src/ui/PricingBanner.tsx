@@ -2,10 +2,13 @@ import { router, usePathname } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { basketFor, driveCosts, stretchPick } from '../pricing/basket';
+import { dayOf } from '../onDevice/adPage';
+import { compareStores, couponListsFor } from '../pricing/comparison';
 import { memberRun } from '../pricing/member';
-import { feeContexts, MODE_WORDS, onlineCosts, orderable, tripCosts } from '../pricing/onlineCost';
+import { runMs } from '../pricing/pricingEngine';
+import { feeContexts, MODE_WORDS } from '../pricing/onlineCost';
 import { useApp } from '../state/AppProvider';
+import { storeChoices } from '../state/storeChoices';
 import { announce, useScreenReader } from './a11y';
 import { Icon } from './Icon';
 import { colors, fonts, money, radius, shadow } from './theme';
@@ -30,7 +33,7 @@ interface Note {
  * readers hear it, and with one on it stays until it's closed.
  */
 export function PricingBanner() {
-  const { engine, store, bundle, onDrops, fees } = useApp();
+  const { engine, store, bundle, onDrops, fees, coupons } = useApp();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const [note, setNote] = useState<Note | null>(null);
@@ -50,37 +53,41 @@ export function PricingBanner() {
       engine.subscribe(() => {
         for (const list of store.getState().lists) {
           const raw = engine.getRun(list.id);
-          const run = raw && memberRun(raw, store.getState().settings.memberships);
-          if (!run) continue;
-          if (!run.finishedAt) {
+          if (!raw) continue;
+          if (!raw.finishedAt) {
             running.current.add(list.id);
             continue;
           }
           if (!running.current.delete(list.id)) continue; // Finished before, not just now.
-          if (run.finishedAt - run.startedAt < ANNOUNCE_AFTER_MS) continue;
-          // Already looking at that list: its own screens show the result.
-          if (where.current === `/list/${list.id}` || where.current.startsWith(`/list/${list.id}/`)) continue;
+          if ((runMs(raw) ?? 0) < ANNOUNCE_AFTER_MS) continue;
+          // Already looking at that list: its own screens show the result. So does presenter mode.
+          if (where.current === `/list/${list.id}` || where.current.startsWith(`/list/${list.id}/`) || where.current === '/present') continue;
           const { usuals, settings } = store.getState();
-          const baskets = run.retailerIds.map((id) => basketFor(list, id, run.results[id], usuals));
-          // The same pick as Find a store's: driving included when it counts, and ordering online, the fees.
-          const way = settings.shopMode === 'store' ? null : settings.shopMode;
-          const driving =
-            settings.drive.on && way !== 'delivery'
-              ? driveCosts(Object.fromEntries(run.retailerIds.map((id) => [id, settings.chosenStores[id]?.miles])), settings.drive.perMile)
-              : undefined;
-          const online = way ? onlineCosts(baskets, way, feeContexts(bundle.retailers, (id, url) => fees.figures(id, url), settings.onlinePlans)) : undefined;
-          const pick = stretchPick(orderable(baskets, online).filter((b) => b.complete), 'total', tripCosts(driving, online));
+          // The same pick as Find a store's (see compareStores): member prices, how the user ranks and shops, driving,
+          // online fees and counted coupons included.
+          const c = compareStores(list, memberRun(raw, settings.memberships), {
+            usuals,
+            rankBy: settings.rankBy,
+            drive: settings.drive,
+            chosen: settings.chosenStores,
+            mode: settings.shopMode,
+            ctxOf: feeContexts(bundle.retailers, (id, url) => fees.figures(id, url), settings.onlinePlans),
+            countCoupons: settings.countCoupons,
+            couponLists: couponListsFor(storeChoices(settings, bundle.retailers), coupons.all(), settings.signedInAt),
+            today: dayOf(Date.now()),
+          });
+          const pick = c.pick;
           const name = pick && (bundle.retailers.find((r) => r.id === pick.retailerId)?.name ?? pick.retailerId);
-          const total = pick ? `${money(online?.[pick.retailerId]?.total ?? pick.total)}${way ? ` ${MODE_WORDS[way]}` : ''}` : '';
+          const how = `${c.mode === 'store' ? '' : ` ${MODE_WORDS[c.mode]}`}${pick && c.countCoupons && c.coupons[pick.retailerId]?.amount ? ', with coupons' : ''}`;
           setNote({
             href: `/list/${list.id}/compare`,
             title: `${list.name} is priced`,
-            body: pick && name ? `Stretch’s pick: ${name} · ${total}` : 'See how the stores compare.',
+            body: pick && name ? `Stretch’s pick: ${name} · ${money(c.orderTotal(pick))}${how}` : 'See how the stores compare.',
             icon: 'sparkle',
           });
         }
       }),
-    [engine, store, bundle.retailers, fees],
+    [engine, store, bundle.retailers, fees, coupons],
   );
 
   // A watched product just got cheaper at a store the phone read.
