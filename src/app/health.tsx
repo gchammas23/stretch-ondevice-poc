@@ -138,7 +138,7 @@ export default function HealthScreen() {
             The last 7 days
           </Text>
           <Text style={styles.small}>
-            Every search this {deviceWord} made, kept on it. About {bytesText(bytesToday(entries, now))} of data in the last day
+            Every search this {deviceWord} made, kept on it, but for the store check’s, above. About {bytesText(bytesToday(entries, now))} of data in the last day, all told
             {bytesSavedToday(entries, now) ? `, and ${bytesText(bytesSavedToday(entries, now))} not used by asking stores for only the results the app keeps` : ''}.
           </Text>
           {health.map(({ retailer, health: h }) => (

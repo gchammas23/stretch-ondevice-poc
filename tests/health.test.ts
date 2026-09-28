@@ -27,15 +27,16 @@ const cfg = (id: string): RetailerConfig => ({ ...BUNDLED_CONFIG.retailers.find(
       e(1, true, { ms: 1200, rules: 'v2' }),
       e(0, true, { ms: 600, rules: 'v2' }),
       e(0, true, { kind: 'store' }),
+      e(0, false, { kind: 'coverage', reason: 'no_payload', ms: 9000, bytes: 6_000_000 }),
       { ...e(0, true), retailerId: 'walmart' },
     ];
     const h = storeHealth(entries, 'target', now);
-    assert.deepEqual([h.attempts, h.ok, h.medianMs, h.botChecks, h.bytes], [4, 3, 600, 1, 150_000], 'the week, without store setting');
+    assert.deepEqual([h.attempts, h.ok, h.medianMs, h.botChecks, h.bytes], [4, 3, 600, 1, 150_000], 'the week, without store setting or the store check');
     assert.equal(h.rate, 0.75);
     assert.deepEqual(h.days.map((d) => [d.daysAgo, d.ok, d.total]), [[6, 0, 0], [5, 0, 0], [4, 0, 0], [3, 1, 2], [2, 0, 0], [1, 1, 1], [0, 1, 1]]);
     assert.deepEqual(h.lastFailure, { reason: 'challenge', at: now - 3 * DAY - 1000 });
     assert.deepEqual(h.sinceRules, { version: 'v2', ok: 2, total: 2 }, 'how it has gone since the rules changed');
-    assert.equal(bytesToday(entries, now), 150_000);
+    assert.equal(bytesToday(entries, now), 6_150_000, 'the day’s data is all of it, the store check’s too');
     assert.equal(storeHealth(entries, 'aldi', now).rate, undefined);
   });
 

@@ -244,6 +244,8 @@ interface Ctx {
   cost: CostResult;
   speed?: ReportInput['speed'];
   checked: CoverageRow[];
+  /** The store check ran in the window: its searches are reported apart, not in the week's. */
+  checkedInWindow: boolean;
 }
 
 /** Everything the report says, from what the phone measured. */
@@ -271,6 +273,7 @@ export function buildReport(input: ReportInput): Report {
     cost: monthlyCost(inputs, measured),
     speed: input.speed && input.speed.card.totalMs !== undefined ? input.speed : undefined,
     checked: checkedRows(input.coverage),
+    checkedInWindow: input.entries.some((e) => e.kind === 'coverage' && e.at >= since),
   };
   const area = zipArea(input.zip);
   return {
@@ -314,7 +317,7 @@ function stats(c: Ctx): ReportStat[] {
         }
       : { value: '—', label: 'Store check not run yet', none: true },
     c.tries.length
-      ? { value: pct(c.worked.length / c.tries.length), label: `of ${searches(c.tries.length)} worked, the last ${REPORT_DAYS} days` }
+      ? { value: pct(c.worked.length / c.tries.length), label: `of ${searches(c.tries.length)} worked, the last ${REPORT_DAYS} days${c.checkedInWindow ? ', besides the store check' : ''}` }
       : { value: '—', label: `No searches in the last ${REPORT_DAYS} days`, none: true },
     s
       ? { value: sec(s.card.totalMs!), label: `to price ${s.items} items at ${plural(s.card.storesSearched, 'store')}${kindWords(s.kind)}, in the speed test` }
@@ -400,11 +403,10 @@ function groupRun(g: { status: CoverageStatus; rows: CoverageRow[] }): ReportRun
 
 function storeTable(c: Ctx): Report['table'] {
   const compared = c.input.compared.filter((id, i, all) => all.indexOf(id) === i);
-  // Other stores, when they were searched for more than the store check: its one search at each store is in the list
-  // above, and a row for it would say nothing more.
-  const searched = new Set(c.tries.filter((e) => e.kind !== 'coverage').map((e) => e.retailerId));
+  // Other stores, when they were searched this week: the store check's one search at each store is in the list above,
+  // and doesn't count in a store's week (see countsInHealth).
   const others = [...c.healths.values()]
-    .filter((h) => h.attempts > 0 && searched.has(h.retailerId) && !compared.includes(h.retailerId))
+    .filter((h) => h.attempts > 0 && !compared.includes(h.retailerId))
     .sort((a, b) => b.attempts - a.attempts || c.nameOf(a.retailerId).localeCompare(c.nameOf(b.retailerId)))
     .map((h) => h.retailerId);
   const ids = [...compared, ...others];
@@ -589,6 +591,9 @@ function blocksSection(c: Ctx): ReportSection {
   const checks = healths.reduce((n, h) => n + h.botChecks, 0);
   const cools = healths.reduce((n, h) => n + h.coolDowns, 0);
   const never = 'The app never answers one itself.';
+  // The store check's searches aren't in the week's: its bot checks and blocks, said apart.
+  const walled = c.checked.filter((r) => r.status === 'bot_check').length;
+  const walls = walled ? `; the store check met a bot check or a block at ${plural(walled, 'store')}, listed above` : '';
   const lines: ReportLine[] = [];
   if (c.tries.length) {
     const who = perStore(healths.map((h) => ({ name: c.nameOf(h.retailerId), n: h.botChecks })));
@@ -600,10 +605,10 @@ function blocksSection(c: Ctx): ReportSection {
         : `Stores refused this ${c.device} outright ${times(cools)} (${perStore(refusers.map((h) => ({ name: c.nameOf(h.retailerId), n: h.coolDowns })))}): each was left alone to cool down before it was tried again.`;
     lines.push({
       lead: `${checks ? plural(checks, 'bot check') : 'No bot checks'} in ${searches(c.tries.length)}`,
-      text: `over the last ${REPORT_DAYS} days${checks ? `: ${who}` : ''}. ${never} ${refused}`,
+      text: `over the last ${REPORT_DAYS} days${checks ? `: ${who}` : ''}${walls}. ${never} ${refused}`,
     });
   } else {
-    lines.push({ text: `No searches in the last ${REPORT_DAYS} days. The app never answers a bot check itself.` });
+    lines.push({ text: `No searches in the last ${REPORT_DAYS} days${walls}. The app never answers a bot check itself.` });
   }
   const v = c.input.versus;
   if (v && v.summary.tried) {

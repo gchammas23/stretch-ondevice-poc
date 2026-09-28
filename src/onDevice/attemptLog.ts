@@ -32,10 +32,12 @@ export const inDrop = (at: number, drops: { from: number; to: number }[]): boole
 export const NOTES = new Set<AttemptKind>(['cooldown', 'connection']);
 
 /**
- * Attempts Store health's rates leave out: those that aren't about reading prices from searches, and the phone vs.
- * server test's, which asks stores in ways the app doesn't read them (a plain request where it loads the page).
+ * Attempts Store health's rates leave out: those that aren't about reading prices from searches; the phone vs.
+ * server test's, which asks stores in ways the app doesn't read them (a plain request where it loads the page); and
+ * the store check's, which has its own verdicts: it searches every store once, chains with no store nearby included,
+ * which says nothing about how the app's own searches go.
  */
-const NOT_PRICES = new Set<AttemptKind>(['store', 'fees', 'ad', 'coupons', 'clip', 'versus', ...NOTES]);
+const NOT_PRICES = new Set<AttemptKind>(['store', 'fees', 'ad', 'coupons', 'clip', 'versus', 'coverage', ...NOTES]);
 
 /** Whether Store health's rates count an attempt: a try at reading prices from a search. */
 export const countsInHealth = (e: Pick<AttemptEntry, 'kind'>): boolean => !NOT_PRICES.has(e.kind);

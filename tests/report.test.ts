@@ -132,7 +132,8 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     assert.equal(reportFileName(new Date(2026, 0, 5, 9, 3).getTime()), 'Stretch results 2026-01-05.pdf');
     assert.deepEqual(
       (['search', 'coverage', 'product', 'versus', 'store', 'fees', 'ad', 'cooldown', 'connection'] as const).map((kind) => countsInHealth({ kind })),
-      [true, true, true, false, false, false, false, false, false],
+      [true, false, true, false, false, false, false, false, false],
+      'the store check has its own verdicts: its searches aren’t in a store’s week',
     );
   });
 
@@ -252,7 +253,7 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     assert.equal(
       said(r, 'blocks'),
       [
-        '2 bot checks in 34 searches over the last 7 days: H-E-B 2. The app never answers one itself. Kroger refused this iPhone outright once, and was left alone to cool down before it was tried again.',
+        '2 bot checks in 34 searches over the last 7 days: H-E-B 2; the store check met a bot check or a block at 2 stores, listed above. The app never answers one itself. Kroger refused this iPhone outright once, and was left alone to cool down before it was tried again.',
         'Phone vs. server, Sep 26: From a plain request: 3 of 13 stores gave prices. From this iPhone’s browser: 11 of 13. Blocked (a bot check, a refusal or an empty page): the plain request at 6 stores, the browser at 1.',
       ].join('\n'),
     );
@@ -265,7 +266,12 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
       ].join('\n'),
     );
     const calm = buildReport(input({ entries: week().filter((e) => e.retailerId !== 'heb' && e.kind !== 'cooldown'), versus: undefined }));
-    assert.match(said(calm, 'blocks'), /^No bot checks in 31 searches over the last 7 days\. The app never answers one itself\. No store refused this iPhone outright\.$/);
+    assert.match(
+      said(calm, 'blocks'),
+      /^No bot checks in 31 searches over the last 7 days; the store check met a bot check or a block at 2 stores, listed above\. The app never answers one itself\. No store refused this iPhone outright\.$/,
+    );
+    const quiet = buildReport(input({ entries: week().filter((e) => e.retailerId !== 'heb' && e.kind !== 'cooldown'), versus: undefined, coverage: checked({}) }));
+    assert.match(said(quiet, 'blocks'), /^No bot checks in 31 searches over the last 7 days\. The app never answers one itself\./, 'a store check without any says nothing');
     const none = buildReport(nothing());
     assert.deepEqual([section(none, 'blocks').has, section(none, 'limit').has], [false, false]);
     assert.match(said(none, 'limit'), /Nothing was asked of any store in the last 7 days\.$/);
@@ -359,7 +365,11 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     }));
     const r = buildReport(input({ entries: [...week(), ...checks] }));
     assert.deepEqual(r.table.rows.map((x) => x.name), ['Walmart', 'Target', 'Kroger', 'ALDI', 'H-E-B'], 'no row for a store the check alone searched');
-    assert.equal(r.table.rows[0].searches, 11, 'a compared store’s check still counts in its own row');
+    assert.deepEqual([r.table.rows[0].searches, r.table.rows[0].data], [10, '10\u00a0MB'], 'nor does the check count in a store’s week');
+    // The week's rate and median leave it out too, and say so.
+    assert.deepEqual([r.stats[1].value, r.stats[1].label], ['91%', 'of 34 searches worked, the last 7 days, besides the store check']);
+    assert.equal(buildReport(input()).stats[1].label, 'of 34 searches worked, the last 7 days', 'no store check this week: nothing to set aside');
+    assert.match(said(r, 'speed'), /a search that worked took 1\.4 s in the middle \(of 31\)/);
     assert.deepEqual(measuredFrom([...week(), ...checks]), measuredFrom(week()), 'the average search leaves the check out');
     assert.match(said(r, 'data'), /About 758\u00a0KB a search over this iPhone’s last 31 searches that worked, not counting the store check,/);
     // A month's data past a gigabyte, in GB: 5 lists a week of 20 items at 4 stores, at 758 KB a search.
