@@ -60,17 +60,35 @@ const REASONS: Record<string, string> = {
   tiny_page: 'a nearly empty page',
   cooling_down: 'cooling down after a block',
   connection: 'the connection dropped',
+  kroger_no_store_near_zip: 'no store of this chain near the ZIP code, by Kroger’s API',
 };
 
+/** Kroger's API failing: "kroger_products_http_503", "kroger_locations_timeout". */
+const KROGER_API = /^kroger_[a-z]+_(?:http_(\d{3})|(timeout)|network)$/;
+
 /** A failure reason in a few plain words. */
-export const reasonWords = (reason: string | undefined): string => (reason ? (REASONS[reason] ?? reason.replace(/_/g, ' ')) : 'failed');
+export function reasonWords(reason: string | undefined): string {
+  if (!reason) return 'failed';
+  const known = REASONS[reason];
+  if (known) return known;
+  const api = KROGER_API.exec(reason);
+  if (api) {
+    const status = api[1];
+    // 502 to 504 were asked again once (see krogerApi.ts): busy both times.
+    if (status) return /^50[234]$/.test(status) ? `Kroger’s API was busy (${status}), twice` : `Kroger’s API answered ${status}`;
+    return api[2] ? 'Kroger’s API was too slow' : 'Kroger’s API couldn’t be reached';
+  }
+  return reason.replace(/_/g, ' ');
+}
 
 export const seconds = (ms: number): string => `${(Math.max(0, ms) / 1000).toFixed(1)} s`;
 
-/** "40 KB", "2.4 MB": data sizes, about. */
+/** "40 KB", "2.4 MB", "1.1 GB": data sizes, about. */
 export function bytesText(bytes: number): string {
   // A no-break space, so a wrapped line never leaves the unit on its own.
   if (bytes < 1000) return 'under 1\u00a0KB';
   if (bytes < 1_000_000) return `${Math.round(bytes / 1000)}\u00a0KB`;
-  return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)}\u00a0MB`;
+  // 999.6 MB rounds to 1000: a gigabyte by then.
+  if (bytes < 999_500_000) return `${(bytes / 1_000_000).toFixed(bytes < 10_000_000 ? 1 : 0)}\u00a0MB`;
+  return `${(bytes / 1_000_000_000).toFixed(bytes < 9_950_000_000 ? 1 : 0)}\u00a0GB`;
 }

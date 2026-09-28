@@ -1,8 +1,8 @@
 import { countsInHealth, storeHealth, type AttemptEntry, type StoreHealth } from '../onDevice/attemptLog';
-import { COVERAGE_WORDS, type CoverageRow, type CoverageState, type CoverageStatus } from '../onDevice/coverage';
+import { COVERAGE_WORDS, coverageCounts, FEW_PRODUCTS, type CoverageRow, type CoverageState, type CoverageStatus } from '../onDevice/coverage';
 import { blockedLine, summaryLine, type VersusSummary } from '../onDevice/phoneVsServer';
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
-import { bytesText } from '../onDevice/scrapeFeed';
+import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
 import { DEFAULT_INPUTS, ESTIMATED, measuredFrom, monthlyCost, type CostInputs, type CostResult, type Measured } from './costModel';
 import type { Scorecard } from './scorecard';
 import type { TruthRecord } from './truth';
@@ -130,14 +130,16 @@ export const TABLE_ROWS = 12;
 
 const DAY = 24 * 60 * 60_000;
 /** The store check's verdicts, most welcome first. */
-const VERDICTS: CoverageStatus[] = ['works', 'bot_check', 'no_products', 'slow', 'failed', 'cooling'];
-/** The same, short, for the table: ✓ or ✗ carries it in black and white. */
+const VERDICTS: CoverageStatus[] = ['works', 'few', 'bot_check', 'no_products', 'slow', 'failed', 'no_store', 'cooling'];
+/** The same, short, for the table: ✓, ✗, ? or – carries it in black and white. */
 const CHECK_WORDS: Record<CoverageStatus, string> = {
   works: '✓ Works',
+  few: '? Too few',
   bot_check: '✗ Blocked',
   no_products: '✗ No products',
   slow: '✗ Too slow',
   failed: '✗ Failed',
+  no_store: '– None near',
   cooling: '– Cooling down',
 };
 
@@ -301,12 +303,15 @@ export function buildReport(input: ReportInput): Report {
 }
 
 function stats(c: Ctx): ReportStat[] {
-  const works = c.checked.filter((r) => r.status === 'works').length;
+  const { works, searched, noStore } = coverageCounts(c.checked);
   const s = c.speed;
   const t = c.input.truth?.summary;
   return [
     c.checked.length
-      ? { value: `${works} of ${c.checked.length}`, label: `stores work from this ${c.device}, in the store check` }
+      ? {
+          value: `${works} of ${searched}`,
+          label: noStore ? `stores work from this ${c.device}; ${noStore} had no store nearby` : `stores work from this ${c.device}, in the store check`,
+        }
       : { value: '—', label: 'Store check not run yet', none: true },
     c.tries.length
       ? { value: pct(c.worked.length / c.tries.length), label: `of ${searches(c.tries.length)} worked, the last ${REPORT_DAYS} days` }
@@ -317,7 +322,13 @@ function stats(c: Ctx): ReportStat[] {
         ? { value: sec(c.medianMs), label: `a search, in the middle, the last ${REPORT_DAYS} days` }
         : { value: '—', label: 'No speed test yet', none: true },
     t?.checked
-      ? { value: `${t.same} of ${t.checked}`, label: 'prices matched the product’s own page, in the truth check' }
+      ? {
+          value: `${t.same} of ${t.checked}`,
+          // Pages it couldn't read are said: 1 of 1 matched means little when 5 more had no price to read.
+          label: t.unreadable
+            ? `prices matched; ${t.unreadable} of ${t.checked + t.unreadable} product pages couldn’t be read`
+            : 'prices matched the product’s own page, in the truth check',
+        }
       : { value: '—', label: t ? 'No product page could be read' : 'Price truth check not run yet', none: true },
     { value: roughly(c.cost.total), label: `a month from servers for ${people(c.inputs.users)} users; on phones, $0`, basis: 'estimate' },
   ];
@@ -335,30 +346,69 @@ function storesSection(c: Ctx): ReportSection {
       lines: [{ text: `The store check hasn’t run on this ${c.device} yet: Store health → Check all stores searches “milk” once at every store.` }],
     };
   }
-  const works = c.checked.filter((r) => r.status === 'works').length;
+  const { works, searched, noStore } = coverageCounts(c.checked);
   const at = state.finishedAt ?? Math.max(...c.checked.map((r) => r.at));
-  const groups = VERDICTS.map((status) => ({ status, names: c.checked.filter((r) => r.status === status).map((r) => r.name) })).filter((g) => g.names.length);
-  const runOf = (g: (typeof groups)[number]): ReportRun => ({ lead: `${COVERAGE_WORDS[g.status]} (${g.names.length}):`, text: `${g.names.join(', ')}.` });
+  const groups = VERDICTS.map((status) => ({ status, rows: c.checked.filter((r) => r.status === status) })).filter((g) => g.rows.length);
   const [first, ...rest] = groups.filter((g) => g.status !== 'works');
   const lines: ReportLine[] = [
     {
-      lead: `${works} of ${c.checked.length} stores work from this ${c.device}.`,
-      text: `The store check searched “${state.query}” once at each store, four at a time, ${stamp(at, c.now)}${state.running ? ', and was still going' : ''}.`,
+      lead: `${works} of ${searched} stores work from this ${c.device}.`,
+      text:
+        `The store check searched “${state.query}” once at each store, four at a time, ${stamp(at, c.now)}${state.running ? ', and was still going' : ''}` +
+        `${noStore ? '; stores with none near the ZIP code aren’t counted' : ''}.`,
     },
-    ...groups.filter((g) => g.status === 'works').map(runOf),
+    ...groups.filter((g) => g.status === 'works').map(groupRun),
     // The rest in one paragraph: fewer stores each, and less said.
-    ...(first ? [{ ...runOf(first), more: rest.map(runOf) }] : []),
+    ...(first ? [{ ...groupRun(first), more: rest.map(groupRun) }] : []),
   ];
-  return { id: 'stores', title, has: true, summary: `${works} of ${c.checked.length} stores work, checked ${stamp(at, c.now)}.`, lines };
+  const apart = noStore ? ` (${noStore} had none nearby)` : '';
+  return { id: 'stores', title, has: true, summary: `${works} of ${searched} stores work${apart}, checked ${stamp(at, c.now)}.`, lines };
+}
+
+/**
+ * Why a store didn't work, in a few words, where the verdict alone doesn't say: "Kroger’s API was busy (503), twice",
+ * "HTTP 403", "no product data". Nothing for a store that was too slow or cooling down: the verdict says it.
+ */
+function whyNot(r: CoverageRow): string | undefined {
+  const reason = r.reason;
+  if (!reason || reason === 'empty' || reason === 'cooling_down' || r.status === 'slow') return undefined;
+  const http = /^http_(\d{3})$/.exec(reason);
+  if (http) return `HTTP ${http[1]}`;
+  if (reason === 'challenge') return 'a bot check';
+  return reasonWords(reason);
+}
+
+/** A verdict's stores, in a run of words: their names, and why, once for all when it's the same reason. */
+function groupRun(g: { status: CoverageStatus; rows: CoverageRow[] }): ReportRun {
+  const lead = `${COVERAGE_WORDS[g.status]} (${g.rows.length}):`;
+  const names = g.rows.map((r) => r.name).join(', ');
+  if (g.status === 'works') return { lead, text: `${names}.` };
+  if (g.status === 'few') {
+    return {
+      lead,
+      text: `${g.rows.map((r) => `${r.name} (${r.products})`).join(', ')}: ${FEW_PRODUCTS} products or fewer each, more likely a featured product than the search’s results.`,
+    };
+  }
+  if (g.status === 'no_store') {
+    const byApi = g.rows.every((r) => r.reason?.startsWith('kroger_'));
+    return { lead, text: `${names}: ${byApi ? 'Kroger’s API found' : 'the check found'} none of their stores near the ZIP code, so they weren’t searched.` };
+  }
+  const why = g.rows.map(whyNot);
+  if (why.every((w) => w === why[0])) return { lead, text: `${names}${why[0] ? `: ${why[0]}` : ''}.` };
+  return { lead, text: `${g.rows.map((r, i) => (why[i] ? `${r.name} (${why[i]})` : r.name)).join(', ')}.` };
 }
 
 function storeTable(c: Ctx): Report['table'] {
   const compared = c.input.compared.filter((id, i, all) => all.indexOf(id) === i);
+  // Other stores, when they were searched for more than the store check: its one search at each store is in the list
+  // above, and a row for it would say nothing more.
+  const searched = new Set(c.tries.filter((e) => e.kind !== 'coverage').map((e) => e.retailerId));
   const others = [...c.healths.values()]
-    .filter((h) => h.attempts > 0 && !compared.includes(h.retailerId))
+    .filter((h) => h.attempts > 0 && searched.has(h.retailerId) && !compared.includes(h.retailerId))
     .sort((a, b) => b.attempts - a.attempts || c.nameOf(a.retailerId).localeCompare(c.nameOf(b.retailerId)))
     .map((h) => h.retailerId);
   const ids = [...compared, ...others];
+  const onlyChecked = c.checked.filter((r) => !ids.includes(r.retailerId)).length;
   const shown = ids.slice(0, Math.max(1, c.input.maxRows ?? TABLE_ROWS));
   const tried = new Set(c.input.coverage.stores.map((s) => s.retailerId));
   const rows = shown.map((id): StoreRow => {
@@ -384,6 +434,7 @@ function storeTable(c: Ctx): Report['table'] {
     'Blocked: a bot check or a refusal.',
     c.speed ? `Speed test: each store’s ${c.speed.items} searches, start to finish.` : '',
     ids.length > shown.length ? `${plural(ids.length - shown.length, 'more store')} with fewer searches aren’t shown: see Store health.` : '',
+    onlyChecked ? `The other ${plural(onlyChecked, 'store')} in the store check ${onlyChecked === 1 ? 'is' : 'are'} in the list above.` : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -459,7 +510,7 @@ function dataSection(c: Ctx): ReportSection {
     m.searches
       ? {
           lead: `About ${bytesText(m.bytesPerSearch)} a search`,
-          text: `over this ${c.device}’s last ${searches(m.searches)} that worked,`,
+          text: `over this ${c.device}’s last ${searches(m.searches)} that worked, not counting the store check,`,
           more: [{ basis: 'estimate', text: `so ${typical}.` }],
         }
       : {
@@ -508,17 +559,29 @@ function truthSection(c: Ctx): ReportSection {
     };
   }
   const stores = Object.entries(s.byStore).filter(([, v]) => v.checked > 0);
+  const byStore = stores.map(([id, v]) => `${c.nameOf(id)} ${v.same} of ${v.checked}`).join(' · ');
+  const opened = s.checked + s.unreadable;
   const lines: ReportLine[] = [
-    {
-      lead: `${s.same} of ${s.checked} prices matched (${pct(s.same / s.checked)})`,
-      text:
-        `the product’s own page on the store’s site, each read again, ${t.perStore} per store, ${stamp(t.at, c.now)}. ` +
-        `${stores.map(([id, v]) => `${c.nameOf(id)} ${v.same} of ${v.checked}`).join(' · ')}.` +
-        `${s.unreadable ? ` ${plural(s.unreadable, 'page')} showed no price the phone could read: not counted.` : ''}`,
-    },
+    s.unreadable
+      ? {
+          // How many pages it read comes first: a match rate over the few it could read says less than it seems.
+          lead:
+            `${s.checked} of ${opened} product pages could be read, and ` +
+            `${s.checked === 1 ? `its price ${s.same ? 'matched' : 'didn’t match'}` : `${s.same} of those ${s.checked} prices matched (${pct(s.same / s.checked)})`}.`,
+          text:
+            `Each is a search’s price read again on the product’s own page on the store’s site, ${t.perStore} per store, ${stamp(t.at, c.now)}: ${byStore}. ` +
+            'A page with no price the phone could read isn’t counted.',
+        }
+      : {
+          lead: `${s.same} of ${s.checked} prices matched (${pct(s.same / s.checked)})`,
+          text: `the product’s own page on the store’s site, each read again, ${t.perStore} per store, ${stamp(t.at, c.now)}. ${byStore}.`,
+        },
   ];
   if (s.different) lines.push({ text: 'A product page can be for another store than the search, or a price can change in between.' });
-  return { id: 'truth', title, has: true, summary: `${s.same} of ${s.checked} prices matched their product pages (${stamp(t.at, c.now)}).`, lines };
+  const summary = s.unreadable
+    ? `${s.checked} of ${opened} product pages read; ${s.same} of ${s.checked} prices matched (${stamp(t.at, c.now)}).`
+    : `${s.same} of ${s.checked} prices matched their product pages (${stamp(t.at, c.now)}).`;
+  return { id: 'truth', title, has: true, summary, lines };
 }
 
 function blocksSection(c: Ctx): ReportSection {

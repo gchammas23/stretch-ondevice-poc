@@ -111,7 +111,8 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     const setup = (id: string) => currentSetup(store, id);
     assert.deepEqual(
       [...f.calls].sort(),
-      ['list aldi 10001 10', 'list costco 10001 10', 'list kroger 10001 10', 'list target 10001 10', 'list walmart 10001 10', 'press walmart 3520'],
+      ['list aldi 10001 25', 'list costco 10001 25', 'list kroger 10001 25', 'list target 10001 25', 'list walmart 10001 25', 'press walmart 3520'],
+      '25 miles to start',
     );
     assert.deepEqual(
       ['walmart', 'kroger', 'target'].map((id) => [setup(id)?.status, setup(id)?.how, s.storeIds[id]]),
@@ -123,7 +124,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.ok(at > 0);
     assert.deepEqual(walmart, { name: 'Secaucus Supercenter', address: '400 Park Pl, Secaucus, NJ 07094', id: '3520', from: 'nearest', miles: 2.3 });
     assert.ok(s.storePickedAt.walmart, 'set in its cookies: prices saved for the store before aren’t reused');
-    assert.deepEqual([s.nearbyStores.kroger.radius, s.nearbyStores.walmart.radius], [10, 0], 'an API lists within the radius; a finder, the nearest');
+    assert.deepEqual([s.nearbyStores.kroger.radius, s.nearbyStores.walmart.radius], [25, 0], 'an API lists within the radius; a finder, the nearest');
     assert.deepEqual(
       storeChoices(s, retailers, () => false).map((c) => [c.config.id, c.storeId]),
       [['walmart', '3520'], ['kroger', '01400943'], ['target', '1340'], ['costco', '']],
@@ -188,7 +189,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     release();
     await first;
     assert.equal(currentSetup(store, 'walmart'), undefined, 'nothing recorded for the ZIP now set');
-    assert.deepEqual(slow.calls, ['list walmart 30301 10']);
+    assert.deepEqual(slow.calls, ['list walmart 30301 25']);
   });
 
   await t('set up: distances from the map when a finder gives none; with no distances at all, nothing is dropped', async () => {
@@ -198,7 +199,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     const locate = async (zip: string) => { located.push(zip); return { lat: 40.75, lng: -73.99 }; };
     const f = fakeSearch({ lists: { target: { ok: true, stores: [{ id: '1340', name: 'Brooklyn' }, { id: '1920', name: 'Queens' }], how: 'finder' }, aldi: { ok: true, stores: ALDI, how: 'finder' } } });
     await setUpStores('10001', depsFor(store, f.search, locate));
-    assert.deepEqual([...f.calls].sort(), ['list aldi 10001 10 +map', 'list target 10001 10 +map'], 'finders get where the ZIP is, to measure');
+    assert.deepEqual([...f.calls].sort(), ['list aldi 10001 25 +map', 'list target 10001 25 +map'], 'finders get where the ZIP is, to measure');
     assert.deepEqual(store.getState().settings.origin, { zip: '10001', lat: 40.75, lng: -73.99 });
     assert.deepEqual([currentSetup(store, 'target')?.status, store.getState().settings.storeIds.target], ['done', '1340'], 'unmeasured: the finder’s first');
     await setUpStores('10001', depsFor(store, f.search, locate), undefined, { refresh: true });
@@ -415,7 +416,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     });
     assert.deepEqual([info('target', 'Target').title, info('target', 'Target').how], ['Brooklyn Atlantic Terminal', 'Nearest to 10001, asked for by number in each search']);
     assert.equal(storeNote('target', store.getState().settings), 'Brooklyn Atlantic Terminal (store 1340), near 10001');
-    assert.deepEqual(info('aldi', 'ALDI'), { title: 'No ALDI within 10 mi', how: 'Its nearest store is 40 mi from 10001, so it isn’t compared.' });
+    assert.deepEqual(info('aldi', 'ALDI'), { title: 'No ALDI within 25 mi', how: 'Its nearest store is 40 mi from 10001, so it isn’t compared.' });
     assert.deepEqual(info('costco', 'Costco'), {
       title: 'The store costco.com picks for this phone',
       how: 'Couldn’t set its store near 10001: a bot check.',

@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Share, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { bytesSavedToday, bytesToday, storeHealth, type StoreHealth } from '../onDevice/attemptLog';
-import { COVERAGE_WORDS, coverageText, type CoverageRow } from '../onDevice/coverage';
+import { COVERAGE_WORDS, coverageCounts, coverageDetail, coverageText, type CoverageRow } from '../onDevice/coverage';
 import { summaryLine, versusSummary } from '../onDevice/phoneVsServer';
 import { citizenReport, MAX_SEARCHES_PER_HOUR, type CitizenRow } from '../onDevice/politeness';
 import { AGREE, STALE_MISSES, whereWords } from '../onDevice/profiles';
@@ -24,7 +24,7 @@ import { ScreenHeader } from '../ui/ScreenHeader';
 import { colors, fonts, radius, shadow } from '../ui/theme';
 import { useNow } from '../ui/useNow';
 
-const TONE = { works: 'green', bot_check: 'red', no_products: 'orange', slow: 'orange', failed: 'red', cooling: 'plain' } as const;
+const TONE = { works: 'green', few: 'orange', bot_check: 'red', no_products: 'orange', slow: 'orange', failed: 'red', no_store: 'plain', cooling: 'plain' } as const;
 
 /**
  * Store health: which stores this phone can read right now (one search at each), how reading them has gone over
@@ -43,14 +43,16 @@ export default function HealthScreen() {
     .map((r) => ({ retailer: r, health: storeHealth(entries, r.id, now) }))
     .filter((h) => h.health.attempts > 0 || settings.retailerIds.includes(h.retailer.id));
   const rows = state.stores.map((s) => state.rows[s.retailerId]).filter((r): r is CoverageRow => !!r);
-  const works = rows.filter((r) => r.status === 'works').length;
+  // A store with none near the ZIP code wasn't searched: it's counted apart, not as a failure.
+  const { works, searched, noStore } = coverageCounts(rows);
+  const apart = noStore ? `, and ${noStore} ${noStore === 1 ? 'has' : 'have'} no store near you` : '';
   const done = rows.length;
   const { fontScale } = useWindowDimensions();
 
   // Screen readers hear the result when the check is done.
   const wasRunning = useRef(state.running);
   useEffect(() => {
-    if (wasRunning.current && !state.running && rows.length) announce(`${works} of ${rows.length} stores work from this ${deviceWord}.`);
+    if (wasRunning.current && !state.running && rows.length) announce(`${works} of ${searched} stores work from this ${deviceWord}${apart}.`);
     wasRunning.current = state.running;
   });
 
@@ -93,7 +95,8 @@ export default function HealthScreen() {
           </View>
           {rows.length ? (
             <Text style={styles.summary}>
-              {works} of {state.running ? done : rows.length} stores work from this {deviceWord}
+              {works} of {searched} stores work from this {deviceWord}
+              {apart}
               {state.finishedAt && !state.running ? ` · checked ${whenLabel(state.finishedAt, now)}` : ''}
             </Text>
           ) : null}
@@ -112,9 +115,9 @@ export default function HealthScreen() {
                     </View>
                   ) : r ? (
                     <Text style={styles.small} numberOfLines={fontScale > 1.3 ? undefined : 3}>
-                      {r.status === 'works'
-                        ? `${r.products} products in ${(r.ms / 1000).toFixed(1)} s · ${r.how}${r.bytes ? ` · ${bytesText(r.bytes)}` : ''}`
-                        : (r.detail ?? reasonWords(r.reason))}
+                      {r.status === 'works' || r.status === 'few'
+                        ? `${r.products} ${r.products === 1 ? 'product' : 'products'} in ${(r.ms / 1000).toFixed(1)} s · ${r.how}${r.bytes ? ` · ${bytesText(r.bytes)}` : ''}${r.status === 'few' ? ' · likely not the search’s results' : ''}`
+                        : coverageDetail(r)}
                     </Text>
                   ) : (
                     <Text style={styles.small}>{state.running ? 'Waiting' : 'Not checked yet'}</Text>

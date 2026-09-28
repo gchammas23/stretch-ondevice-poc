@@ -371,7 +371,11 @@ function StoreCard({ retailer, on }: { retailer: RetailerConfig; on: boolean }) 
         {checked
           ? checked.status === 'works'
             ? `Worked from this phone ${whenLabel(checked.at, now)}: ${checked.products} products in ${(checked.ms / 1000).toFixed(1)} s`
-            : `${COVERAGE_WORDS[checked.status]} from this phone ${whenLabel(checked.at, now)}`
+            : checked.status === 'few'
+              ? `Only ${checked.products} ${checked.products === 1 ? 'product' : 'products'} from this phone ${whenLabel(checked.at, now)}: likely not the search’s results`
+              : checked.status === 'no_store'
+                ? `No store near you, in the store check ${whenLabel(checked.at, now)}`
+                : `${COVERAGE_WORDS[checked.status]} from this phone ${whenLabel(checked.at, now)}`
           : note}
       </Text>
     );

@@ -141,6 +141,8 @@ export interface AppState {
 export const DEFAULT_RETAILERS = ['walmart', 'target', 'kroger', 'aldi'];
 /** What a mile of driving costs, to start with: fuel and wear, about what U.S. mileage rates allow. */
 export const DEFAULT_PER_MILE = 0.7;
+/** How far a store may be from the ZIP code, to start. */
+export const DEFAULT_RADIUS_MILES = 25;
 const KEY = 'stretch.app.v1';
 const TRIPS_KEPT = 200;
 const RECENT_KEPT = 8;
@@ -222,7 +224,8 @@ export class AppStore {
       rulesUrl: '',
       chosenStores: {},
       seenStores: {},
-      radiusMiles: 10,
+      // Warehouse clubs and suburban stores are often 10 to 20 miles out: 10 left Costco out (16 miles, on a phone).
+      radiusMiles: DEFAULT_RADIUS_MILES,
       nearbyStores: {},
       drive: { on: false, perMile: DEFAULT_PER_MILE },
       memberships: {},
@@ -288,7 +291,7 @@ export class AppStore {
         lightPages: settings.lightPages !== false,
         rulesUrl: typeof settings.rulesUrl === 'string' ? settings.rulesUrl : '',
         chosenStores: records<ChosenStore>(settings.chosenStores, (r) => ['nearest', 'list', 'finder', 'site'].includes(String(r.from)) && typeof r.at === 'number'),
-        radiusMiles: typeof settings.radiusMiles === 'number' && settings.radiusMiles > 0 ? settings.radiusMiles : 10,
+        radiusMiles: typeof settings.radiusMiles === 'number' && settings.radiusMiles > 0 ? settings.radiusMiles : DEFAULT_RADIUS_MILES,
         origin:
           isObj(settings.origin) && typeof settings.origin.zip === 'string' && typeof settings.origin.lat === 'number' && typeof settings.origin.lng === 'number'
             ? settings.origin

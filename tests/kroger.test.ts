@@ -131,6 +131,36 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.equal(krogerEnvironment(), null, 'nothing kept; the first search tries again');
   });
 
+  await t('kroger: a busy answer (502 to 504) is asked again once, after a moment; other errors and a second one count', async () => {
+    const { RETRY_AFTER_MS } = await import('../src/onDevice/krogerApi');
+    resetKrogerApi();
+    const busy = (status: number) => ({ ok: false, status, json: async () => ({}) });
+    let answers: number[] = [];
+    const asked: number[] = [];
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes('/connect/oauth2/token')) return json({ access_token: 'token', expires_in: 1800 });
+      if (url.includes('/locations')) return json({ data: [{ locationId: '01400943', name: 'Kroger' }] });
+      asked.push(Date.now());
+      const status = answers.shift() ?? 200;
+      return status === 200 ? json({ data: [{ productId: '1', description: 'Kroger Whole Milk', items: [{ price: { regular: 2.49 } }] }] }) : busy(status);
+    }) as typeof fetch;
+
+    answers = [503];
+    const got = await searchKrogerApi('milk', '45202', 1000);
+    assert.deepEqual([got.products[0].price, asked.length], [2.49, 2], 'the second ask worked');
+    assert.ok(asked[1] - asked[0] >= RETRY_AFTER_MS - 20, 'after a moment');
+
+    asked.length = 0;
+    answers = [503, 503];
+    await assert.rejects(searchKrogerApi('eggs', '45202', 1000), (e: any) => e.reason === 'kroger_products_http_503');
+    assert.equal(asked.length, 2, 'asked again once, not more');
+
+    asked.length = 0;
+    answers = [500];
+    await assert.rejects(searchKrogerApi('bread', '45202', 1000), (e: any) => e.reason === 'kroger_products_http_500');
+    assert.equal(asked.length, 1, 'an error that isn’t "busy" isn’t asked again');
+  });
+
   console.log(`\n${passed} Kroger API tests passed`);
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

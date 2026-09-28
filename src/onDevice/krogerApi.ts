@@ -44,7 +44,12 @@ interface Session {
 
 let cachedToken: { value: string; expiresAt: number; base: string } | null = null;
 
-async function getJson(url: string, init: RequestInit, timeoutMs: number, what: string): Promise<unknown> {
+/** Kroger's answers that mean "busy, ask again shortly": its servers' or their gateway's. */
+const TEMPORARY = new Set([502, 503, 504]);
+/** The pause before asking again, once, after one of those. */
+export const RETRY_AFTER_MS = 800;
+
+async function getJson(url: string, init: RequestInit, timeoutMs: number, what: string, retried = false): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
@@ -55,7 +60,14 @@ async function getJson(url: string, init: RequestInit, timeoutMs: number, what: 
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) throw new StrategyError(`${what}_http_${res.status}`);
+  if (!res.ok) {
+    // A temporary error is asked again once, after a moment, before it counts: the next search usually works.
+    if (TEMPORARY.has(res.status) && !retried) {
+      await new Promise((r) => setTimeout(r, RETRY_AFTER_MS));
+      return getJson(url, init, timeoutMs, what, true);
+    }
+    throw new StrategyError(`${what}_http_${res.status}`);
+  }
   return res.json();
 }
 

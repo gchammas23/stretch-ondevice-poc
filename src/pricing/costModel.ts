@@ -58,9 +58,13 @@ export interface CostResult {
   phoneBytesPerUserMonth: number;
 }
 
-/** The phone's averages over the searches in its log that worked and say how much data they moved. */
+/**
+ * The phone's averages over the searches in its log that worked and say how much data they moved. The store check's
+ * aren't counted: each is a page load at a store the app doesn't otherwise search, far heavier than a list's searches,
+ * most of which are sent from a page already open.
+ */
 export function measuredFrom(entries: AttemptEntry[]): Measured {
-  const searches = entries.filter((e) => (e.kind === 'search' || e.kind === 'coverage') && e.ok && typeof e.bytes === 'number' && e.bytes > 0);
+  const searches = entries.filter((e) => e.kind === 'search' && e.ok && typeof e.bytes === 'number' && e.bytes > 0);
   if (searches.length < 3) return ESTIMATED;
   const bytes = searches.reduce((n, e) => n + (e.bytes ?? 0), 0) / searches.length;
   const ms = searches.reduce((n, e) => n + e.ms, 0) / searches.length;

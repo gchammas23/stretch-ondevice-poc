@@ -151,7 +151,7 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     // 34 searches in the week, not counting the store finder, the phone vs. server test, the note or 8 days ago: 31 worked.
     assert.deepEqual([rate.value, rate.label], ['91%', 'of 34 searches worked, the last 7 days']);
     assert.deepEqual([speed.value, speed.label], ['10.9 s', 'to price 6 items at 4 stores, from cold, in the speed test']);
-    assert.deepEqual([truth.value, truth.label], ['11 of 12', 'prices matched the product’s own page, in the truth check']);
+    assert.deepEqual([truth.value, truth.label], ['11 of 12', 'prices matched; 1 of 13 product pages couldn’t be read'], 'the pages it couldn’t read, said');
     // The average search: 23.5 MB over 31 that worked, 758 KB; about $255,000 a month at the defaults, to three figures.
     assert.equal(Math.round(monthlyCost(DEFAULT_INPUTS, measuredFrom(input().entries)).total), 255_030);
     assert.deepEqual([cost.value, cost.label, cost.basis], ['$255,000', 'a month from servers for 100k users; on phones, $0', 'estimate']);
@@ -180,13 +180,17 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     assert.deepEqual(row('heb'), { retailerId: 'heb', name: 'H-E-B', check: '✗ Blocked', searches: 3, worked: '33%', median: '1.0 s', botChecks: 2, busiest: '3 of 120', data: '300\u00a0KB' });
     assert.equal(r.table.speedItems, 6);
     assert.equal(r.table.more, 0);
-    assert.match(r.table.caption, /^Last 7 days: Sep 20 to Sep 27\. .*Blocked: a bot check or a refusal\. Speed test: each store’s 6 searches, start to finish\.$/);
+    assert.match(
+      r.table.caption,
+      /^Last 7 days: Sep 20 to Sep 27\. .*Blocked: a bot check or a refusal\. Speed test: each store’s 6 searches, start to finish\. The other 2 stores in the store check are in the list above\.$/,
+      'Costco and Meijer: in the store check, and nothing else',
+    );
     assert.match(section(r, 'table').summary, /^34 searches at 5 stores in the last 7 days: 91% worked, 1\.4 s each in the middle\.$/);
 
     // Too many for the page: the busiest first, and the rest counted.
     const few = buildReport(input({ maxRows: 3 }));
     assert.deepEqual([few.table.rows.map((x) => x.retailerId), few.table.more], [['walmart', 'target', 'kroger'], 2]);
-    assert.match(few.table.caption, /2 more stores with fewer searches aren’t shown: see Store health\.$/);
+    assert.match(few.table.caption, /2 more stores with fewer searches aren’t shown: see Store health\. The other 2 stores in the store check are in the list above\.$/);
     // 15 stores searched this week, none compared: the 12 most searched, most first.
     const many = Array.from({ length: 15 }, (_, i) => ({ id: `s${i}`, name: `Store ${i}` }));
     const busy = buildReport(
@@ -208,7 +212,7 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     // 15.1 MB for the speed test; 758 KB a search over the week's 31 that worked (23.5 MB), 80 of them to a 20-item list.
     assert.match(
       said(r, 'data'),
-      /^The speed test: about 15\u00a0MB for 6 items at 4 stores \(24 searches, from cold\)\.\nAn 8-item list at 1 store: about 2\.1\u00a0MB \(8 searches, Sep 27, 8:41\sPM\)\.\nAbout 758\u00a0KB a search over this iPhone’s last 31 searches that worked, so a 20-item list at 4 stores takes about 61\u00a0MB\.$/,
+      /^The speed test: about 15\u00a0MB for 6 items at 4 stores \(24 searches, from cold\)\.\nAn 8-item list at 1 store: about 2\.1\u00a0MB \(8 searches, Sep 27, 8:41\sPM\)\.\nAbout 758\u00a0KB a search over this iPhone’s last 31 searches that worked, not counting the store check, so a 20-item list at 4 stores takes about 61\u00a0MB\.$/,
     );
     assert.deepEqual(bases(section(r, 'data').lines), [['estimate', 'so a 20-item list at 4 stores takes about 61\u00a0MB.']], 'only the typical list is an estimate');
     // Warm, and no speed test at all: the week's median stands in for it at the top.
@@ -224,8 +228,17 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     const r = buildReport(input());
     assert.match(
       said(r, 'truth'),
-      /^11 of 12 prices matched \(92%\) the product’s own page on the store’s site, each read again, 3 per store, Sep 27, 9:41\sPM\. Walmart 3 of 3 · Target 2 of 3 · Kroger 3 of 3 · ALDI 3 of 3\. 1 page showed no price the phone could read: not counted\.\nA product page can be for another store than the search, or a price can change in between\.$/,
+      /^12 of 13 product pages could be read, and 11 of those 12 prices matched \(92%\)\. Each is a search’s price read again on the product’s own page on the store’s site, 3 per store, Sep 27, 9:41\sPM: Walmart 3 of 3 · Target 2 of 3 · Kroger 3 of 3 · ALDI 3 of 3\. A page with no price the phone could read isn’t counted\.\nA product page can be for another store than the search, or a price can change in between\.$/,
     );
+    assert.match(section(r, 'truth').summary, /^12 of 13 product pages read; 11 of 12 prices matched \(Sep 27, 9:41\sPM\)\.$/);
+    // It read 1 page of 6: said first, not a bare "1 of 1".
+    const thin = buildReport(input({ truth: { at: NOW - H, perStore: 3, summary: { checked: 1, same: 1, different: 0, unreadable: 5, rate: 1, byStore: { walmart: { same: 1, checked: 1 }, target: { same: 0, checked: 0 } } } } }));
+    assert.deepEqual([thin.stats[3].value, thin.stats[3].label], ['1 of 1', 'prices matched; 5 of 6 product pages couldn’t be read']);
+    assert.match(said(thin, 'truth'), /^1 of 6 product pages could be read, and its price matched\. Each is a search’s price read again .*: Walmart 1 of 1\. A page with no price the phone could read isn’t counted\.$/);
+    // Every page read: the rate alone, as before.
+    const all = buildReport(input({ truth: { at: NOW - H, perStore: 3, summary: { checked: 3, same: 3, different: 0, unreadable: 0, rate: 1, byStore: { walmart: { same: 3, checked: 3 } } } } }));
+    assert.equal(all.stats[3].label, 'prices matched the product’s own page, in the truth check');
+    assert.match(said(all, 'truth'), /^3 of 3 prices matched \(100%\) the product’s own page on the store’s site, each read again, 3 per store, Sep 27, 9:41\sPM\. Walmart 3 of 3\.$/);
     const unread = buildReport(input({ truth: { at: NOW - H, perStore: 3, summary: { checked: 0, same: 0, different: 0, unreadable: 6, byStore: { walmart: { same: 0, checked: 0 } } } } }));
     assert.deepEqual([unread.stats[3].value, unread.stats[3].label, unread.stats[3].none], ['—', 'No product page could be read', true]);
     assert.match(said(unread, 'truth'), /couldn’t read a price on any of the 6 product pages it opened\.$/);
@@ -299,6 +312,59 @@ const bases = (lines: ReportLine[]) => lines.flatMap((l) => [l, ...(l.more ?? []
     assert.match(section(r, 'speed').summary, /Diagnostics → Speed test/);
     assert.deepEqual(bases(r.notes).map(([b]) => b), ['estimate', 'assumption']);
     assert.match(words(r.notes), /^Where these numbers come from\. Measured on this iPhone: the store check;/);
+  });
+
+  await t('report: the store check says why stores didn’t work; too few products isn’t working; no store near isn’t a failure', () => {
+    const names = [...STORES, { id: 'ralphs', name: 'Ralphs' }, { id: 'fredmeyer', name: 'Fred Meyer' }, { id: 'sprouts', name: 'Sprouts' }, { id: 'wholefoods', name: 'Whole Foods' }, { id: 'traderjoes', name: 'Trader Joe’s' }];
+    const row = (id: string, status: CoverageStatus, extra: { reason?: string; products?: number } = {}) => ({
+      retailerId: id, name: names.find((n) => n.id === id)!.name, status, products: 24, ms: 1500, at: NOW - 29 * 60_000, ...extra,
+    });
+    const rows = [
+      row('walmart', 'works'),
+      row('ralphs', 'no_store', { reason: 'kroger_no_store_near_zip', products: 0 }),
+      row('fredmeyer', 'no_store', { reason: 'kroger_no_store_near_zip', products: 0 }),
+      row('kroger', 'failed', { reason: 'kroger_products_http_503', products: 0 }),
+      row('meijer', 'few', { products: 1 }),
+      row('sprouts', 'few', { products: 2 }),
+      row('costco', 'no_products', { reason: 'no_payload', products: 0 }),
+      row('wholefoods', 'no_products', { reason: 'no_payload', products: 0 }),
+      row('heb', 'bot_check', { reason: 'challenge', products: 0 }),
+      row('traderjoes', 'bot_check', { reason: 'http_403', products: 0 }),
+      row('aldi', 'slow', { reason: 'timeout', products: 0 }),
+    ];
+    const coverage: CoverageState = { ...checked({}), stores: rows.map((r) => ({ retailerId: r.retailerId, name: r.name })), rows: Object.fromEntries(rows.map((r) => [r.retailerId, r])) };
+    const r = buildReport(input({ stores: names, compared: ['walmart', 'kroger', 'meijer', 'ralphs'], coverage }));
+    const lines = said(r, 'stores').split('\n');
+    assert.match(lines[0], /^1 of 9 stores work from this iPhone\. The store check searched “milk” once at each store, four at a time, Sep 27, 10:13\sPM; stores with none near the ZIP code aren’t counted\.$/);
+    assert.equal(lines[1], 'Works (1): Walmart.');
+    assert.equal(
+      lines[2],
+      'Too few products (2): Meijer (1), Sprouts (2): 2 products or fewer each, more likely a featured product than the search’s results. ' +
+        'Bot check or blocked (2): H-E-B (a bot check), Trader Joe’s (HTTP 403). ' +
+        'No products came back (2): Costco, Whole Foods: no product data. ' +
+        'Too slow (1): ALDI. ' +
+        'Failed (1): Kroger: Kroger’s API was busy (503), twice. ' +
+        'No store near you (2): Ralphs, Fred Meyer: Kroger’s API found none of their stores near the ZIP code, so they weren’t searched.',
+    );
+    assert.deepEqual([r.stats[0].value, r.stats[0].label], ['1 of 9', 'stores work from this iPhone; 2 had no store nearby']);
+    assert.match(section(r, 'stores').summary, /^1 of 9 stores work \(2 had none nearby\), checked Sep 27, 10:13\sPM\.$/);
+    const check = (id: string) => r.table.rows.find((x) => x.retailerId === id)?.check;
+    assert.deepEqual(['walmart', 'kroger', 'meijer', 'ralphs'].map(check), ['✓ Works', '✗ Failed', '? Too few', '– None near']);
+  });
+
+  await t('report: stores searched only in the store check stay out of the table and the averages; big sizes in GB', () => {
+    // The store check's page loads: heavy, one at each store, and nothing else at three of them.
+    const checks = ['walmart', 'costco', 'meijer', 'ralphs', 'fredmeyer'].map((id): AttemptEntry => ({
+      at: NOW - 29 * 60_000, retailerId: id, kind: 'coverage', strategy: 'webview', ok: true, ms: 9000, bytes: 5_000_000, rules: 'v1',
+    }));
+    const r = buildReport(input({ entries: [...week(), ...checks] }));
+    assert.deepEqual(r.table.rows.map((x) => x.name), ['Walmart', 'Target', 'Kroger', 'ALDI', 'H-E-B'], 'no row for a store the check alone searched');
+    assert.equal(r.table.rows[0].searches, 11, 'a compared store’s check still counts in its own row');
+    assert.deepEqual(measuredFrom([...week(), ...checks]), measuredFrom(week()), 'the average search leaves the check out');
+    assert.match(said(r, 'data'), /About 758\u00a0KB a search over this iPhone’s last 31 searches that worked, not counting the store check,/);
+    // A month's data past a gigabyte, in GB: 5 lists a week of 20 items at 4 stores, at 758 KB a search.
+    const busy = buildReport(input({ cost: { ...DEFAULT_INPUTS, listsPerWeek: 5 } }));
+    assert.match(said(busy, 'cost'), /each phone uses about 1\.3\u00a0GB of its data a month\./);
   });
 
   await t('the page: one document, sized for expo-print’s US Letter, shrinking to fit but not below its floor', () => {

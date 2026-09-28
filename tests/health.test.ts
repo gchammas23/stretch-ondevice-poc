@@ -1,12 +1,12 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import { AttemptLog, bytesToday, storeHealth, type AttemptEntry } from '../src/onDevice/attemptLog';
-import { CoverageCheck, coverageStatus, coverageText } from '../src/onDevice/coverage';
+import { CoverageCheck, coverageCounts, coverageStatus, coverageText } from '../src/onDevice/coverage';
 import { citizenReport, Politeness } from '../src/onDevice/politeness';
 import { DEFAULT_INPUTS, ESTIMATED, measuredFrom, monthlyCost } from '../src/pricing/costModel';
 import { SearchFailed } from '../src/onDevice/retailerSearch';
 import { BUNDLED_CONFIG, fetchRules, rulesProblem } from '../src/onDevice/retailers';
-import { bytesText } from '../src/onDevice/scrapeFeed';
+import { bytesText, reasonWords } from '../src/onDevice/scrapeFeed';
 import type { RetailerConfig, SearchOutcome } from '../src/onDevice/types';
 
 const DAY = 24 * 60 * 60_000;
@@ -64,23 +64,51 @@ const cfg = (id: string): RetailerConfig => ({ ...BUNDLED_CONFIG.retailers.find(
       if (c.id === 'b') throw new SearchFailed([{ strategy: 'webview', ok: false, reason: 'challenge', ms: 1 }]);
       if (c.id === 'c') throw new SearchFailed([{ strategy: 'webview', ok: false, reason: 'no_payload', detail: 'C showed “C”, but no product data arrived.', ms: 1 }]);
       if (c.id === 'd') return { retailer: 'D', products: [{ retailer: 'd', storeId: '', id: '1', name: 'Milk', price: null }], strategy: 'webview', ms: 3, attempts: [] };
-      return { retailer: c.name, products: [{ retailer: c.id, storeId: '', id: '1', name: 'Milk', price: 3 }], strategy: 'webview', via: 'page', ms: 1500, attempts: [], bytes: 1_200_000 };
+      if (c.id === 'h') throw new SearchFailed([{ strategy: 'api', ok: false, reason: 'kroger_no_store_near_zip', ms: 1 }]);
+      if (c.id === 'i') throw new SearchFailed([{ strategy: 'api', ok: false, reason: 'kroger_products_http_503', ms: 1 }]);
+      // G gives 2 products; the rest a dozen.
+      const products = Array.from({ length: c.id === 'g' ? 2 : 12 }, (_, i) => ({ retailer: c.id, storeId: '', id: String(i), name: `Milk ${i}`, price: 3 }));
+      return { retailer: c.name, products, strategy: 'webview', via: 'page', ms: 1500, attempts: [], bytes: 1_200_000 };
     };
     const check = new CoverageCheck();
-    const stores = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ config: cfg(id), storeId: '' }));
+    const stores = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].map((id) => ({ config: cfg(id), storeId: '' }));
     const run = check.run(stores, search, 'milk', 2);
-    assert.deepEqual([check.getSnapshot().running, check.getSnapshot().stores.length], [true, 6]);
+    assert.deepEqual([check.getSnapshot().running, check.getSnapshot().stores.length], [true, 9]);
     await run;
     const s = check.getSnapshot();
     assert.equal(peak, 2);
-    assert.deepEqual(stores.map(({ config }) => s.rows[config.id].status), ['works', 'bot_check', 'no_products', 'no_products', 'works', 'works']);
-    assert.deepEqual([s.rows.a.products, s.rows.a.how, s.rows.a.bytes], [1, 'page load', 1_200_000]);
+    assert.deepEqual(
+      stores.map(({ config }) => s.rows[config.id].status),
+      ['works', 'bot_check', 'no_products', 'no_products', 'works', 'works', 'few', 'no_store', 'failed'],
+      '2 products are too few to be the results; no store near the ZIP code isn’t a failure',
+    );
+    assert.deepEqual([s.rows.a.products, s.rows.a.how, s.rows.a.bytes], [12, 'page load', 1_200_000]);
     assert.equal(s.rows.c.detail, 'C showed “C”, but no product data arrived.');
-    assert.match(coverageText(s, 'Test'), /3 of 6 stores readable[\s\S]*✗ B: Bot check or blocked \(challenge\)/);
+    assert.deepEqual(coverageCounts(Object.values(s.rows)), { works: 3, searched: 8, noStore: 1 });
+    // Shared as text: every store's line carries what Store health says under it.
+    assert.deepEqual(coverageText(s, 'Test').split('\n'), [
+      'Test',
+      '3 of 8 stores readable, searching “milk”; 1 with no store near the ZIP code, not searched',
+      '',
+      '✓ A: 12 products in 1.5 s (page load)',
+      '✗ B: Bot check or blocked (challenge): bot check',
+      '✗ C: No products came back (no_payload): C showed “C”, but no product data arrived.',
+      '✗ D: No products came back: its search gave no products with prices',
+      '✓ E: 12 products in 1.5 s (page load)',
+      '✓ F: 12 products in 1.5 s (page load)',
+      '? G: Too few products: 2 products in 1.5 s (page load), which may not be the search’s results',
+      '– H: No store near you (kroger_no_store_near_zip): no store of this chain near the ZIP code, by Kroger’s API',
+      '✗ I: Failed (kroger_products_http_503): Kroger’s API was busy (503), twice',
+    ]);
     const again = new CoverageCheck();
     again.hydrate(check.serialize());
     assert.deepEqual([again.getSnapshot().running, again.rowFor('a')?.status], [false, 'works']);
     assert.deepEqual([coverageStatus('http_403'), coverageStatus('timeout'), coverageStatus('network')], ['bot_check', 'slow', 'failed']);
+    assert.deepEqual([coverageStatus('kroger_no_store_near_zip'), coverageStatus('kroger_products_http_503')], ['no_store', 'failed']);
+    assert.deepEqual(
+      ['kroger_auth_http_401', 'kroger_locations_timeout', 'kroger_products_network'].map(reasonWords),
+      ['Kroger’s API answered 401', 'Kroger’s API was too slow', 'Kroger’s API couldn’t be reached'],
+    );
   });
 
   await t('store rules from a file: problems said in words; a good file is taken', async () => {
@@ -110,6 +138,7 @@ const cfg = (id: string): RetailerConfig => ({ ...BUNDLED_CONFIG.retailers.find(
 
   await t('data sizes in words', () => {
     assert.deepEqual([bytesText(400), bytesText(41_234), bytesText(2_430_000), bytesText(48_000_000)], ['under 1\u00a0KB', '41\u00a0KB', '2.4\u00a0MB', '48\u00a0MB']);
+    assert.deepEqual([bytesText(999_400_000), bytesText(1_146_000_000), bytesText(12_300_000_000)], ['999\u00a0MB', '1.1\u00a0GB', '12\u00a0GB'], 'a gigabyte and up in GB');
   });
 
   await t('good citizen: at most so many searches an hour at one store, counting ones from before the app last closed', () => {
