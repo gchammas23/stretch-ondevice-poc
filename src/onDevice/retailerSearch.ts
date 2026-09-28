@@ -1050,9 +1050,11 @@ export function createRetailerSearch(
       } else if (!finder?.url) {
         return { ok: false, reason: 'no_store_finder' };
       } else {
-        // The finder's JSON when it answers with some, straight from the phone: no page to load.
-        if (finder.jsonUrl) {
-          stores = await storesFromJson(fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles) }), cfg.timeoutMs, origin);
+        // The finder's JSON when it answers with some, straight from the phone: no page to load. One that asks for a
+        // place on the map gets the ZIP code's center (never the phone's), when the phone's geocoder gave it.
+        const place = origin ? { lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4) } : undefined;
+        if (finder.jsonUrl && (place || !/\{\{(?:lat|lng)\}\}/.test(finder.jsonUrl))) {
+          stores = await storesFromJson(fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles), ...place }), cfg.timeoutMs, origin);
           if (stores.length) how = 'fetch';
         }
         if (!stores.length) {

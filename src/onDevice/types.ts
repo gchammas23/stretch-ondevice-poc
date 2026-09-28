@@ -66,8 +66,9 @@ export interface RetailerConfig {
   /**
    * The retailer's own store finder, to list its stores near a ZIP code. `url` may contain {{zip}}: the phone loads
    * it hidden, types the ZIP into its search box if it has one, and reads the stores it lists (storeListScript).
-   * `jsonUrl`: an address of the same finder that answers with the list as JSON ({{zip}}, and {{radius}} in miles),
-   * asked straight from the phone first; the page is the fallback.
+   * `jsonUrl`: an address of the same finder that answers with the list as JSON ({{zip}}, {{radius}} in miles, and
+   * {{lat}} and {{lng}}: the ZIP code's center, never the phone's; without them it isn't asked), asked straight from
+   * the phone first; the page is the fallback.
    * `auto`: the page lists the stores nearest the ZIP, each with a button that makes it the store (e.g. Walmart's
    * "Make this my store"), and the site keeps the store in its cookies, so the app presses the chosen store's button.
    * Otherwise the store's number goes in each search. `buttons` replaces the default wording to look for

@@ -85,7 +85,7 @@ export default function PrivacyScreen() {
         <Section icon="globe" title="Sent from this phone">
           <Line text="Searches to each store’s own website, as a browser would send them: the item, and the store’s cookies. The store sees this phone’s internet address, as it does for anyone visiting." />
           <Line text="While you type a price check, what you’ve typed so far goes to two of your stores, into their own search boxes, for their suggestions." />
-          <Line text="Your ZIP code to each store’s own store finder, to list its stores near you: typed into it on a hidden page, or asked of it directly." />
+          <Line text="Your ZIP code to each store’s own store finder, to list its stores near you: typed into it on a hidden page, or asked of it directly. A finder that asks for a place on the map (Meijer’s) gets your ZIP code’s center, not where you are." />
           <Line text="Shopping for pickup or delivery: a visit to each of your stores’ own page about its fees, about once a week, as a browser would. Nothing about you or your list goes with it." />
           <Line text="If you sign in to a store for your member prices or coupons: that happens on the store’s own page, which the app adds nothing to and reads nothing on." />
           <Line text="A visit to each of your stores’ weekly ad page, at most once a day, as a browser would. For the stores you signed in to here, a visit to your coupons page on their site; a coupon’s Clip button is pressed there only when you tap Clip." />

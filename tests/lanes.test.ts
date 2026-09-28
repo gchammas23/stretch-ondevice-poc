@@ -430,6 +430,50 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     assert.deepEqual([got.via, got.store], ['page', { id: '12', name: 'Example Midtown' }]);
   });
 
+  await t('stores near: Meijer’s finder asked straight for a point on the map, the ZIP code’s center; without one, not asked', async () => {
+    const pool = new WebViewPool();
+    const searcher = createRetailerSearch(pool, 'test');
+    const meijer = BUNDLED_CONFIG.retailers.find((r) => r.id === 'meijer')!;
+    // As its proximity search answered (June 2026): the store's number as UnitId, its name as storeShortName.
+    const answer = { store: [
+      { IsMobileShoppingEnabled: 'Y', UnitId: 143, streetAddress: '8870 Columbus Pike', city: 'Lewis Center', state: 'OH', zip: '43035', latitude: 40.1797, longitude: -83.0265, storeHours: '6am-12am, daily', milesFrom: 6.41, storeShortName: 'Lewis Center', UnitType: 'MS' },
+      { IsMobileShoppingEnabled: 'Y', UnitId: 58, streetAddress: '6175 Sawmill Rd', city: 'Dublin', state: 'OH', zip: '43017', latitude: 40.0924, longitude: -83.0987, storeHours: '6am-12am, daily', milesFrom: 1.12, storeShortName: 'Sawmill Rd', UnitType: 'MS' },
+    ] };
+    const realFetch = globalThis.fetch;
+    const asked: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      asked.push(url);
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) };
+    }) as typeof fetch;
+    try {
+      const got = await searcher.storesNear(meijer, '43017', 25, { lat: 40.09917, lng: -83.11408 });
+      assert.deepEqual(asked, ['https://www.meijer.com/bin/meijer/store/search/proximity-v2?latitude=40.0992&longitude=-83.1141&miles=1000&numToReturn=12']);
+      assert.deepEqual(got.ok && got.stores.map((st) => [st.id, st.name, st.address, st.miles]), [
+        ['58', 'Sawmill Rd', '6175 Sawmill Rd, Dublin, OH 43017', 1.12],
+        ['143', 'Lewis Center', '8870 Columbus Pike, Lewis Center, OH 43035', 6.41],
+      ]);
+      assert.equal(pool.lane('meijer').getSnapshot(), null, 'no page loaded');
+
+      // The ZIP code's center unknown: the address can't be filled in, so its page is loaded instead.
+      asked.length = 0;
+      const lane = pool.lane('meijer');
+      let last = -1;
+      lane.subscribe(() => {
+        const snap = lane.getSnapshot();
+        if (!snap || snap.phase !== 'hidden' || snap.id === last) return;
+        last = snap.id;
+        // The page's store cards, linked as Meijer links a store's page.
+        const cards = [{ lines: ['Sawmill Rd', '6175 Sawmill Rd', 'Dublin, OH 43017', '1.1 mi'], href: '/shopping/store-locator/58.html' }];
+        setTimeout(() => lane.receive(JSON.stringify({ nonce: nonceOf(snap.script), kind: 'data', sources: [], pageResult: { cards } })), 5);
+      });
+      const fromPage = await searcher.storesNear(meijer, '43017', 25);
+      assert.deepEqual(asked, [], 'not asked without a place');
+      assert.deepEqual(fromPage.ok && fromPage.stores.map((st) => [st.id, st.miles]), [['58', 1.1]], 'its store cards, by the number in their links');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   await t('stores near: from the finder’s JSON when it answers, else its page, hidden, with the ZIP typed in; failures say why', async () => {
     const pool = new WebViewPool();
     pool.challengeGraceMs = 0;

@@ -489,7 +489,7 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
     var out = [], seen = [], links = document.querySelectorAll('a[href]');
     for (var i = 0; i < links.length && out.length < 20; i++) {
       var href = links[i].getAttribute('href') || '';
-      if (!/\\/(?:stores?|sl|locations?|warehouses?|clubs?)\\/[^?#]*\\d/i.test(href) || seen.indexOf(href) !== -1) continue;
+      if (!/\\/(?:stores?|sl|locations?|warehouses?|clubs?|store-locator)\\/[^?#]*\\d/i.test(href) || seen.indexOf(href) !== -1) continue;
       seen.push(href);
       var block = links[i];
       for (var up = 0; up < 5 && block.parentElement && linesOf(block).length < 3; up++) block = block.parentElement;
