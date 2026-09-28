@@ -486,6 +486,20 @@ function makePage(html: string, url: string) {
     ], 'by their store numbers, not the finder’s ids for the places, nearest first');
   });
 
+  await t('store list: store cards linked as Meijer links a store’s page (/store-locator/58.html) count', async () => {
+    const p = makePage(
+      `<html><body><input placeholder="Search by city, state or ZIP"><ul>
+        <li><h3>Sawmill Rd</h3><p>6175 Sawmill Rd</p><p>Dublin, OH 43017</p><p>1.1 mi</p><a href="/shopping/store-locator/58.html">Store details</a></li>
+        <li><h3>Lewis Center</h3><p>8870 Columbus Pike</p><p>Lewis Center, OH 43035</p><p>6.4 mi</p><a href="/shopping/store-locator/143.html">Store details</a></li>
+        <li><a href="/shopping/store-locator.html">Find another store</a></li>
+      </ul></body></html>`,
+      'https://www.meijer.com/shopping/store-locator.html?zip=43017',
+    );
+    p.run(storeListScript('l6', '43017', markers, { quietMs: 20, intervalMs: 10 }));
+    await sleep(100);
+    assert.deepEqual(nearbyStores({ ...p.posts[0], cards: p.posts[0].pageResult.cards }).map((st) => [st.id, st.miles]), [['58', 1.1], ['143', 6.4]]);
+  });
+
   await t('store request: the site’s own request goes out once from its page, with its cookies; a refusal or a bot check says so', async () => {
     const req = { method: 'PUT', url: 'https://www.wholefoodsmarket.com/api/store-affinity', body: '{"storeId":"10214"}', headers: { 'Content-Type': 'application/json' } };
     const make = (status: number, html = '<html><body><div id="list"></div></body></html>') => {

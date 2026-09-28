@@ -284,6 +284,8 @@ export function parseStoreLabel(raw: string | undefined): KnownStore | undefined
 /** A store's own page linked from a store finder: "/store/3081-sacramento-ca", "/sl/brooklyn-atlantic-terminal/1340". */
 const LINK_IDS = [
   /\/(?:stores?|sl|locations?|warehouses?|clubs?)\/(\d{2,7})(?=[-/?#]|$)/i,
+  // Meijer's: "/shopping/store-locator/20.html".
+  /\/store-locator\/(\d{1,7})\.html/i,
   /\/(?:stores?|sl|locations?|warehouses?|clubs?)\/[^?#]*?\/(\d{2,7})\/?(?=[?#]|$)/i,
   /[?&](?:store_?id|store_?number|storenum|location_?id|warehouse(?:_?id)?)=(\d{2,9})/i,
 ];

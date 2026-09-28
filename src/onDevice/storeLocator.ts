@@ -71,15 +71,15 @@ export function milesBetween(a: LatLng, b: LatLng): number {
   return 2 * 3958.8 * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-const ID_KEY = /^(?:store_?(?:id|number|num|no|nbr|code)|location_?id|id|number|facility_?id|warehouse_?(?:id|number|num)?|club_?(?:id|number)|site_?id|branch_?(?:id|number)|shop_?id)$/i;
-const NAME_KEY = /^(?:(?:store|location|display|vanity|branch|marketing|short|site|business)_?name|name|title|label)$/i;
+const ID_KEY = /^(?:store_?(?:id|number|num|no|nbr|code)|location_?id|id|number|facility_?id|warehouse_?(?:id|number|num)?|club_?(?:id|number)|site_?id|branch_?(?:id|number)|shop_?id|unit_?(?:id|number|num|no|nbr))$/i;
+const NAME_KEY = /^(?:(?:store|location|display|vanity|branch|marketing|short|site|business)_?name|store_?short_?name|name|title|label)$/i;
 const STREET_KEY = /^(?:address_?(?:line_?)?(?:1|one)|address_?lines?|street(?:_?address)?(?:_?1)?|line_?(?:1|one)|address)$/i;
 const CITY_KEY = /^(?:city|city_?town|town|locality)$/i;
 const STATE_KEY = /^(?:state|state_?code|state_?province|region|province|state_?abbreviation)$/i;
 const ZIP_KEY = /^(?:zip|zip_?code|postal_?code|postcode|zipcode)$/i;
 const LAT_KEY = /^(?:lat|latitude)$/i;
 const LNG_KEY = /^(?:lng|lon|long|longitude)$/i;
-const DIST_KEY = /^(?:distance|dist|distance_?(?:miles|mi|in_?miles)|miles|mileage)$/i;
+const DIST_KEY = /^(?:distance|dist|distance_?(?:miles|mi|in_?miles)|miles|miles_?from|mileage)$/i;
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);

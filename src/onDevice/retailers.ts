@@ -502,7 +502,15 @@ export const BUNDLED_CONFIG: RetailerConfigBundle = {
         'https://www.meijer.com/',
         'Blocked our datacenter test.',
       ),
-      storeFinder: { url: 'https://www.meijer.com/shopping/store-locator.html' },
+      // Checked 2026-09-28 (its site refuses datacenters, so from an archived copy of June 2026 and AllThePlaces' spider):
+      // its finder asks /bin/meijer/store/search/proximity-v2 for the stores nearest a point on the map, which answers
+      // with the store's number as UnitId, its name as storeShortName, its address, coordinates and milesFrom; a
+      // store's page is /shopping/store-locator/{number}.html. On a phone, the finder "listed none": the app didn't
+      // know those field names. Asked for the 12 nearest within 1000 miles, so a ZIP code far away still hears how far.
+      storeFinder: {
+        url: 'https://www.meijer.com/shopping/store-locator.html',
+        jsonUrl: 'https://www.meijer.com/bin/meijer/store/search/proximity-v2?latitude={{lat}}&longitude={{lng}}&miles=1000&numToReturn=12',
+      },
       storeBrands: ['Meijer', 'True Goodness', 'Frederik’s by Meijer', "Frederik's by Meijer"],
       // Checked 2026-09-25 (its page is drawn by scripts and blocks datacenters, so from archived copies): "Free pickup
       // on orders of $35+", with $4.95 under that (third parties, 2023 and Feb 2026); delivery by Shipt, "Fees vary by

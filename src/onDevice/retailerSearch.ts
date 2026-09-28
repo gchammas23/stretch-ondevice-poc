@@ -276,15 +276,16 @@ export function howWords(strategy: Strategy, via?: 'page' | 'replay'): string {
  */
 /**
  * A store finder's list as JSON, asked straight from the phone for `zip`. Empty when it can't be had, so the finder's
- * page is tried instead.
+ * page is tried instead. `asked`: its address was made from the ZIP or its center, so the list is for the ZIP.
  */
-async function storesFromJson(url: string, zip: string, timeoutMs: number, origin?: LatLng): Promise<{ stores: NearbyStore[]; tie: ZipTie }> {
+async function storesFromJson(url: string, zip: string, timeoutMs: number, origin?: LatLng, asked = false): Promise<{ stores: NearbyStore[]; tie: ZipTie }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
     if (!res.ok) return { stores: [], tie: 'none' };
-    return nearbyList({ sources: [{ label: `response ${url}`, text: await res.text() }] }, origin, zip);
+    const list = nearbyList({ sources: [{ label: `response ${url}`, text: await res.text() }] }, origin, zip);
+    return asked ? { ...list, tie: 'asked' } : list;
   } catch {
     return { stores: [], tie: 'none' };
   } finally {
@@ -1055,9 +1056,13 @@ export function createRetailerSearch(
       } else if (!finder?.url) {
         return { ok: false, reason: 'no_store_finder' };
       } else {
-        // The finder's JSON when it answers with some, straight from the phone: no page to load.
-        if (finder.jsonUrl) {
-          ({ stores, tie } = await storesFromJson(fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles) }), zip, cfg.timeoutMs, origin));
+        // The finder's JSON when it answers with some, straight from the phone: no page to load. One that asks for a
+        // place on the map gets the ZIP code's center (never the phone's), when the phone's geocoder gave it. Asked
+        // with the ZIP or its center, its list is for the ZIP, whether or not the ZIP's digits are in its address.
+        const place = origin ? { lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4) } : undefined;
+        if (finder.jsonUrl && (place || !/\{\{(?:lat|lng)\}\}/.test(finder.jsonUrl))) {
+          const url = fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles), ...place });
+          ({ stores, tie } = await storesFromJson(url, zip, cfg.timeoutMs, origin, /\{\{(?:zip|lat|lng)\}\}/.test(finder.jsonUrl)));
           if (stores.length) how = 'fetch';
         }
         if (!stores.length) {
