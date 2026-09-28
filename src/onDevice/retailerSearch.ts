@@ -17,7 +17,7 @@ import { observationOf, ProfileBook, STALE_MISSES, whereWords } from './profiles
 import { applyTemplate, chainIds, learnChain, learnTemplate, looksRelevant, mentionsQuery, replayPayload, swapIds, type ReplayTemplate } from './replay';
 import { bytesText, reasonWords, seconds } from './scrapeFeed';
 import { mergeStores, parseStoreLabel, pinStoreInRequest, sameStoreId, storeFromFinder, storeIdFromPageData, storeIdFromRequest, storeLine } from './storeIdentity';
-import { nearbyStores, sortNearest, withMiles, type LatLng, type NearbyStore, type StoreCard } from './storeLocator';
+import { nearbyList, sortNearest, withMiles, type LatLng, type NearbyStore, type StoreCard, type ZipTie } from './storeLocator';
 import { reportAttempt, reportNote } from './telemetry';
 import { SpanLog, type LoadTiming, type ReplayTiming, type SearchTiming } from './timing';
 import {
@@ -172,8 +172,11 @@ function tuningSample(run: Run, ok: boolean, ms: number, strategy: Strategy, rea
 
 export type StoreSetResult = { ok: true; label?: string; store?: KnownStore } | { ok: false; reason: string };
 
-/** A retailer's stores near a ZIP code, nearest first: from its official API, or its own store finder. */
-export type StoresNearResult = { ok: true; stores: NearbyStore[]; how: 'api' | 'finder' } | { ok: false; reason: string };
+/**
+ * A retailer's stores near a ZIP code, nearest first: from its official API, or its own store finder. `tie`: how the
+ * list is tied to the ZIP asked for (see nearbyList in storeLocator.ts).
+ */
+export type StoresNearResult = { ok: true; stores: NearbyStore[]; how: 'api' | 'finder'; tie: ZipTie } | { ok: false; reason: string };
 
 /** What a store's fees page said, the page, and what reading it took. */
 export type FeesPageResult = FeePageRead & { url: string; ms: number; bytes?: number };
@@ -272,18 +275,18 @@ export function howWords(strategy: Strategy, via?: 'page' | 'replay'): string {
  * no background crawling on users' devices.
  */
 /**
- * A store finder's list as JSON, asked straight from the phone. Empty when it can't be had, so the finder's page is
- * tried instead.
+ * A store finder's list as JSON, asked straight from the phone for `zip`. Empty when it can't be had, so the finder's
+ * page is tried instead.
  */
-async function storesFromJson(url: string, timeoutMs: number, origin?: LatLng): Promise<NearbyStore[]> {
+async function storesFromJson(url: string, zip: string, timeoutMs: number, origin?: LatLng): Promise<{ stores: NearbyStore[]; tie: ZipTie }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
-    if (!res.ok) return [];
-    return nearbyStores({ sources: [{ label: `response ${url}`, text: await res.text() }] }, origin);
+    if (!res.ok) return { stores: [], tie: 'none' };
+    return nearbyList({ sources: [{ label: `response ${url}`, text: await res.text() }] }, origin, zip);
   } catch {
-    return [];
+    return { stores: [], tie: 'none' };
   } finally {
     clearTimeout(timer);
   }
@@ -1044,6 +1047,8 @@ export function createRetailerSearch(
     let checkPassed = false;
     try {
       let stores: NearbyStore[] = [];
+      // How the list is tied to the ZIP: an API and a finder's JSON are asked for it; a finder's page has to take it.
+      let tie: ZipTie = 'asked';
       const finder = cfg.storeFinder;
       if (api) {
         stores = (await krogerStoresNear(zip, radiusMiles, cfg.timeoutMs, cfg.apiChain)).map((s) => withMiles(s, origin));
@@ -1052,7 +1057,7 @@ export function createRetailerSearch(
       } else {
         // The finder's JSON when it answers with some, straight from the phone: no page to load.
         if (finder.jsonUrl) {
-          stores = await storesFromJson(fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles) }), cfg.timeoutMs, origin);
+          ({ stores, tie } = await storesFromJson(fill(finder.jsonUrl, { zip: encodeURIComponent(zip), radius: String(radiusMiles) }), zip, cfg.timeoutMs, origin));
           if (stores.length) how = 'fetch';
         }
         if (!stores.length) {
@@ -1072,8 +1077,10 @@ export function createRetailerSearch(
               timing,
             });
             checkPassed = !!timing.check?.unseen;
-            const cards = (payload.pageResult as { cards?: unknown } | undefined)?.cards;
-            stores = nearbyStores({ ...payload, cards: Array.isArray(cards) ? (cards as StoreCard[]) : undefined }, origin);
+            const result = payload.pageResult as { cards?: unknown; zipIn?: unknown } | undefined;
+            const cards = Array.isArray(result?.cards) ? (result.cards as StoreCard[]) : undefined;
+            const zipIn = result?.zipIn === 'url' || result?.zipIn === 'box' || result?.zipIn === 'next' || result?.zipIn === 'none' ? result.zipIn : undefined;
+            ({ stores, tie } = nearbyList({ ...payload, cards, zipIn }, origin, zip));
           } finally {
             // A store finder isn't a search page to replay in.
             lane.reset();
@@ -1084,8 +1091,10 @@ export function createRetailerSearch(
       const ms = Date.now() - t0;
       record({ retailerId: cfg.id, kind: 'store', strategy: how, ok: stores.length > 0, ms, ...(stores.length ? {} : { reason: 'no_stores_listed' }) });
       const passed = checkPassed ? ' · its bot check passed by itself' : '';
-      log(cfg, `stores near ${zip}`, stores.length > 0, stores.length ? `${stores.length} stores · ${seconds(ms)}${passed}` : `no stores listed${passed}`);
-      return stores.length ? { ok: true, stores, how: api ? 'api' : 'finder' } : { ok: false, reason: 'no_stores_listed' };
+      // A list the finder didn't search the ZIP for may be for wherever the site thinks the phone is.
+      const untied = stores.length && tie === 'none' ? ' · its finder didn’t take the ZIP' : '';
+      log(cfg, `stores near ${zip}`, stores.length > 0, stores.length ? `${stores.length} stores · ${seconds(ms)}${untied}${passed}` : `no stores listed${passed}`);
+      return stores.length ? { ok: true, stores, how: api ? 'api' : 'finder', tie } : { ok: false, reason: 'no_stores_listed' };
     } catch (e) {
       record({ retailerId: cfg.id, kind: 'store', strategy: how, ok: false, reason: reasonOf(e), ms: Date.now() - t0 });
       log(cfg, `stores near ${zip}`, false, `couldn’t list its stores: ${reasonWords(reasonOf(e))}`);

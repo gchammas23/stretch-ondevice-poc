@@ -61,7 +61,7 @@ import { AppStore, type AppState, type WatchItem } from './appStore';
 import { batteryMeter } from './battery';
 import { locateZip } from './deviceLocation';
 import { storeChoices } from './storeChoices';
-import type { SetupDeps } from './storeSetup';
+import { isUsZip, setUpStores, type SetupDeps } from './storeSetup';
 
 const PRICES_KEY = 'stretch.prices.v1';
 const HISTORY_KEY = 'stretch.history.v1';
@@ -276,6 +276,17 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     }
   }, [ready, settings, bundle.retailers]);
 
+  // Store setups the app closed on halfway are taken up again when it opens: until a retailer's store is set near the
+  // ZIP, it isn't compared (see storeChoices).
+  useEffect(() => {
+    if (!ready) return;
+    const { zip, retailerIds, storeSetup } = store.getState().settings;
+    const again = retailerIds.filter((id) => storeSetup[id]?.zip === zip && storeSetup[id]?.status === 'failed' && storeSetup[id]?.reason === 'interrupted');
+    if (isUsZip(zip) && again.length) void setUpStores(zip, setupDeps(store, search, bundle.retailers), again, { refresh: true });
+    // Once, as the app opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
   // Searches at once at each store, and stores at once, as the store tuning says from how their searches go; a store
   // cooling down after a block is skipped until its retry time; and a dropped connection is said as such.
   useEffect(() => {
@@ -386,7 +397,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
   const runCoverage = useCallback(async () => {
     const settings = store.getState().settings;
     const all = bundle.retailers.filter((r) => r.enabled).map((r) => r.id);
-    const choices = storeChoices({ ...settings, retailerIds: all }, bundle.retailers);
+    // Whether each site answers the phone: a store that couldn't be set near the ZIP is checked too.
+    const choices = storeChoices({ ...settings, retailerIds: all }, bundle.retailers, undefined, { unsetToo: true });
     await coverage.run(
       choices.map((c) => ({ config: c.config, storeId: c.storeId })),
       (cfg, q, storeId) => search.search(cfg, q, storeId, undefined, { challenge: 'report', kind: 'coverage' }),
@@ -436,7 +448,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       const nameOf = (id?: string) => bundle.retailers.find((r) => r.id === id)?.name;
       // Each store as it's searched (with keys, Kroger through its API alone), so its tuning only hears of the other
       // ways when its site pushes back. Its website gets the store chosen for it, not the ZIP code the API takes.
-      const stores = storeChoices({ ...settings, retailerIds: versusIds(bundle.retailers, settings.retailerIds, scope) }, bundle.retailers).map((c) => ({
+      const stores = storeChoices({ ...settings, retailerIds: versusIds(bundle.retailers, settings.retailerIds, scope) }, bundle.retailers, undefined, { unsetToo: true }).map((c) => ({
         config: c.config,
         storeId: settings.storeIds[c.config.id] || '',
         parentName: nameOf(c.config.sisterOf),
@@ -894,10 +906,11 @@ export function useRetailer(id: string | undefined): RetailerConfig | undefined 
 }
 
 /** What the store setup functions in storeSetup.ts need. */
+function setupDeps(store: AppStore, search: RetailerSearch, retailers: RetailerConfig[]): SetupDeps {
+  return { store, search, retailers, apiTakesZip: (cfg) => cfg.api === 'kroger' && krogerApiConfigured(), locate: locateZip };
+}
+
 export function useSetupDeps(): SetupDeps {
   const { store, search, bundle } = useApp();
-  return useMemo(
-    () => ({ store, search, retailers: bundle.retailers, apiTakesZip: (cfg) => cfg.api === 'kroger' && krogerApiConfigured(), locate: locateZip }),
-    [store, search, bundle.retailers],
-  );
+  return useMemo(() => setupDeps(store, search, bundle.retailers), [store, search, bundle.retailers]);
 }

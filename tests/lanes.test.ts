@@ -453,9 +453,10 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
         ok: true,
         how: 'finder',
         stores: [
-          { id: '739', name: 'Safeway', address: '3350 Mission St, San Francisco, CA 94110', miles: 0.43 },
-          { id: '667', name: 'Safeway', address: '5290 Diamond Heights Blvd, San Francisco, CA 94131', miles: 1.18 },
+          { id: '739', name: 'Safeway', address: '3350 Mission St, San Francisco, CA 94110', miles: 0.43, milesFrom: 'finder' },
+          { id: '667', name: 'Safeway', address: '5290 Diamond Heights Blvd, San Francisco, CA 94131', miles: 1.18, milesFrom: 'finder' },
         ],
+        tie: 'asked',
       });
       assert.equal(pool.lane('safeway').getSnapshot(), null, 'no page loaded');
 
@@ -474,8 +475,19 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
       });
       const fromPage = await searcher.storesNear(safeway, '94110', 10, { lat: 37.75, lng: -122.42 });
       assert.deepEqual(loads, [{ url: 'https://local.safeway.com/search.html', typesZip: true, captures: true }]);
-      assert.deepEqual(fromPage.ok && fromPage.stores.map((st) => st.id), ['739', '667']);
+      assert.deepEqual(fromPage.ok && [fromPage.stores.map((st) => st.id), fromPage.tie], [['739', '667'], 'asked'], 'its request carried the ZIP');
       assert.equal(lane.getSnapshot(), null, 'a finder isn’t kept for replays');
+
+      // A finder page that didn't take the ZIP: its list is said not to be for it, in the feed too.
+      answer = (nonce) => ({
+        nonce,
+        kind: 'data',
+        sources: [{ label: 'response https://local.safeway.com/locator?lat=40.1&lng=-83.11', text: JSON.stringify(yext) }],
+        pageResult: { cards: [], zipIn: 'none' },
+      });
+      const untied = await searcher.storesNear(safeway, '94110', 10);
+      assert.equal(untied.ok && untied.tie, 'none');
+      assert.ok(pool.feed.getSnapshot().some((e) => e.what === 'stores near 94110' && /didn’t take the ZIP/.test(e.text)));
 
       answer = (nonce) => ({ nonce, kind: 'challenge' });
       assert.deepEqual(await searcher.storesNear(safeway, '94110', 10), { ok: false, reason: 'challenge' }, 'a bot check doesn’t cover the app');

@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { sameStoreId } from '../../onDevice/storeIdentity';
-import type { NearbyStore } from '../../onDevice/storeLocator';
+import { trustedMiles, type NearbyStore } from '../../onDevice/storeLocator';
 import type { RetailerConfig } from '../../onDevice/types';
 import { hostOf } from '../../pricing/receipt';
 import { useApp, useRetailer, useSettings, useSetupDeps } from '../../state/AppProvider';
@@ -38,9 +38,12 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
   const working = setup?.status === 'working';
   const chosen = settings.chosenStores[retailer.id];
   const site = hostOf(retailer.homeUrl).replace(/^www\./, '');
-  // Without any distance from the finder or the map, every store it listed can be chosen.
-  const measured = stores.some((s) => s.miles !== undefined);
-  const inRange = (s: NearbyStore) => !measured || (s.miles !== undefined && s.miles <= radiusMiles);
+  // Distances that can be trusted: measured on the map, or the finder's when it searched the ZIP (a list kept from
+  // before lists said so counts as the finder's answer for it). A store whose distance can't be told can be chosen.
+  const tie = listed?.tie ?? 'asked';
+  const milesOf = (s: NearbyStore) => trustedMiles(s, tie);
+  const measured = stores.some((s) => milesOf(s) !== undefined);
+  const inRange = (s: NearbyStore) => (milesOf(s) ?? 0) <= radiusMiles;
   const how = deps.apiTakesZip(retailer)
     ? `${retailer.name}’s official API is asked for that store’s prices.`
     : retailer.storeFinder?.setRequest && retailer.storeFinder.auto
@@ -84,7 +87,8 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
             {stores.map((s, i) => {
               const current = !!chosen && sameStoreId(chosen.id, s.id);
               const away = !inRange(s);
-              const where = [s.address, s.miles !== undefined ? `${milesText(s.miles)} away` : ''].filter(Boolean).join(', ');
+              const miles = milesOf(s);
+              const where = [s.address, miles !== undefined ? `${milesText(miles)} away` : ''].filter(Boolean).join(', ');
               return (
                 <Pressable
                   key={s.id}
@@ -100,7 +104,7 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
                     {s.address ? <Text style={styles.small}>{s.address}</Text> : null}
                     <Text style={styles.small}>
                       Store {s.id}
-                      {s.miles !== undefined ? ` · ${milesText(s.miles)}` : ''}
+                      {miles !== undefined ? ` · ${milesText(miles)}` : ''}
                       {away ? ` · beyond ${radiusMiles} mi` : ''}
                     </Text>
                   </View>
@@ -129,6 +133,11 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
           </View>
         )}
         {problem ? <Text style={styles.problem}>{problem}</Text> : null}
+        {!problem && stores.length && setup?.status === 'failed' ? (
+          <Text style={styles.problem}>
+            {`None was set on its own: ${reasonText(setup.reason)}.${tie === 'none' ? ` Check these are near ${zip} before choosing one.` : ''}`}
+          </Text>
+        ) : null}
         {measured && stores.some((s) => !inRange(s)) ? (
           <Text style={styles.note}>Stores beyond {radiusMiles} mi can’t be chosen. Widen the distance on Your stores to choose them.</Text>
         ) : null}

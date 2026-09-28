@@ -1,4 +1,5 @@
 import { mergeStores, sameStoreId, sameStoreName, storeLine } from '../onDevice/storeIdentity';
+import { trustedMiles } from '../onDevice/storeLocator';
 import type { KnownStore } from '../onDevice/types';
 import { ago } from '../pricing/age';
 import type { SeenStore, Settings, StoreSetup } from './appStore';
@@ -76,6 +77,8 @@ const REASONS: Record<string, string> = {
   api_not_configured: 'its API has no keys',
   no_store_number: 'no store number to set',
   store_request_failed: 'its site didn’t answer',
+  stores_elsewhere: 'its store finder listed stores near another place, likely where the site thinks this phone is',
+  stores_unplaced: 'its store finder didn’t say where its stores are',
 };
 
 /** Why a store couldn't be listed or set, in words. */
@@ -87,15 +90,25 @@ export const milesText = (miles: number): string => `${miles < 10 ? miles.toFixe
 /**
  * A retailer's store for Your stores: its name, address, number and distance as far as they're known, how it was
  * set, and whether the latest search (under `storeKey`) got its prices there. A retailer with no store within the
- * radius says so; it isn't compared.
+ * radius says so; it isn't compared. So does one whose store couldn't be set near the ZIP, when it isn't `compared`
+ * (see storeChoices): whatever store its earlier searches got prices for isn't one it's priced at.
  */
-export function storeInfo(retailerId: string, retailerName: string, host: string, settings: Settings, storeKey: string, now: number): StoreInfo {
+export function storeInfo(retailerId: string, retailerName: string, host: string, settings: Settings, storeKey: string, now: number, compared = true): StoreInfo {
   const setup = settings.zip && settings.storeSetup[retailerId]?.zip === settings.zip ? settings.storeSetup[retailerId] : undefined;
   if (setup?.status === 'none') {
-    const nearest = settings.nearbyStores[retailerId]?.stores.find((s) => s.miles !== undefined);
+    const listed = settings.nearbyStores[retailerId];
+    // A list kept from before lists said how they're tied to the ZIP counts as the finder's answer for it.
+    const miles = listed?.zip === setup.zip ? listed.stores.flatMap((s) => trustedMiles(s, listed.tie ?? 'asked') ?? []) : [];
+    const nearest = miles.length ? Math.min(...miles) : undefined;
     return {
       title: `No ${retailerName} within ${settings.radiusMiles} mi`,
-      how: nearest?.miles !== undefined ? `Its nearest store is ${milesText(nearest.miles)} from ${setup.zip}, so it isn’t compared.` : `Not compared near ${setup.zip}.`,
+      how: nearest !== undefined ? `Its nearest store is ${milesText(nearest)} from ${setup.zip}, so it isn’t compared.` : `Not compared near ${setup.zip}.`,
+    };
+  }
+  if (setup?.status === 'failed' && !compared) {
+    return {
+      title: `No ${retailerName} store set near ${setup.zip}`,
+      how: `Couldn’t set its store near ${setup.zip}: ${reasonText(setup.reason)}. It isn’t compared until one is set: try again, or choose one.`,
     };
   }
   const chosenStore = settings.chosenStores[retailerId];

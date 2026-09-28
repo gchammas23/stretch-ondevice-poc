@@ -1,11 +1,13 @@
 import { storeFromFinder } from './storeIdentity';
-import type { PagePayload } from './types';
+import type { PagePayload, PageSource } from './types';
 
 // Pure functions only, so the tests run them in Node.
 //
 // Stores near a ZIP code, read from a retailer's own store finder: the list of stores its page gets (JSON it
 // fetched, or its page data), whatever the retailer calls the fields, the way autoDetect reads products. Failing
-// that, the store cards on the page. Distances come from the finder, or from coordinates.
+// that, the store cards on the page. Distances are measured from the ZIP code's center where the stores' coordinates
+// are known: a finder measures from wherever it searched around, which isn't always the ZIP (a page that didn't take
+// the ZIP lists the stores near where the site thinks the phone is: a VPN's city, say).
 
 /** A store near the user, as the retailer's store finder lists it. */
 export interface NearbyStore {
@@ -14,15 +16,50 @@ export interface NearbyStore {
   name: string;
   /** Street, city, state and ZIP, as far as listed. */
   address?: string;
-  /** Miles away: from the finder, or worked out from coordinates. */
+  /** Miles away. */
   miles?: number;
+  /**
+   * How `miles` is known: 'map', measured from the ZIP code's center to the store's own coordinates; 'zip', to its own
+   * ZIP code's center (it had no coordinates); 'finder', as the finder said, from wherever it searched around. Lists
+   * saved before this was kept have none, which counts as the finder's.
+   */
+  milesFrom?: 'map' | 'zip' | 'finder';
   lat?: number;
   lng?: number;
 }
 
+/**
+ * How a finder's list is tied to the ZIP code searched: 'asked', the ZIP was in the finder page's address or in the
+ * request that brought the list (an official API asked with it, too); 'after', the list came after the ZIP was typed
+ * into the finder's box; 'none', neither: it may be for wherever the site thinks the phone is.
+ */
+export type ZipTie = 'asked' | 'after' | 'none';
+
 export interface LatLng {
   lat: number;
   lng: number;
+}
+
+/**
+ * Roughly within the U.S. and its territories: a ZIP code's center anywhere else is a geocoder's mistake (a string of
+ * five digits can be a postcode abroad too).
+ */
+export function inUsa({ lat, lng }: LatLng): boolean {
+  return (
+    (lat >= 24 && lat <= 50 && lng >= -125.5 && lng <= -66.5) ||
+    // Alaska, whose Aleutians cross the 180th meridian.
+    (lat >= 51 && lat <= 72 && (lng <= -129 || lng >= 172)) ||
+    (lat >= 18.5 && lat <= 22.5 && lng >= -161 && lng <= -154.5) ||
+    // Puerto Rico and the Virgin Islands; Guam and the Northern Marianas.
+    (lat >= 17.5 && lat <= 18.7 && lng >= -67.5 && lng <= -64.5) ||
+    (lat >= 13 && lat <= 21 && lng >= 144 && lng <= 146.5)
+  );
+}
+
+/** The ZIP code in a store's address ("…, Houston, TX 77007"), when it has one. */
+export function zipOfAddress(address?: string): string | undefined {
+  if (!address) return undefined;
+  return /\b[A-Z]{2},?\s+(\d{5})(?:-\d{4})?\b/.exec(address)?.[1] ?? /(?:^|[\s,])(\d{5})(?:-\d{4})?\s*$/.exec(address)?.[1];
 }
 
 /** Miles between two points (haversine). */
@@ -163,41 +200,151 @@ export interface StoreCard {
   href?: string;
 }
 
+/** What a store finder page gave: its data and cards, and how the ZIP reached it (see storeListScript). */
+export interface FinderPage extends PagePayload {
+  cards?: StoreCard[];
+  /**
+   * The ZIP was in the page's address, typed into its box, typed into the box of the page before it (which moved on to
+   * this one), or none of these (it had no box the app knew).
+   */
+  zipIn?: 'url' | 'box' | 'next' | 'none';
+}
+
+/** Beyond this, a list's nearest store says the list is for another place than the ZIP searched. */
+export const ELSEWHERE_MILES = 100;
+
+/** A list found on a finder page, how it's tied to the ZIP, and whether it came from the page's data or its cards. */
+interface Candidate {
+  stores: NearbyStore[];
+  tie: ZipTie;
+  cards: boolean;
+  order: number;
+}
+
+const TIE_RANK: Record<ZipTie, number> = { asked: 0, after: 1, none: 2 };
+
 /**
- * The stores a store finder page listed: from the data it got (responses it fetched, its page data), else its
- * store cards. Each once, nearest first, with miles from `origin` where the finder didn't say.
+ * The stores a store finder page listed: of the lists in the data it got (responses it fetched, its page data) and its
+ * store cards, the one nearest the ZIP code. Measured on the map where the stores' coordinates and `origin` (the ZIP's
+ * center) are known; then a list the finder was asked for with the ZIP, or got after it was typed; then the biggest.
+ * Each store once, nearest first. `tie` says how the list is tied to the ZIP (see placeStores).
  */
-export function nearbyStores(payload: PagePayload & { cards?: StoreCard[] }, origin?: LatLng): NearbyStore[] {
-  const texts = [payload.nextDataText, ...(payload.sources ?? []).map((s) => s.text)].filter((t): t is string => !!t);
-  let stores: NearbyStore[] = [];
-  for (const t of texts) {
+export function nearbyList(payload: FinderPage, origin?: LatLng, zip?: string): { stores: NearbyStore[]; tie: ZipTie } {
+  const carries = (text?: string) => !!zip && !!text && text.includes(zip);
+  const typed = payload.zipIn === 'url' || payload.zipIn === 'box' || payload.zipIn === 'next';
+  // The page's own data is for the ZIP when its address carries it, or the page came after the ZIP was typed on the one
+  // before; otherwise it may be what the page showed before the ZIP was typed. A response is for the ZIP when its
+  // request carries it (or came after the ZIP was typed: a site can ask by the place it found for the ZIP instead).
+  const pageTie: ZipTie = carries(payload.href) || payload.zipIn === 'url' ? 'asked' : payload.zipIn === 'next' ? 'after' : 'none';
+  const responseTie = (s: PageSource): ZipTie =>
+    carries(s.request?.url) || carries(s.request?.body) || carries(/^(?:response|replay) (\S+)/.exec(s.label)?.[1]) ? 'asked' : typed ? 'after' : pageTie;
+  const texts: { text: string; tie: ZipTie }[] = [
+    ...(payload.nextDataText ? [{ text: payload.nextDataText, tie: pageTie }] : []),
+    ...(payload.sources ?? []).map((s) => ({ text: s.text, tie: /^(?:response|replay) /.test(s.label) ? responseTie(s) : pageTie })),
+  ];
+  const candidates: Candidate[] = [];
+  const measure = (stores: NearbyStore[]) => {
+    const seen = new Set<string>();
+    return stores.filter((s) => !seen.has(s.id) && seen.add(s.id)).map((s) => withMiles(s, origin));
+  };
+  for (const { text, tie } of texts) {
     let json: unknown;
     try {
-      json = JSON.parse(t);
+      json = JSON.parse(text);
     } catch {
       continue;
     }
     const found = bestList(json).stores;
-    if (found.length > stores.length) stores = found;
+    if (found.length) candidates.push({ stores: measure(found), tie, cards: false, order: candidates.length });
   }
-  if (!stores.length) {
-    for (const card of payload.cards ?? []) {
-      const s = storeFromFinder({ label: card.lines[0], lines: card.lines, links: card.href ? [card.href] : [] });
-      // Only a number with a unit is a distance: "1.8 mi", not the 21 of "21 Flushing Ave".
-      const unit = card.lines.map((l) => /(\d+(?:\.\d+)?)\s*(mi|miles?|km)\b/i.exec(l)).find(Boolean);
-      const miles = unit ? milesFrom(`${unit[1]} ${unit[2]}`) : undefined;
-      if (s?.id) stores.push({ id: s.id, name: s.name ?? `Store ${s.id}`, ...(s.address ? { address: s.address } : {}), ...(miles !== undefined ? { miles } : {}) });
-    }
+  const fromCards: NearbyStore[] = [];
+  for (const card of payload.cards ?? []) {
+    const s = storeFromFinder({ label: card.lines[0], lines: card.lines, links: card.href ? [card.href] : [] });
+    // Only a number with a unit is a distance: "1.8 mi", not the 21 of "21 Flushing Ave".
+    const unit = card.lines.map((l) => /(\d+(?:\.\d+)?)\s*(mi|miles?|km)\b/i.exec(l)).find(Boolean);
+    const miles = unit ? milesFrom(`${unit[1]} ${unit[2]}`) : undefined;
+    if (s?.id) fromCards.push({ id: s.id, name: s.name ?? `Store ${s.id}`, ...(s.address ? { address: s.address } : {}), ...(miles !== undefined ? { miles } : {}) });
   }
-  const seen = new Set<string>();
-  const out = stores.filter((s) => !seen.has(s.id) && seen.add(s.id)).map((s) => withMiles(s, origin));
-  return sortNearest(out);
+  // Cards are what the page shows at the end: for the ZIP when the page took it.
+  if (fromCards.length) candidates.push({ stores: measure(fromCards), tie: pageTie === 'asked' ? 'asked' : typed ? 'after' : 'none', cards: true, order: candidates.length });
+  if (!candidates.length) return { stores: [], tie: 'none' };
+
+  // A list whose nearest store on the map is near the ZIP comes first, nearest first; then by how it's tied to the ZIP,
+  // the page's data before its cards, the biggest, and the first found.
+  const nearOnMap = (c: Candidate) => {
+    const onMap = c.stores.filter((s) => s.milesFrom === 'map').map((s) => s.miles!);
+    const nearest = onMap.length ? Math.min(...onMap) : Infinity;
+    return nearest <= ELSEWHERE_MILES ? nearest : Infinity;
+  };
+  const best = [...candidates].sort(
+    (a, b) =>
+      nearOnMap(a) - nearOnMap(b) ||
+      TIE_RANK[a.tie] - TIE_RANK[b.tie] ||
+      Number(a.cards) - Number(b.cards) ||
+      b.stores.length - a.stores.length ||
+      a.order - b.order,
+  )[0];
+  return { stores: sortNearest(best.stores), tie: best.tie };
 }
 
-/** Miles from `origin` for a store the finder placed on the map but didn't measure. */
+/**
+ * The stores a store finder page listed (see nearbyList), nearest first, measured from `origin` where their coordinates
+ * are known.
+ */
+export function nearbyStores(payload: FinderPage, origin?: LatLng, zip?: string): NearbyStore[] {
+  return nearbyList(payload, origin, zip).stores;
+}
+
+/**
+ * A store's miles from `origin`, measured on the map when its coordinates are known: that wins over the finder's own
+ * distance, which is from wherever the finder searched around. Otherwise the finder's, said to be.
+ */
 export function withMiles(s: NearbyStore, origin?: LatLng): NearbyStore {
-  if (s.miles !== undefined || !origin || s.lat === undefined || s.lng === undefined) return s;
-  return { ...s, miles: Math.round(milesBetween(origin, { lat: s.lat, lng: s.lng }) * 10) / 10 };
+  if (origin && s.lat !== undefined && s.lng !== undefined) {
+    return { ...s, miles: Math.round(milesBetween(origin, { lat: s.lat, lng: s.lng }) * 10) / 10, milesFrom: 'map' };
+  }
+  return s.miles !== undefined && !s.milesFrom ? { ...s, milesFrom: 'finder' } : s;
+}
+
+/**
+ * How far a store is, as far as it can be trusted: measured on the map (from its coordinates, or its own ZIP code), or
+ * as its finder said, when the finder searched around the ZIP (a list tied to it). Undefined when it can't be told.
+ */
+export function trustedMiles(s: NearbyStore, tie: ZipTie): number | undefined {
+  if (s.miles === undefined) return undefined;
+  if (s.milesFrom === 'map' || s.milesFrom === 'zip') return s.miles;
+  return tie === 'none' ? undefined : s.miles;
+}
+
+/**
+ * Where a retailer's listed stores are, against the radius around the ZIP:
+ * - 'near': the stores within it, nearest first (a list the finder was asked for with the ZIP, but with no distances
+ *   at all, in the finder's own order: nearest first, as finders list);
+ * - 'none': the finder searched the ZIP, and its nearest store is beyond the radius: the retailer has none near;
+ * - 'elsewhere': what was listed is beyond the radius, but the list isn't for the ZIP (the finder wasn't asked for it,
+ *   or what came after it was typed is far away): its stores near the ZIP are unknown, not missing;
+ * - 'unplaced': nothing says where its stores are.
+ */
+export type Placement =
+  | { verdict: 'near'; stores: NearbyStore[] }
+  | { verdict: 'none'; nearest: number }
+  | { verdict: 'elsewhere'; nearest: number }
+  | { verdict: 'unplaced' };
+
+export function placeStores(stores: NearbyStore[], radius: number, tie: ZipTie): Placement {
+  const measured = stores.flatMap((s) => {
+    const miles = trustedMiles(s, tie);
+    return miles === undefined ? [] : [{ s, miles }];
+  });
+  const within = measured.filter((m) => m.miles <= radius).sort((a, b) => a.miles - b.miles);
+  if (within.length) return { verdict: 'near', stores: within.map((m) => m.s) };
+  if (measured.length) {
+    const nearest = Math.min(...measured.map((m) => m.miles));
+    const forZip = tie === 'asked' || (tie === 'after' && nearest <= ELSEWHERE_MILES);
+    return forZip ? { verdict: 'none', nearest } : { verdict: 'elsewhere', nearest };
+  }
+  if (tie === 'asked' && stores.length) return { verdict: 'near', stores };
+  return { verdict: 'unplaced' };
 }
 
 /** Nearest first; stores without a distance keep the finder's order, after those with one. */

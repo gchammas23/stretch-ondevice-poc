@@ -410,7 +410,11 @@ export interface StoreListScriptOptions {
  * Runs on a retailer's store finder, hidden, to list its stores near `zip`: types the ZIP into the finder's own box
  * and submits it, as a user would, unless the page's address already carries it. Then, once the page's requests
  * go quiet, posts what it got (the store list is in one of them, or in its page data) and its store cards, read off
- * the page, for when the data can't be found. The app reads the stores out of that (nearbyStores in storeLocator.ts).
+ * the page, for when the data can't be found. The app reads the stores out of that (nearbyList in storeLocator.ts).
+ * It says how the ZIP reached the page (`zipIn`: in its address, typed into its box, typed into the page before this
+ * one, or not at all), and each response goes with the request that brought it (its address and body; never its
+ * headers), so a list the page asked for with the ZIP can be told from one it showed first, for wherever the site
+ * thinks the phone is. Responses the page got before the ZIP was typed are left out.
  */
 export function storeListScript(nonce: string, zip: string, markers: string[], opts: StoreListScriptOptions = {}): string {
   const { quietMs = 1500, maxMs = 12000, intervalMs = 250 } = opts;
@@ -447,9 +451,15 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
   function typedAlready() {
     try { return sessionStorage.getItem(KEY) === '1'; } catch (e) { return false; }
   }
+  // How the ZIP reached the page: 'url' (its address carries it), 'box' (typed into its box here), 'next' (typed into
+  // the box of the page before, which the finder moved on from: all of this page came after), or null, not yet. And
+  // the responses this page had got when it was typed: its list for wherever it thinks the phone is, not for the ZIP.
+  var zipIn = null, before = null;
   // The ZIP, typed into the finder's box and submitted, once (the page may reload with the results).
   function typeZip() {
-    if (typedAlready() || location.href.indexOf(ZIP) !== -1) return true;
+    if (zipIn) return true;
+    if (location.href.indexOf(ZIP) !== -1) { zipIn = 'url'; return true; }
+    if (typedAlready()) { zipIn = 'next'; return true; }
     var box = null;
     for (var b = 0; b < BOXES.length && !box; b++) {
       var found = document.querySelector(BOXES[b]);
@@ -457,6 +467,9 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
     }
     if (!box) return false;
     try { sessionStorage.setItem(KEY, '1'); } catch (e) {}
+    var cap = window.__stretchCapture;
+    before = cap ? cap.items.slice() : [];
+    zipIn = 'box';
     box.focus();
     var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(box, ZIP);
@@ -501,8 +514,11 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
     var out = [], used = 0, cap = window.__stretchCapture;
     if (cap) for (var i = cap.items.length - 1; i >= 0; i--) {
       var it = cap.items[i];
-      if (used + it.text.length > 5000000) continue;
-      out.push({ label: 'response ' + it.url, text: it.text });
+      if (used + it.text.length > 5000000 || (before && before.indexOf(it) !== -1)) continue;
+      var source = { label: 'response ' + it.url, text: it.text };
+      // The request's address and body say whether it asked for the ZIP; its headers stay in the page.
+      if (it.req) source.request = { method: it.req.method, url: it.req.url, body: it.req.body };
+      out.push(source);
       used += it.text.length;
     }
     var ld = document.querySelectorAll('script[type="application/ld+json"]');
@@ -527,7 +543,7 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
       var loaded = document.readyState === 'complete';
       if ((ready && loaded && Date.now() - quietSince >= QUIET) || Date.now() - started >= MAX) {
         var nd = document.getElementById('__NEXT_DATA__');
-        post({ kind: 'data', nextDataText: nd && nd.textContent ? nd.textContent : null, sources: sources(), pageResult: { cards: cards() } });
+        post({ kind: 'data', nextDataText: nd && nd.textContent ? nd.textContent : null, sources: sources(), pageResult: { cards: cards(), zipIn: zipIn || 'none' } });
         return;
       }
     } catch (e) {

@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import { autoDetect, walmartNextData } from '../src/onDevice/parsers';
 import { parseProductPage } from '../src/onDevice/productPage';
 import { parseStoreLabel, storeFromFinder } from '../src/onDevice/storeIdentity';
-import { nearbyStores } from '../src/onDevice/storeLocator';
+import { nearbyList, nearbyStores } from '../src/onDevice/storeLocator';
 import {
   captureScript,
   DEFAULT_CHALLENGE_MARKERS,
@@ -413,6 +413,7 @@ function makePage(html: string, url: string) {
     p.run(storeListScript('l2', '10001', markers, { quietMs: 20, intervalMs: 10 }));
     await sleep(120);
     assert.equal(typed, 0);
+    assert.equal(p.posts[0].pageResult.zipIn, 'url');
     assert.deepEqual(nearbyStores({ ...p.posts[0], cards: p.posts[0].pageResult.cards }).map((st) => [st.id, st.miles]), [['1340', 4.8], ['1920', 6.1]]);
 
     // After the typed ZIP reloaded the page, it isn't typed again.
@@ -424,8 +425,45 @@ function makePage(html: string, url: string) {
     const blocked = makePage('<html><head><title>Access Denied</title></head><body></body></html>', 'https://www.kroger.com/stores/search');
     blocked.run(storeListScript('l4', '10001', markers, { intervalMs: 5 }));
     await sleep(100);
-    assert.deepEqual([retyped, again.posts.map((m) => m.kind)], [0, ['data']]);
+    assert.deepEqual([retyped, again.posts.map((m) => m.kind), again.posts[0].pageResult.zipIn], [0, ['data'], 'next'], 'all of this page came after the ZIP was typed');
     assert.deepEqual(blocked.posts.map((m) => m.kind), ['challenge']);
+  });
+
+  await t('store list: says how the ZIP reached the page; what it listed before the ZIP was typed is left out; requests go without headers', async () => {
+    const ohio = JSON.stringify({ stores: [{ store_id: '1969', name: 'Dublin', address: { line1: '6555 Sawmill Rd', city: 'Dublin', state: 'OH', zip: '43017' }, distance: 0.2 }] });
+    const houston = JSON.stringify({ stores: [{ store_id: '2093', name: 'Houston Heights', address: { line1: '2580 Shearn St', city: 'Houston', state: 'TX', zip: '77007' }, distance: 1.1 }] });
+    const finder = (body: string) =>
+      makePage(`<html><head><title>Find a store</title></head><body>${body}</body></html>`, 'https://www.example.com/store-locator/find-stores');
+    // The page lists the stores near where it thinks the phone is, then those near the ZIP typed into its box.
+    const p = finder('<form id="f"><input id="where" placeholder="ZIP code, or city and state"><button>Find</button></form>');
+    p.w.__stretchCapture = { items: [
+      { url: 'https://www.example.com/api/stores?lat=40.1&lng=-83.11', text: ohio, req: { method: 'GET', url: 'https://www.example.com/api/stores?lat=40.1&lng=-83.11', headers: { 'x-api-key': 'k' } } },
+    ], priceKeys: 0, lastAt: 0 };
+    p.w.document.getElementById('f').addEventListener('submit', (e: Event) => {
+      e.preventDefault();
+      setTimeout(() => p.w.__stretchCapture.items.push({
+        url: 'https://www.example.com/api/stores',
+        text: houston,
+        req: { method: 'POST', url: 'https://www.example.com/api/stores', headers: { 'x-api-key': 'k' }, body: '{"place":"77007"}' },
+      }), 20);
+    });
+    p.run(storeListScript('l6', '77007', markers, { quietMs: 40, intervalMs: 10, maxMs: 2000 }));
+    await sleep(200);
+    const post = p.posts[0];
+    assert.equal(post.pageResult.zipIn, 'box');
+    assert.deepEqual(post.sources.map((s: { label: string; request?: unknown }) => [s.label, s.request]), [
+      ['response https://www.example.com/api/stores', { method: 'POST', url: 'https://www.example.com/api/stores', body: '{"place":"77007"}' }],
+    ], 'only what came after the ZIP was typed, and none of its request’s headers');
+    const read = nearbyList({ ...post, zipIn: post.pageResult.zipIn }, undefined, '77007');
+    assert.deepEqual([read.tie, read.stores.map((st) => st.id)], ['asked', ['2093']]);
+
+    // A page with no box the app knows for a ZIP: what it listed goes back all the same, said not to be for the ZIP.
+    const boxless = finder('<div id="map"></div>');
+    boxless.w.__stretchCapture = { items: [{ url: 'https://www.example.com/api/stores?lat=40.1&lng=-83.11', text: ohio }], priceKeys: 0, lastAt: 0 };
+    boxless.run(storeListScript('l7', '77007', markers, { quietMs: 20, intervalMs: 10, maxMs: 60 }));
+    await sleep(150);
+    assert.equal(boxless.posts[0].pageResult.zipIn, 'none');
+    assert.equal(nearbyList({ ...boxless.posts[0], zipIn: 'none' }, undefined, '77007').tie, 'none');
   });
 
   await t('store list: stores in the page’s own data blocks count, as Whole Foods’ finder writes them (an "a-state" block)', async () => {

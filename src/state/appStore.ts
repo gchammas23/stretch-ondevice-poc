@@ -2,7 +2,7 @@ import type { ParsedItem } from '../lists/parse';
 import { queryKey, type ExactRef, type GroceryList, type ItemPrefs, type ListItem, type Trip, type TripRecord } from '../lists/types';
 import { isRetailerConfig } from '../onDevice/retailers';
 import { sameStoreId } from '../onDevice/storeIdentity';
-import type { NearbyStore } from '../onDevice/storeLocator';
+import type { NearbyStore, ZipTie } from '../onDevice/storeLocator';
 import type { KnownStore, Product, RetailerConfig } from '../onDevice/types';
 import type { RankBy, Usuals } from '../pricing/basket';
 import { SHOP_MODES, type ShopMode } from '../pricing/onlineCost';
@@ -19,7 +19,8 @@ export interface StoreSetup {
   zip: string;
   /**
    * 'done': a store is set. 'none': the retailer has no store within the radius, so it isn't compared. 'failed': its
-   * stores couldn't be listed or its store set, so prices come from the store its site picks.
+   * stores couldn't be listed, placed near the ZIP or set, so it isn't compared until one is (its site would pick one
+   * from the phone's connection); an official API that takes the ZIP, and a store with no finder, still are.
    */
   status: 'working' | 'done' | 'none' | 'failed';
   /**
@@ -29,7 +30,10 @@ export interface StoreSetup {
   how?: 'api' | 'auto' | 'pinned' | 'site';
   /** The store as the site named it, when known. */
   label?: string;
-  /** Why it failed, e.g. 'challenge', 'no_stores_listed', 'button_not_found', 'timeout', 'interrupted'. */
+  /**
+   * Why it failed, e.g. 'challenge', 'no_stores_listed', 'button_not_found', 'timeout', 'interrupted',
+   * 'stores_elsewhere' (its finder listed stores near another place), 'stores_unplaced' (nothing said where they are).
+   */
   reason?: string;
   at: number;
 }
@@ -40,6 +44,8 @@ export interface NearbyList {
   /** The radius they were listed within; 0 for a finder, which lists the nearest whatever the radius. */
   radius: number;
   stores: NearbyStore[];
+  /** How the list is tied to the ZIP (see nearbyList). Lists kept before it was said have none, and aren't reused. */
+  tie?: ZipTie;
   at: number;
 }
 
@@ -296,7 +302,10 @@ export class AppStore {
           isObj(settings.origin) && typeof settings.origin.zip === 'string' && typeof settings.origin.lat === 'number' && typeof settings.origin.lng === 'number'
             ? settings.origin
             : undefined,
-        nearbyStores: records<NearbyList>(settings.nearbyStores, (r) => typeof r.zip === 'string' && Array.isArray(r.stores) && typeof r.at === 'number'),
+        nearbyStores: records<NearbyList>(
+          settings.nearbyStores,
+          (r) => typeof r.zip === 'string' && Array.isArray(r.stores) && typeof r.at === 'number' && (r.tie === undefined || ['asked', 'after', 'none'].includes(String(r.tie))),
+        ),
         seenStores: records<SeenStore>(settings.seenStores, (r) => typeof r.storeKey === 'string' && typeof r.at === 'number'),
         drive: {
           on: isObj(settings.drive) && settings.drive.on === true,

@@ -79,9 +79,11 @@ export default function PhoneVsServerScreen() {
   // From presenter mode's ending: start at once, at the compared stores.
   const { start } = useLocalSearchParams<{ start?: string }>();
   const [scope, setScope] = useState<VersusScope>(() => (start !== '1' && state.finishedAt ? state.scope : 'compared'));
-  // How many stores each choice tests: the ones with a store near the ZIP code, as when pricing.
+  // How many stores each choice tests: all but those with no store near the ZIP code (one whose store couldn't be set
+  // is still asked whether its site answers the phone).
   const sizes = useMemo(() => {
-    const count = (s: VersusScope) => storeChoices({ ...settings, retailerIds: versusIds(bundle.retailers, settings.retailerIds, s) }, bundle.retailers).length;
+    const count = (s: VersusScope) =>
+      storeChoices({ ...settings, retailerIds: versusIds(bundle.retailers, settings.retailerIds, s) }, bundle.retailers, undefined, { unsetToo: true }).length;
     return { compared: count('compared'), all: count('all') };
   }, [settings, bundle.retailers]);
   const summary = versusSummary(state);

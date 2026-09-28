@@ -11,16 +11,28 @@ export type ApiReady = (cfg: RetailerConfig) => boolean;
 const krogerReady: ApiReady = (cfg) => cfg.api === 'kroger' && krogerApiConfigured();
 
 /**
+ * A retailer whose store couldn't be set near the ZIP code, to be compared all the same: its site picks the store from
+ * the phone's connection (or keeps one set near an earlier ZIP), which can be anywhere. Only for asking whether its
+ * site answers the phone at all (the store check, the phone vs. server test), never for prices.
+ */
+export interface ChoiceOptions {
+  unsetToo?: boolean;
+}
+
+/**
  * The stores to compare, from the settings: what each is searched with, and a key that changes when its store does
  * (so saved prices for the old store aren't reused). A retailer with no store within the radius of the ZIP code
- * isn't compared: there's nothing near to price.
+ * isn't compared: there's nothing near to price. Nor is one whose store couldn't be set near it (see ChoiceOptions),
+ * unless its official API takes the ZIP itself, or it has no store finder (a store added from a link: its site picks,
+ * as it always has).
  */
-export function storeChoices(settings: Settings, retailers: RetailerConfig[], apiReady: ApiReady = krogerReady): StoreChoice[] {
+export function storeChoices(settings: Settings, retailers: RetailerConfig[], apiReady: ApiReady = krogerReady, opts: ChoiceOptions = {}): StoreChoice[] {
   return settings.retailerIds.flatMap((id) => {
     const found = retailers.find((r) => r.id === id && r.enabled);
     if (!found) return [];
-    const setup = settings.storeSetup[id];
-    if (settings.zip && setup?.zip === settings.zip && setup.status === 'none') return [];
+    const setup = settings.zip && settings.storeSetup[id]?.zip === settings.zip ? settings.storeSetup[id] : undefined;
+    if (setup?.status === 'none') return [];
+    if (setup?.status === 'failed' && !opts.unsetToo && !apiReady(found) && setup.reason !== 'no_store_finder') return [];
     // The store chosen for it (its number goes to the API, or into its site's search requests); before one is, an
     // official API takes the ZIP itself.
     const storeId = settings.storeIds[id] || (apiReady(found) ? settings.zip : '');

@@ -15,7 +15,20 @@ import {
   storeIdFromRequest,
   storeLine,
 } from '../src/onDevice/storeIdentity';
-import { milesBetween, nearbyStores, sortNearest, withinRadius, type NearbyStore } from '../src/onDevice/storeLocator';
+import {
+  inUsa,
+  milesBetween,
+  nearbyList,
+  nearbyStores,
+  placeStores,
+  sortNearest,
+  trustedMiles,
+  withinRadius,
+  zipOfAddress,
+  type FinderPage,
+  type LatLng,
+  type NearbyStore,
+} from '../src/onDevice/storeLocator';
 import type { RetailerConfig } from '../src/onDevice/types';
 import { storeInfo, storeNote } from '../src/state/storeInfo';
 import { AppStore, type KeyValueStore } from '../src/state/appStore';
@@ -44,13 +57,33 @@ const WALMART: NearbyStore[] = [
 const KROGER: NearbyStore[] = [{ id: '01400943', name: 'Kroger', address: '1014 Vine St, Cincinnati, OH 45202', miles: 1.2 }];
 const TARGET: NearbyStore[] = [{ id: '1340', name: 'Brooklyn Atlantic Terminal', address: '139 Flatbush Ave, Brooklyn, NY 11217', miles: 4.8 }];
 const ALDI: NearbyStore[] = [{ id: '77', name: 'ALDI Far Away', miles: 40 }];
-type Listing = StoresNearResult | ((zip: string, radius: number) => Promise<StoresNearResult>);
+type Listing = StoresNearResult | ((zip: string, radius: number, origin?: LatLng) => Promise<StoresNearResult>);
+// Finders asked for the ZIP (in their address, or the request that brought the list), and Kroger's API.
 const LISTS: Record<string, Listing> = {
-  walmart: { ok: true, stores: WALMART, how: 'finder' },
-  kroger: { ok: true, stores: KROGER, how: 'api' },
-  target: { ok: true, stores: TARGET, how: 'finder' },
-  aldi: { ok: true, stores: ALDI, how: 'finder' },
+  walmart: { ok: true, stores: WALMART, how: 'finder', tie: 'asked' },
+  kroger: { ok: true, stores: KROGER, how: 'api', tie: 'asked' },
+  target: { ok: true, stores: TARGET, how: 'finder', tie: 'asked' },
+  aldi: { ok: true, stores: ALDI, how: 'finder', tie: 'asked' },
   costco: { ok: false, reason: 'challenge' },
+};
+
+// A ZIP in Houston, and what finders list when they take it or not: over a VPN whose exit is in Ohio, a finder page
+// that didn't take the ZIP lists the stores near Columbus, with its distances measured from there.
+const HOUSTON: LatLng = { lat: 29.7713, lng: -95.4035 };
+const COLUMBUS: LatLng = { lat: 40.0992, lng: -83.1141 };
+const OHIO_JSON = JSON.stringify({ stores: [
+  { store_id: '1969', name: 'Dublin', address: { line1: '6555 Sawmill Rd', city: 'Dublin', state: 'OH', zip: '43017' }, lat: 40.099, lng: -83.1115, distance: 0.2 },
+  { store_id: '1970', name: 'Hilliard', address: { line1: '3600 Park Mill Run Dr', city: 'Hilliard', state: 'OH', zip: '43026' }, lat: 40.0325, lng: -83.133, distance: 4.7 },
+  { store_id: '1971', name: 'Columbus Lennox', address: { line1: '1485 Olentangy River Rd', city: 'Columbus', state: 'OH', zip: '43212' }, lat: 39.985, lng: -83.029, distance: 9.1 },
+] });
+const HOUSTON_JSON = JSON.stringify({ stores: [
+  { store_id: '1796', name: 'Houston Galleria', address: { line1: '4323 San Felipe St', city: 'Houston', state: 'TX', zip: '77027' }, lat: 29.7497, lng: -95.4527, distance: 3.2 },
+  { store_id: '2093', name: 'Houston Heights', address: { line1: '2580 Shearn St', city: 'Houston', state: 'TX', zip: '77007' }, lat: 29.774663, lng: -95.384816, distance: 1.1 },
+] });
+/** A finder page's store lists, read the way storesNear reads them, from where the ZIP is. */
+const fromPage = (page: FinderPage): Listing => async (zip, _radius, origin) => {
+  const { stores, tie } = nearbyList(page, origin, zip);
+  return stores.length ? { ok: true, stores, how: 'finder', tie } : { ok: false, reason: 'no_stores_listed' };
 };
 
 /** A stand-in for the phone's side: each retailer's stores near a ZIP, and the store finders the app presses. */
@@ -60,7 +93,7 @@ function fakeSearch(opts: { lists?: Record<string, Listing>; auto?: (cfg: Retail
     storesNear: async (cfg, zip, radius, origin) => {
       calls.push(`list ${cfg.id} ${zip} ${radius}${origin ? ' +map' : ''}`);
       const listing = (opts.lists ?? LISTS)[cfg.id] ?? { ok: false, reason: 'no_store_finder' };
-      return typeof listing === 'function' ? listing(zip, radius) : listing;
+      return typeof listing === 'function' ? listing(zip, radius, origin) : listing;
     },
     setStoreAuto: async (cfg, _zip, target) => {
       calls.push(`press ${cfg.id} ${target?.id ?? ''}`);
@@ -98,7 +131,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(noKeys.config.strategies, ['api', 'webview']);
   });
 
-  await t('set up: each retailer’s nearest store; none within the radius drops it; a finder that fails leaves the site to pick', async () => {
+  await t('set up: each retailer’s nearest store; none within the radius drops it; so does a finder that fails, until a store is set', async () => {
     const store = await fresh();
     store.setRetailers(['walmart', 'kroger', 'target', 'aldi', 'costco']);
     const f = fakeSearch();
@@ -127,8 +160,13 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual([s.nearbyStores.kroger.radius, s.nearbyStores.walmart.radius], [25, 0], 'an API lists within the radius; a finder, the nearest');
     assert.deepEqual(
       storeChoices(s, retailers, () => false).map((c) => [c.config.id, c.storeId]),
+      [['walmart', '3520'], ['kroger', '01400943'], ['target', '1340']],
+      'ALDI isn’t searched, nor Costco, whose site would pick a store from the phone’s connection',
+    );
+    assert.deepEqual(
+      storeChoices(s, retailers, () => false, { unsetToo: true }).map((c) => [c.config.id, c.storeId]),
       [['walmart', '3520'], ['kroger', '01400943'], ['target', '1340'], ['costco', '']],
-      'ALDI isn’t searched',
+      'asked whether its site answers the phone (the store check), Costco is',
     );
   });
 
@@ -181,7 +219,7 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual([currentSetup(store, 'walmart')?.status, store.getState().settings.storeIds.walmart], ['done', '3520'], 'the store already set stays');
 
     let release!: () => void;
-    const slow = fakeSearch({ lists: { walmart: () => new Promise((r) => { release = () => r({ ok: true, stores: WALMART, how: 'finder' }); }) } });
+    const slow = fakeSearch({ lists: { walmart: () => new Promise((r) => { release = () => r({ ok: true, stores: WALMART, how: 'finder', tie: 'asked' }); }) } });
     const first = setUpStores('30301', depsFor(store, slow.search), ['walmart']);
     await tick();
     assert.deepEqual([currentSetup(store, 'walmart')?.status, store.getState().settings.storeIds], ['working', {}], 'a new ZIP forgets the stores set near the old one');
@@ -192,18 +230,127 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
     assert.deepEqual(slow.calls, ['list walmart 30301 25']);
   });
 
-  await t('set up: distances from the map when a finder gives none; with no distances at all, nothing is dropped', async () => {
+  await t('set up: distances from the map when a finder gives none; a finder asked for the ZIP with no distances at all: its first', async () => {
     const store = await fresh();
     store.setRetailers(['target', 'aldi']);
     const located: string[] = [];
     const locate = async (zip: string) => { located.push(zip); return { lat: 40.75, lng: -73.99 }; };
-    const f = fakeSearch({ lists: { target: { ok: true, stores: [{ id: '1340', name: 'Brooklyn' }, { id: '1920', name: 'Queens' }], how: 'finder' }, aldi: { ok: true, stores: ALDI, how: 'finder' } } });
+    const f = fakeSearch({ lists: { target: { ok: true, stores: [{ id: '1340', name: 'Brooklyn' }, { id: '1920', name: 'Queens' }], how: 'finder', tie: 'asked' }, aldi: { ok: true, stores: ALDI, how: 'finder', tie: 'asked' } } });
     await setUpStores('10001', depsFor(store, f.search, locate));
     assert.deepEqual([...f.calls].sort(), ['list aldi 10001 25 +map', 'list target 10001 25 +map'], 'finders get where the ZIP is, to measure');
     assert.deepEqual(store.getState().settings.origin, { zip: '10001', lat: 40.75, lng: -73.99 });
     assert.deepEqual([currentSetup(store, 'target')?.status, store.getState().settings.storeIds.target], ['done', '1340'], 'unmeasured: the finder’s first');
     await setUpStores('10001', depsFor(store, f.search, locate), undefined, { refresh: true });
     assert.deepEqual(located, ['10001'], 'looked up once per ZIP');
+  });
+
+  await t('set up: a finder that didn’t take the ZIP lists stores near the phone’s connection: none is set, and it isn’t compared', async () => {
+    const store = await fresh();
+    store.setRetailers(['target', 'walmart', 'kroger']);
+    const locate = async (zip: string) => (zip === '77007' ? HOUSTON : zip.startsWith('430') ? COLUMBUS : null);
+    const ohio = { label: 'response https://www.target.com/api/nearby_stores?lat=40.1&lng=-83.11', text: OHIO_JSON };
+    const f = fakeSearch({
+      lists: {
+        // Target's page had no box the app knew for the ZIP: it listed the stores near where it thinks the phone is.
+        target: fromPage({ sources: [ohio], zipIn: 'none' }),
+        walmart: fromPage({ href: 'https://www.walmart.com/store-finder?location=77007&distance=50', nextDataText: HOUSTON_JSON, zipIn: 'url' }),
+        kroger: { ok: false, reason: 'kroger_api_503' },
+      },
+    });
+    await setUpStores('77007', depsFor(store, f.search, locate));
+    const s = store.getState().settings;
+    assert.deepEqual([currentSetup(store, 'target')?.status, currentSetup(store, 'target')?.reason, s.storeIds.target], ['failed', 'stores_elsewhere', undefined], 'no Ohio store for a Houston ZIP');
+    assert.ok(s.nearbyStores.target.stores.every((x) => x.milesFrom === 'map' && x.miles! > 900), 'measured from Houston, not the 0.2 mi its finder said');
+    assert.deepEqual([currentSetup(store, 'walmart')?.status, s.storeIds.walmart, s.chosenStores.walmart?.miles], ['done', '2093', 1.1], 'the nearest, measured from the ZIP');
+    // Target isn't priced at a store its site picks for the phone's connection; Kroger's API takes the ZIP itself.
+    assert.deepEqual(storeChoices(s, retailers, (cfg) => cfg.api === 'kroger').map((c) => [c.config.id, c.storeId]), [['walmart', '2093'], ['kroger', '77007']]);
+    const info = storeInfo('target', 'Target', 'target.com', s, '', Date.now(), false);
+    assert.equal(info.title, 'No Target store set near 77007');
+    assert.match(info.how, /listed stores near another place.*isn’t compared until one is set/);
+    assert.equal(info.check, undefined, 'nothing of what earlier searches got prices for');
+  });
+
+  await t('set up: stores a list can’t place are placed by their own ZIP codes, once each; with nothing to place them by, none is set', async () => {
+    const store = await fresh();
+    store.setRetailers(['target', 'heb', 'meijer']);
+    const asked: string[] = [];
+    const locate = async (zip: string) => {
+      asked.push(zip);
+      return zip === '77007' ? HOUSTON : zip === '77008' ? { lat: 29.8024, lng: -95.4108 } : zip.startsWith('43') ? COLUMBUS : null;
+    };
+    // Store cards after the ZIP was typed, with no distances.
+    const cards = [
+      { lines: ['Columbus Lennox', '1485 Olentangy River Rd', 'Columbus, OH 43212'], href: '/sl/columbus-lennox/1971' },
+      { lines: ['Houston North', '1000 W 20th St', 'Houston, TX 77008'], href: '/sl/houston-north/2094' },
+    ];
+    const f = fakeSearch({
+      lists: {
+        target: fromPage({ cards, zipIn: 'box' }),
+        // Names only, from a page that never took the ZIP: nothing says where they are.
+        heb: { ok: true, stores: [{ id: '92', name: 'Victoria H-E-B plus!' }], how: 'finder', tie: 'none' },
+        meijer: fromPage({ cards: cards.slice(0, 1), zipIn: 'none' }),
+      },
+    });
+    await setUpStores('77007', depsFor(store, f.search, locate));
+    const s = store.getState().settings;
+    assert.deepEqual(
+      [currentSetup(store, 'target')?.status, s.storeIds.target, s.nearbyStores.target.stores.map((x) => [x.id, x.milesFrom])],
+      ['done', '2094', [['2094', 'zip'], ['1971', 'zip']]],
+      'nearest first, each placed by its own ZIP code',
+    );
+    assert.deepEqual([s.chosenStores.target?.miles, s.nearbyStores.target.stores[1].miles! > 900], [2.2, true]);
+    assert.deepEqual([currentSetup(store, 'heb')?.status, currentSetup(store, 'heb')?.reason, s.storeIds.heb], ['failed', 'stores_unplaced', undefined]);
+    assert.deepEqual([currentSetup(store, 'meijer')?.status, currentSetup(store, 'meijer')?.reason], ['failed', 'stores_elsewhere'], 'its one store is in Ohio');
+    assert.deepEqual(asked.filter((z) => z !== '77007').sort(), ['43212', '77008'], 'each ZIP asked for once');
+  });
+
+  await t('set up: a store’s ZIP the geocoder couldn’t look up (no connection) is asked again next time; one it answered isn’t', async () => {
+    const store = await fresh();
+    store.setRetailers(['target']);
+    const asked: string[] = [];
+    let offline = true;
+    const locate = async (zip: string) => {
+      asked.push(zip);
+      if (zip === '77007') return HOUSTON;
+      if (offline) throw new Error('network');
+      return { lat: 29.8024, lng: -95.4108 };
+    };
+    const cards = [{ lines: ['Houston North', '1000 W 20th St', 'Houston, TX 77008'], href: '/sl/houston-north/2094' }];
+    const f = fakeSearch({ lists: { target: fromPage({ cards, zipIn: 'none' }) } });
+    await setUpStores('77007', depsFor(store, f.search, locate));
+    assert.deepEqual([currentSetup(store, 'target')?.status, currentSetup(store, 'target')?.reason], ['failed', 'stores_unplaced']);
+    offline = false;
+    await setUpStores('77007', depsFor(store, f.search, locate), ['target'], { refresh: true });
+    assert.deepEqual([currentSetup(store, 'target')?.status, store.getState().settings.storeIds.target], ['done', '2094']);
+    await setUpStores('77007', depsFor(store, f.search, locate), ['target'], { refresh: true });
+    assert.deepEqual(asked, ['77007', '77008', '77008'], 'the ZIP’s center once; the store’s again after it failed, then no more');
+  });
+
+  await t('set up: a list kept from before lists said how they’re tied to the ZIP is listed again; a ZIP’s center outside the U.S. is left out', async () => {
+    const store = await fresh();
+    store.setRetailers(['target']);
+    store.setZip('77007');
+    store.setNearbyStores('target', { zip: '77007', radius: 0, stores: [{ id: '1969', name: 'Dublin', miles: 0.2 }], at: 1 });
+    const beirut = async () => ({ lat: 33.89, lng: 35.5 });
+    const f = fakeSearch({ lists: { target: { ok: true, stores: [{ id: '2093', name: 'Houston Heights', miles: 1.1 }], how: 'finder', tie: 'asked' } } });
+    await setUpStores('77007', depsFor(store, f.search, beirut));
+    assert.deepEqual(f.calls, ['list target 77007 25'], 'listed again, and not measured from Beirut');
+    assert.deepEqual([store.getState().settings.origin, store.getState().settings.storeIds.target], [undefined, '2093']);
+  });
+
+  await t('choices: a store that couldn’t be set near the ZIP isn’t compared, but for an official API taking the ZIP, or a store with no finder', async () => {
+    const store = await fresh();
+    store.setRetailers(['walmart', 'kroger']);
+    store.setZip('77007');
+    store.setStoreSetup('walmart', { zip: '77007', status: 'failed', reason: 'button_not_found', at: 1 });
+    store.setStoreSetup('kroger', { zip: '77007', status: 'failed', reason: 'kroger_api_503', at: 1 });
+    const ids = (apiReady: (cfg: RetailerConfig) => boolean) => storeChoices(store.getState().settings, retailers, apiReady).map((c) => [c.config.id, c.storeId]);
+    assert.deepEqual(ids(() => false), [], 'Walmart would get a store set near an earlier ZIP, or one its site picks');
+    assert.deepEqual(ids((cfg) => cfg.api === 'kroger'), [['kroger', '77007']], 'Kroger’s API is asked with the ZIP itself');
+    store.setStoreSetup('walmart', { zip: '77007', status: 'failed', reason: 'no_store_finder', at: 1 });
+    assert.deepEqual(ids(() => false), [['walmart', '']], 'a store with no finder: its site picks, as it always has');
+    store.setStoreSetup('walmart', { zip: '10001', status: 'failed', reason: 'button_not_found', at: 1 });
+    assert.deepEqual(ids(() => false), [['walmart', '']], 'a setup for another ZIP says nothing about this one');
   });
 
   await t('a setup still running when the app closed has failed when it opens again, as has one left for the site', async () => {
@@ -239,9 +386,14 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
       { distance: { distanceMiles: 0.4326, id: '739' }, profile: { name: 'Safeway', address: { line1: '3350 Mission St', city: 'San Francisco', region: 'CA', postalCode: '94110' }, cityCoordinate: { lat: 37.7752, long: -122.4192 }, displayCoordinate: { lat: 37.7432, long: -122.4225 }, meta: { id: '739' } } },
     ] } });
     assert.deepEqual(nearbyStores({ sources: [{ label: 'response', text: yext }] }), [
-      { id: '739', name: 'Safeway', address: '3350 Mission St, San Francisco, CA 94110', miles: 0.43, lat: 37.7432, lng: -122.4225 },
-      { id: '667', name: 'Safeway', address: '5290 Diamond Heights Blvd, San Francisco, CA 94131', miles: 1.18, lat: 37.7436, lng: -122.439 },
+      { id: '739', name: 'Safeway', address: '3350 Mission St, San Francisco, CA 94110', miles: 0.43, milesFrom: 'finder', lat: 37.7432, lng: -122.4225 },
+      { id: '667', name: 'Safeway', address: '5290 Diamond Heights Blvd, San Francisco, CA 94131', miles: 1.18, milesFrom: 'finder', lat: 37.7436, lng: -122.439 },
     ]);
+    // Where the ZIP's center is known, the stores' own coordinates say how far they are, not the finder's figures.
+    assert.deepEqual(
+      nearbyStores({ sources: [{ label: 'response', text: yext }] }, { lat: 37.7599, lng: -122.4148 }).map((s) => [s.id, s.miles, s.milesFrom]),
+      [['739', 1.2, 'map'], ['667', 1.7, 'map']],
+    );
 
     // Places on the map only: measured from the ZIP's center.
     const mapped = JSON.stringify({ locations: [
@@ -289,6 +441,57 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
       method: 'PUT', url: 'https://www.wholefoodsmarket.com/api/store-affinity', body: '{"storeId":"10214"}', headers: { 'Content-Type': 'application/json' },
     });
     assert.deepEqual(['10214', 'T-1340', '', '12"}', 'x'.repeat(21)].map(isStoreNumber), [true, true, false, false, false], 'only a number goes into its body as it is');
+  });
+
+  await t('nearby: of a finder page’s lists, the one near the ZIP, measured on the map rather than by the finder', () => {
+    const ohio = { label: 'response https://www.target.com/api/nearby_stores?lat=40.1&lng=-83.11', text: OHIO_JSON };
+    const houston = { label: 'response https://www.target.com/api/nearby_stores?place=77007', text: HOUSTON_JSON };
+    // The page listed the stores near the phone's connection first, then those near the ZIP typed into its box.
+    const both: FinderPage = { sources: [ohio, houston], zipIn: 'box' };
+    const read = nearbyList(both, HOUSTON, '77007');
+    assert.deepEqual([read.tie, read.stores.map((s) => [s.id, s.miles, s.milesFrom])], ['asked', [['2093', 1.1, 'map'], ['1796', 3.3, 'map']]]);
+    // Without the ZIP's center, the list asked for with the ZIP still wins over the bigger one.
+    assert.deepEqual(nearbyList(both, undefined, '77007').stores.map((s) => [s.id, s.miles, s.milesFrom]), [['2093', 1.1, 'finder'], ['1796', 3.2, 'finder']]);
+    // Only the list near the phone's connection: its stores are a thousand miles from the ZIP, whatever the finder said.
+    const only = nearbyList({ sources: [ohio], zipIn: 'none' }, HOUSTON, '77007');
+    assert.equal(only.tie, 'none');
+    assert.ok(only.stores.every((s) => s.milesFrom === 'map' && s.miles! > 900), 'measured from Houston, not 0.2 mi');
+  });
+
+  await t('nearby: how a finder’s list is tied to the ZIP', () => {
+    const tie = (page: FinderPage) => nearbyList(page, undefined, '77007').tie;
+    assert.equal(tie({ href: 'https://www.walmart.com/store-finder?location=77007', nextDataText: HOUSTON_JSON, zipIn: 'url' }), 'asked', 'the finder page’s own address carries it');
+    assert.equal(tie({ href: 'https://www.target.com/store-locator/find-stores', nextDataText: HOUSTON_JSON, zipIn: 'box' }), 'none', 'page data may be what showed before the ZIP was typed');
+    assert.equal(tie({ href: 'https://www.example.com/stores/results', nextDataText: HOUSTON_JSON, zipIn: 'next' }), 'after', 'a page the finder moved on to once the ZIP was typed');
+    const body = { label: 'response https://www.heb.com/graphql', text: HOUSTON_JSON, request: { method: 'POST', url: 'https://www.heb.com/graphql', body: '{"variables":{"address":"77007","radius":100}}' } };
+    assert.equal(tie({ sources: [body], zipIn: 'box' }), 'asked', 'its request carries the ZIP');
+    const byPlace = { label: 'response https://www.target.com/api/nearby_stores?lat=29.77&lng=-95.40', text: HOUSTON_JSON };
+    assert.equal(tie({ sources: [byPlace], zipIn: 'box' }), 'after', 'asked by the place the site found for the ZIP typed');
+    assert.equal(tie({ sources: [byPlace], zipIn: 'none' }), 'none', 'the ZIP was never typed');
+    const cards = [{ lines: ['Houston Heights', '2580 Shearn St', 'Houston, TX 77007', '1.1 mi'], href: '/sl/houston-heights/2093' }];
+    assert.deepEqual([tie({ cards, zipIn: 'box' }), tie({ cards, zipIn: 'none' })], ['after', 'none']);
+  });
+
+  await t('placing stores: near by the map, or by a finder that searched the ZIP; none near; listed elsewhere; nowhere', () => {
+    const near: NearbyStore = { id: '2093', name: 'Houston Heights', miles: 1.1, milesFrom: 'map' };
+    const far: NearbyStore = { id: '1969', name: 'Dublin', miles: 1004, milesFrom: 'map' };
+    const said: NearbyStore = { id: '1970', name: 'Hilliard', miles: 4.7, milesFrom: 'finder' };
+    const bare: NearbyStore = { id: '1971', name: 'Columbus Lennox' };
+    assert.deepEqual(placeStores([far, near], 25, 'none'), { verdict: 'near', stores: [near] }, 'measured on the map, whatever the list');
+    assert.deepEqual(placeStores([far], 25, 'asked'), { verdict: 'none', nearest: 1004 }, 'the finder searched the ZIP: none near');
+    assert.deepEqual(placeStores([{ ...far, miles: 40 }], 25, 'after'), { verdict: 'none', nearest: 40 });
+    assert.deepEqual(placeStores([far], 25, 'after'), { verdict: 'elsewhere', nearest: 1004 }, 'what came after the ZIP was typed is for another place');
+    assert.deepEqual(placeStores([far, said], 25, 'none'), { verdict: 'elsewhere', nearest: 1004 }, 'the finder’s 4.7 mi is from wherever it searched');
+    assert.deepEqual(placeStores([said], 25, 'none'), { verdict: 'unplaced' });
+    assert.deepEqual(placeStores([said], 25, 'after'), { verdict: 'near', stores: [said] }, 'a finder that searched the ZIP measured from it');
+    assert.deepEqual(placeStores([bare], 25, 'asked'), { verdict: 'near', stores: [bare] }, 'no distances at all: the finder’s own order, when it was asked for the ZIP');
+    assert.deepEqual(placeStores([bare], 25, 'after'), { verdict: 'unplaced' });
+    assert.deepEqual(
+      [trustedMiles(said, 'none'), trustedMiles(said, 'asked'), trustedMiles({ ...said, milesFrom: undefined }, 'after'), trustedMiles(far, 'none')],
+      [undefined, 4.7, 4.7, 1004],
+    );
+    assert.deepEqual([zipOfAddress('6555 Sawmill Rd, Dublin, OH 43017-1234'), zipOfAddress('12345 Katy Fwy, Houston, TX'), zipOfAddress(undefined)], ['43017', undefined, undefined]);
+    assert.deepEqual([inUsa(HOUSTON), inUsa({ lat: 33.89, lng: 35.5 }), inUsa({ lat: 21.3, lng: -157.85 }), inUsa({ lat: 61.2, lng: -149.9 })], [true, false, true, true], 'Beirut isn’t in the U.S.');
   });
 
   await t('nearby: within the radius, when distances are known; miles between places', () => {

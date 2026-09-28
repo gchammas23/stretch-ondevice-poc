@@ -136,8 +136,12 @@ function LocationCard() {
   const setups = settings.retailerIds.map((id) => [id, setupFor(settings, id)] as const);
   const working = setups.some(([, s]) => s?.status === 'working');
   const nameOf = (id: string) => bundle.retailers.find((r) => r.id === id)?.name ?? id;
+  const compared = useStoreChoices().map((c) => c.config.id);
   const done = setups.filter(([, s]) => s?.status === 'done').length;
-  const failed = setups.filter(([, s]) => s?.status === 'failed').length;
+  const failedIds = setups.filter(([, s]) => s?.status === 'failed').map(([id]) => id);
+  const failed = failedIds.length;
+  // Those whose store couldn't be set aren't compared, but for an official API or a store with no finder.
+  const left = failedIds.filter((id) => !compared.includes(id)).length;
   const none = setups.filter(([, s]) => s?.status === 'none').map(([id]) => nameOf(id));
 
   const setStores = (value = zip) => {
@@ -169,7 +173,7 @@ function LocationCard() {
     ? `Finding stores near ${settings.zip}…`
     : [
         `Within ${settings.radiusMiles} mi of ${settings.zip}: ${done} ${done === 1 ? 'store' : 'stores'} set`,
-        failed ? `${failed} couldn’t be set` : '',
+        failed ? `${failed} couldn’t be set${left ? `, so ${left === failed ? (failed === 1 ? 'it isn’t' : 'they aren’t') : `${left} of them aren’t`} compared` : ''}` : '',
         none.length ? `no ${none.join(' or ')} nearby, so ${none.length === 1 ? 'it isn’t' : 'they aren’t'} compared` : '',
       ]
         .filter(Boolean)
@@ -345,7 +349,9 @@ function StoreCard({ retailer, on }: { retailer: RetailerConfig; on: boolean }) 
   const checked = useSyncExternalStore(coverage.subscribe, () => coverage.rowFor(retailer.id));
   const now = useNow(60_000);
   const { fontScale } = useWindowDimensions();
-  const storeKey = useStoreChoices().find((c) => c.config.id === retailer.id)?.storeKey ?? '';
+  // Whether it's compared: not when its store couldn't be set near the ZIP (see storeChoices).
+  const choice = useStoreChoices().find((c) => c.config.id === retailer.id);
+  const storeKey = choice?.storeKey ?? '';
   const site = hostOf(retailer.homeUrl).replace(/^www\./, '');
   // A regional chain says where it is, until it's switched on.
   const note = retailer.region && !checked ? `${retailer.region}. ${retailer.sisterOf === 'kroger' ? 'Kroger’s platform.' : 'Albertsons’ platform.'}` : retailer.note;
@@ -388,7 +394,7 @@ function StoreCard({ retailer, on }: { retailer: RetailerConfig; on: boolean }) 
     );
   }
   // Which store it is, how it was set, and where the last prices came from.
-  const info = on && setup?.status !== 'working' ? storeInfo(retailer.id, retailer.name, site, settings, storeKey, now) : null;
+  const info = on && setup?.status !== 'working' ? storeInfo(retailer.id, retailer.name, site, settings, storeKey, now, !!choice) : null;
   const failed = setup?.status === 'failed';
 
   const removeStore = () =>
