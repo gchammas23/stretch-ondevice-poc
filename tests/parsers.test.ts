@@ -287,6 +287,38 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
   });
 
   // --- Price X-ray ---------------------------------------------------------------------------------------
+  await t('Whole Foods: prices under offerDetails, the basis price as the regular one, the Prime price apart, the ASIN as the id', () => {
+    // As its search page's data had them (2026-09-28), trimmed.
+    const offer = (price: number, basis: number | null, prime: number | null) => ({
+      price: { currencyCode: 'USD', priceAmount: price, basisPriceAmount: basis, savings: { currencyCode: 'USD', savingsAmount: basis ? +(basis - price).toFixed(2) : null, percentSavings: '6%' },
+        primeBenefit: { isApplied: false, text: 'Join Prime to buy this item at ', currencyCode: 'USD', priceAmount: prime, savingsAmount: prime ? +(price - prime).toFixed(2) : null } },
+      unitPrice: { baseUnit: 'count', currencyCode: 'USD', priceAmount: price },
+      offerListingId: 'jQiR3', availability: 'IN_STOCK',
+    });
+    const data = { props: { pageProps: {
+      programType: 'GROCERY',
+      productsInfo: [
+        { brandName: 'Organic Valley', name: 'Organic Valley Organic Whole Milk, 64 oz', asin: 'B000O6K8TI', productImages: ['https://m.media-amazon.com/images/I/71V8yVZRLSL.jpg'], availability: 'IN_STOCK', offerDetails: offer(5.65, 5.99, 5.09) },
+        { brandName: '365 by Whole Foods Market', name: '365 by Whole Foods Market Whole Milk, 1 GL', asin: 'B074V3XKVV', productImages: [], availability: 'IN_STOCK', offerDetails: offer(4.39, null, null) },
+        { brandName: 'Horizon', name: 'Horizon Organic Whole Milk, 64 oz', asin: 'B00032G1S0', productImages: [], availability: 'OUT_OF_STOCK', offerDetails: offer(6.49, null, null) },
+      ],
+      wfmccLocationData: { cateringStoreContext: { almAttributes: { storeId: '10214', offerListingDiscriminator: 'A0BP' } } },
+    } } };
+    const r = autoDetect({ nextDataText: JSON.stringify(data), href: 'https://www.wholefoodsmarket.com/grocery/search?k=milk' }, { retailer: 'wholefoods', storeId: '10214', query: 'milk' });
+    assert.deepEqual(
+      r.products.map((p) => [p.id, p.price, p.wasPrice, p.memberPrice, p.memberLabel, p.inStock]),
+      [
+        ['B000O6K8TI', 5.65, 5.99, 5.09, 'Prime member deal', true],
+        ['B074V3XKVV', 4.39, undefined, undefined, undefined, true],
+        ['B00032G1S0', 6.49, undefined, undefined, undefined, false],
+      ],
+      'not the 34¢ it saves, nor the price per count',
+    );
+    // A saving is never the price, even where it sits nearer the product than the price does.
+    const saved = autoDetect({ nextDataText: JSON.stringify({ items: [1, 2, 3].map((i) => ({ id: `s${i}`, name: `Milk ${i}`, savingsAmount: 0.5, price: { amount: 3 + i } })) }) }, ctx);
+    assert.deepEqual(saved.products.map((p) => p.price), [4, 5, 6]);
+  });
+
   await t('x-ray: each product keeps the store’s own data for it, and the path to its price', () => {
     const target = autoDetect({ sources: [{ label: 'response https://redsky.target.com/x', text: JSON.stringify({ products: [
       { tcin: '1', title: 'Whole Milk', price: { current_retail: 3.99, reg_retail: 4.49 } },

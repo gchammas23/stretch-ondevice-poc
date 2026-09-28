@@ -3,6 +3,20 @@ import type { SearchTiming } from './timing';
 export type Strategy = 'fetch' | 'webview' | 'api';
 
 /**
+ * The request a site's store picker sends to make a store the user's, for a finder whose buttons can't be pressed
+ * where the app loads it (Whole Foods' lives in a frame, and tells the page around it). Sent from a page of the site,
+ * so the cookie it answers with is the site's, in the WebView. {{storeId}} is inserted as-is, in the URL and the body.
+ * The store it sets may last only as long as the app's session: it's sent again before the first search of each.
+ */
+export interface StoreSetRequest {
+  method: 'POST' | 'PUT';
+  /** On the same site as the finder's page. */
+  url: string;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+/**
  * Per-retailer rules. Served by the Stretch config service in production,
  * so a retailer fix ships without an app release. See retailers.ts for the bundled defaults.
  */
@@ -57,9 +71,10 @@ export interface RetailerConfig {
    * `auto`: the page lists the stores nearest the ZIP, each with a button that makes it the store (e.g. Walmart's
    * "Make this my store"), and the site keeps the store in its cookies, so the app presses the chosen store's button.
    * Otherwise the store's number goes in each search. `buttons` replaces the default wording to look for
-   * (STORE_BUTTONS in webviewScript.ts).
+   * (STORE_BUTTONS in webviewScript.ts). `setRequest`, with `auto`: instead of pressing a button, the app sends the
+   * site's own request that makes a store the user's, from the finder's page, hidden (see StoreSetRequest).
    */
-  storeFinder?: { url: string; jsonUrl?: string; auto?: boolean; buttons?: string[] };
+  storeFinder?: { url: string; jsonUrl?: string; auto?: boolean; buttons?: string[]; setRequest?: StoreSetRequest };
   /** What we know about this retailer so far. */
   note: string;
   /** Added in the app by the user from a search link (Add a store), not shipped or served. */

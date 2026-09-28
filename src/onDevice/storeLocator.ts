@@ -102,12 +102,22 @@ function milesFrom(v: unknown): number | undefined {
   return m[2] && /^k/i.test(m[2]) ? value * 0.621371 : value;
 }
 
+/**
+ * The store's number: of the number fields nearest the top, the first that's all digits, else the first. A finder can
+ * list its own id for a place beside the store's number (Whole Foods: "locationId": "6Po2SHCiuG", "storeCode": "10214").
+ */
+function idOf(fields: Field[]): string | undefined {
+  const ids = fields.filter(([k, v]) => ID_KEY.test(k) && text(v) !== undefined);
+  if (!ids.length) return undefined;
+  const nearest = ids.filter(([, , depth]) => depth === ids[0][2]).map(([, v]) => text(v)!);
+  return nearest.find((v) => /^\d+$/.test(v)) ?? nearest[0];
+}
+
 /** A store, if the object looks like one: a number, and an address or a place on the map. */
 function toStore(o: Obj): NearbyStore | null {
   const fields = fieldsOf(o);
   const find = (re: RegExp) => fields.find(([k, v]) => re.test(k) && text(v) !== undefined)?.[1];
-  const idRaw = find(ID_KEY);
-  const id = text(idRaw);
+  const id = idOf(fields);
   if (!id || id.length > 20) return null;
   const street = text(find(STREET_KEY));
   const city = text(find(CITY_KEY));

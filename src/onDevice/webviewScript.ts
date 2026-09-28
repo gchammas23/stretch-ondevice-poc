@@ -333,6 +333,71 @@ export function storeScript(nonce: string, markers: string[], buttons: string[],
 true;`;
 }
 
+/** A site's request that makes a store the user's, with the store's number in it (see StoreSetRequest in types.ts). */
+export interface StoreRequest {
+  method: string;
+  url: string;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Runs on a page of a retailer's site, hidden: sends the site's own request that makes a store the user's, as its
+ * store picker would, so the cookie the site answers with lands in the WebView. Posts the answer's status, or
+ * 'store_request_http_<status>' when the site refuses. Like a search, it posts a bot-check notice when it sees one.
+ * Sent once per page: if the host injects it again, nothing is sent twice.
+ */
+export function storeRequestScript(nonce: string, markers: string[], req: StoreRequest, opts: { intervalMs?: number; maxTries?: number } = {}): string {
+  const { intervalMs = 250, maxTries = 40 } = opts;
+  return `(function () {
+  var NONCE = ${JSON.stringify(nonce)}, REQ = ${JSON.stringify(req)};
+  if (window.__stretchStoreTask === NONCE) return;
+  window.__stretchStoreTask = NONCE;
+  var MARKERS = ${JSON.stringify(markers)};
+  var INTERVAL = ${Number(intervalMs)}, MAX_TRIES = ${Number(maxTries)};
+  function post(msg) {
+    msg.nonce = NONCE;
+    msg.href = String(location.href);
+    window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+  }
+  function hasMarker(text) {
+    for (var i = 0; i < MARKERS.length; i++) if (text.indexOf(MARKERS[i]) !== -1) return true;
+    return false;
+  }
+  function challenged() {
+    if (hasMarker(location.href + ' ' + document.title)) return true;
+    var body = document.body ? document.body.innerHTML : '';
+    if (body.length >= 40000) return false;
+    for (var i = 0; i < MARKERS.length; i++) {
+      if (MARKERS[i].indexOf(' ') === -1 && body.indexOf(MARKERS[i]) !== -1) return true;
+    }
+    return false;
+  }
+  var tries = 0;
+  (function attempt() {
+    tries++;
+    try {
+      // Once the page is there: a bot check instead is said, not answered.
+      if (document.readyState === 'loading' && tries < MAX_TRIES) { setTimeout(attempt, INTERVAL); return; }
+      if (challenged()) { post({ kind: 'challenge' }); return; }
+      var cap = window.__stretchCapture;
+      var send = (cap && cap.fetch) || window.fetch;
+      var init = { method: REQ.method, headers: REQ.headers || {}, credentials: 'same-origin' };
+      if (REQ.body != null) init.body = REQ.body;
+      send.call(window, REQ.url, init).then(function (res) {
+        if (res.status >= 200 && res.status < 300) post({ kind: 'data', pageResult: { status: res.status } });
+        else post({ kind: 'error', error: 'store_request_http_' + res.status });
+      }, function () {
+        post({ kind: 'error', error: 'store_request_failed' });
+      });
+    } catch (e) {
+      post({ kind: 'error', error: String((e && e.message) || e) });
+    }
+  })();
+})();
+true;`;
+}
+
 export interface StoreListScriptOptions {
   /** How long the page's requests must be quiet before its store list is taken. */
   quietMs?: number;
@@ -442,6 +507,14 @@ export function storeListScript(nonce: string, zip: string, markers: string[], o
     }
     var ld = document.querySelectorAll('script[type="application/ld+json"]');
     for (var j = 0; j < ld.length; j++) if (ld[j].textContent) out.push({ label: 'ld+json', text: ld[j].textContent });
+    // The page's own data in script blocks: JSON, and Amazon's "a-state" (Whole Foods' finder lists its stores in one).
+    var blocks = document.querySelectorAll('script[type="application/json"], script[type="a-state"]');
+    for (var b = 0; b < blocks.length && b < 30; b++) {
+      var text = blocks[b].textContent;
+      if (blocks[b].id === '__NEXT_DATA__' || !text || used + text.length > 5000000) continue;
+      out.push({ label: 'json script', text: text });
+      used += text.length;
+    }
     return out;
   }
   var started = Date.now(), seenCount = -1, quietSince = Date.now();

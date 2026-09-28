@@ -732,6 +732,83 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     assert.deepEqual(seen, [{ light: true }, { light: false }]);
   });
 
+  // --- Whole Foods: its store is set by the site's own request, and lasts only for the app's session -------------
+  const wholefoods = BUNDLED_CONFIG.retailers.find((r) => r.id === 'wholefoods')!;
+  /** Its search page's data for a query: products with sale and Prime prices, and the store the page is for. */
+  const wfmData = (q: string) =>
+    JSON.stringify({ props: { pageProps: {
+      programType: 'GROCERY',
+      productsInfo: Array.from({ length: 5 }, (_, i) => ({
+        brandName: '365 by Whole Foods Market', name: `365 by Whole Foods Market ${q} ${i}`, asin: `B0${i}${q.length}`,
+        productImages: ['https://m.media-amazon.com/images/I/x.jpg'], availability: 'IN_STOCK',
+        offerDetails: { price: { currencyCode: 'USD', priceAmount: 3 + i, basisPriceAmount: i ? null : 3.5, savings: { savingsAmount: i ? null : 0.5 },
+          primeBenefit: { isApplied: false, priceAmount: i ? null : 2.75 } } },
+      })),
+      wfmccLocationData: { cateringStoreContext: { almAttributes: { storeId: '10214', offerListingDiscriminator: 'A0BP' } } },
+    } } });
+  /** Plays the WebView at Whole Foods: its finder's page takes the store request, its search pages carry their data. */
+  function fakeWholeFoods(lane: WebViewQueue) {
+    const seen = { loads: [] as string[], requests: [] as { method: string; url: string; body?: string; headers?: Record<string, string> }[], replays: 0 };
+    let lastId = -1;
+    lane.subscribe(() => {
+      const s = lane.getSnapshot();
+      if (!s || s.phase !== 'hidden' || s.id === lastId) return;
+      lastId = s.id;
+      seen.loads.push(s.url);
+      if (s.url.includes('/aplf/list')) {
+        seen.requests.push(replayOf(s.script).req as never);
+        setTimeout(() => lane.receive(JSON.stringify({ nonce: nonceOf(s.script), kind: 'data', href: s.url, pageResult: { status: 200 } })), 5);
+      } else {
+        const q = new URL(s.url).searchParams.get('k') ?? '';
+        setTimeout(() => lane.receive(JSON.stringify({ nonce: nonceOf(s.script), kind: 'data', href: s.url, nextDataText: wfmData(q) })), 5);
+      }
+    });
+    lane.attach((script) => {
+      const { nonce, req } = replayOf(script);
+      seen.replays++;
+      setTimeout(() => reply(lane, nonce, { url: req.url, type: 'text/html', text: undefined, nextDataText: wfmData(new URL(req.url).searchParams.get('k') ?? ''), ld: [] }), 5);
+    });
+    return seen;
+  }
+
+  await t('Whole Foods: its store is set with the site’s own request, sent from its finder’s page; its prices are read from its page', async () => {
+    const pool = new WebViewPool();
+    const seen = fakeWholeFoods(pool.lane('wholefoods', 'Whole Foods'));
+    const searcher = createRetailerSearch(pool, 'test');
+    const set = await searcher.setStoreAuto(wholefoods, '43017', { id: '10214', name: 'Columbus' });
+    assert.deepEqual(set, { ok: true, label: 'Columbus', store: { id: '10214', name: 'Columbus' } });
+    assert.deepEqual(seen.loads, ['https://www.wholefoodsmarket.com/aplf/list?almBrandId=VUZHIFdob2xlIEZvb2Rz&context=wholefoods&postalCode=43017']);
+    assert.deepEqual(seen.requests, [
+      { method: 'PUT', url: 'https://www.wholefoodsmarket.com/api/store-affinity', body: '{"storeId":"10214"}', headers: { 'Content-Type': 'application/json' } },
+    ]);
+
+    const milk = await searcher.search(wholefoods, 'milk', '10214');
+    const first = milk.products.find((p) => p.id === 'B004')!;
+    assert.deepEqual([milk.via, milk.products.length, first.price, first.wasPrice, first.memberPrice, first.memberLabel], ['page', 5, 3, 3.5, 2.75, 'Prime member deal']);
+    assert.deepEqual(milk.store, { id: '10214' }, 'the page’s own data says which store');
+    const eggs = await searcher.search(wholefoods, 'eggs', '10214');
+    assert.deepEqual([eggs.via, seen.replays, seen.requests.length], ['replay', 1, 1], 'set once: the next search is sent from the page, no store request');
+
+    const unnumbered = await searcher.setStoreAuto(wholefoods, '43017', { name: 'Columbus' });
+    assert.deepEqual(unnumbered, { ok: false, reason: 'no_store_number' }, 'the request takes the store’s number');
+  });
+
+  await t('Whole Foods: its store cookie ends with the app’s session, so the store is set again before the first search of the next', async () => {
+    const pool = new WebViewPool();
+    const seen = fakeWholeFoods(pool.lane('wholefoods', 'Whole Foods'));
+    // A new session: the store was set before, but not since the app opened.
+    const searcher = createRetailerSearch(pool, 'test');
+    const [milk, eggs] = await Promise.all([searcher.search(wholefoods, 'milk', '10214'), searcher.search(wholefoods, 'eggs', '10214')]);
+    assert.deepEqual([milk.products.length, eggs.products.length], [5, 5]);
+    assert.equal(seen.requests.length, 1, 'once, however many searches start together');
+    assert.equal(seen.loads[0], 'https://www.wholefoodsmarket.com/aplf/list?almBrandId=VUZHIFdob2xlIEZvb2Rz&context=wholefoods&postalCode=', 'before any search page');
+    await searcher.search(wholefoods, 'bread', '10214');
+    assert.equal(seen.requests.length, 1);
+    // No store set: nothing to send.
+    await searcher.search(wholefoods, 'rice', '');
+    assert.equal(seen.requests.length, 1);
+  });
+
   log(`\n${passed} lane and search tests passed`);
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

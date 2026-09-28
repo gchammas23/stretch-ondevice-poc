@@ -12,19 +12,22 @@ import {
   replayScript,
   stopScript,
   storeListScript,
+  storeRequestScript,
   storeScript,
   suggestScript,
   type ReplayRequest,
+  type StoreRequest,
 } from './webviewScript';
 
 /**
  * Instead of reading results: press the store finder's "make this my store" button, on the first store or a given
- * one (see storeScript), or list the stores it finds near a ZIP code (see storeListScript); read a page that lists
- * things, a weekly ad or an account's coupons (see listPageScript); or clip one coupon, because the user asked in the
- * app (see clipScript).
+ * one (see storeScript), or send the site's own request that does it (see storeRequestScript), or list the stores it
+ * finds near a ZIP code (see storeListScript); read a page that lists things, a weekly ad or an account's coupons (see
+ * listPageScript); or clip one coupon, because the user asked in the app (see clipScript).
  */
 export type StoreTask =
   | { kind: 'setStore'; buttons: string[]; target?: { id?: string; name?: string } }
+  | { kind: 'storeRequest'; request: StoreRequest }
   | { kind: 'listStores'; zip: string }
   | { kind: 'readList'; scrolls?: number }
   | { kind: 'clip'; target: { id?: string; title: string }; buttons?: string[] };
@@ -663,6 +666,7 @@ export class WebViewQueue {
     if (job.task?.kind === 'listStores') return storeListScript(job.nonce, job.task.zip, job.challengeMarkers);
     if (job.task?.kind === 'readList') return listPageScript(job.nonce, job.challengeMarkers, { scrolls: job.task.scrolls });
     if (job.task?.kind === 'clip') return clipScript(job.nonce, job.challengeMarkers, job.task.target, job.task.buttons);
+    if (job.task?.kind === 'storeRequest') return storeRequestScript(job.nonce, job.challengeMarkers, job.task.request);
     if (job.task) return storeScript(job.nonce, job.challengeMarkers, job.task.buttons, { target: job.task.target });
     return extractionScript(job.nonce, job.challengeMarkers, job.pageScript, {
       waitFor: job.waitFor,

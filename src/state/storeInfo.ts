@@ -74,6 +74,8 @@ const REASONS: Record<string, string> = {
   timeout: 'its store finder was too slow',
   interrupted: 'the app closed before it was done',
   api_not_configured: 'its API has no keys',
+  no_store_number: 'no store number to set',
+  store_request_failed: 'its site didn’t answer',
 };
 
 /** Why a store couldn't be listed or set, in words. */

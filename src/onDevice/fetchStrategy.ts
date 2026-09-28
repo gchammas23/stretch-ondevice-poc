@@ -1,7 +1,7 @@
 import { PARSERS, looksChallenged } from './parsers';
 import type { SpanLog } from './timing';
-import type { ParseResult, Parser, RetailerConfig } from './types';
-import { BLOCK_MARKERS } from './webviewScript';
+import type { ParseResult, Parser, RetailerConfig, StoreSetRequest } from './types';
+import { BLOCK_MARKERS, type StoreRequest } from './webviewScript';
 
 /** A page with no product data under this many characters is nearly empty: a real search page is far bigger. */
 export const TINY_PAGE_CHARS = 2000;
@@ -34,6 +34,19 @@ export function buildRequest(cfg: RetailerConfig, query: string, storeId: string
   return {
     url: fill(cfg.searchUrl, { query: encodeURIComponent(query.trim()), storeId }),
     cookie: cfg.cookieTemplate ? fill(cfg.cookieTemplate, { storeId }) : '',
+  };
+}
+
+/** A store number that can go into a request as it is: letters, digits and dashes ("10214", "T-1340"). */
+export const isStoreNumber = (id: string | undefined): id is string => !!id && /^[A-Za-z0-9-]{1,20}$/.test(id);
+
+/** The site's own request that makes `storeId` the user's store (see StoreSetRequest), with the number in it. */
+export function storeSetRequest(req: StoreSetRequest, storeId: string): StoreRequest {
+  return {
+    method: req.method,
+    url: fill(req.url, { storeId }),
+    ...(req.body !== undefined ? { body: fill(req.body, { storeId }) } : {}),
+    ...(req.headers ? { headers: { ...req.headers } } : {}),
   };
 }
 

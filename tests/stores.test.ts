@@ -1,7 +1,8 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
+import { isStoreNumber, storeSetRequest } from '../src/onDevice/fetchStrategy';
 import type { StoreSetResult, StoresNearResult } from '../src/onDevice/retailerSearch';
-import { BUNDLED_CONFIG } from '../src/onDevice/retailers';
+import { BUNDLED_CONFIG, isRetailerConfig } from '../src/onDevice/retailers';
 import {
   mergeStores,
   parseStoreLabel,
@@ -257,6 +258,36 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; con
       { lines: ['Queens Place', '88-01 Queens Blvd', 'Elmhurst, NY 11373', '1.8 mi'], href: '/sl/queens-place/1920' },
     ] });
     assert.deepEqual(cards.map((s) => [s.id, s.miles]), [['1920', 1.8], ['1340', undefined]], 'from store cards; 21 Flushing Ave is no distance');
+  });
+
+  await t('nearby: a store’s number is the all-digit one beside the finder’s own id for the place; a street number never is', () => {
+    const wholeFoodsLike = JSON.stringify({ locations: [
+      { marketplaceId: 'ATVPDKIKX0DER', locationName: 'Easton', locationId: '7KKZUVixIe', geocode: { latitude: 40.057075, longitude: -82.909553 },
+        address: { addressLines: ['4100 Easton Gateway Dr'], city: 'Columbus', state: 'OH', postalCode: '43219-1541' }, distance: 12.5338, distanceUnit: 'miles',
+        brand: { id: 'VUZHIFdob2xlIEZvb2Rz', defaultString: 'Whole Foods Market' }, storeCode: '10555' },
+    ] });
+    assert.deepEqual(nearbyStores({ sources: [{ label: 'json script', text: wholeFoodsLike }] }).map((s) => [s.id, s.name, s.miles]), [['10555', 'Easton', 12.53]]);
+    // Its own id at the top, and digits only deeper down (the street's number): the id stays.
+    const lettered = JSON.stringify({ stores: [
+      { id: 'NY-chelsea', name: 'Chelsea', address: { number: '100', street: '100 W 23rd St', city: 'New York', state: 'NY', zip: '10011' } },
+      { id: 'NY-midtown', name: 'Midtown', address: { number: '50', street: '50 W 34th St', city: 'New York', state: 'NY', zip: '10001' } },
+    ] });
+    assert.deepEqual(nearbyStores({ sources: [{ label: 'response', text: lettered }] }).map((s) => s.id), ['NY-chelsea', 'NY-midtown']);
+  });
+
+  await t('store rules: a store set by the site’s own request goes to the finder’s site, as a POST or PUT, and takes a number', () => {
+    const wholefoods = byId('wholefoods');
+    assert.equal(isRetailerConfig(wholefoods), true);
+    const finder = wholefoods.storeFinder!;
+    const withRequest = (setRequest: unknown) => isRetailerConfig({ ...wholefoods, storeFinder: { ...finder, setRequest } });
+    assert.equal(withRequest({ ...finder.setRequest, url: 'https://evil.example.com/api/store-affinity' }), false, 'another site');
+    assert.equal(withRequest({ ...finder.setRequest, url: 'http://www.wholefoodsmarket.com/api/store-affinity' }), false, 'not https');
+    assert.equal(withRequest({ ...finder.setRequest, method: 'GET' }), false);
+    assert.equal(withRequest({ ...finder.setRequest, headers: { 'Content-Type': 1 } }), false);
+    assert.deepEqual(storeSetRequest(finder.setRequest!, '10214'), {
+      method: 'PUT', url: 'https://www.wholefoodsmarket.com/api/store-affinity', body: '{"storeId":"10214"}', headers: { 'Content-Type': 'application/json' },
+    });
+    assert.deepEqual(['10214', 'T-1340', '', '12"}', 'x'.repeat(21)].map(isStoreNumber), [true, true, false, false, false], 'only a number goes into its body as it is');
   });
 
   await t('nearby: within the radius, when distances are known; miles between places', () => {

@@ -317,16 +317,16 @@ export const pageScriptProducts: Parser = (payload, { retailer, storeId }) => {
 // (judgeList). It can still pick the wrong list (e.g. recommendations); the test screen shows which source it used.
 
 const NAME_KEYS = ['name', 'title', 'productName', 'product_name', 'displayName', 'display_name', 'description'];
-const ID_KEYS = ['usItemId', 'tcin', 'productId', 'product_id', 'itemId', 'item_id', 'sku', 'skuId', 'sku_id', 'upc', 'gtin13', 'gtin', 'id'];
+const ID_KEYS = ['usItemId', 'tcin', 'productId', 'product_id', 'itemId', 'item_id', 'sku', 'skuId', 'sku_id', 'upc', 'gtin13', 'gtin', 'asin', 'id'];
 /** Keys worth looking inside for a product's name or price. */
-const NEST = /^(item|items|product|productInfo|product_description|details|attributes|offers|offer|pricing|variants|skus|node|content|data|view|viewSection)$/i;
+const NEST = /^(item|items|product|productInfo|product_description|details|attributes|offers?(?:_?details?)?|pricing|variants|skus|node|content|data|view|viewSection)$/i;
 /** Keys whose names belong to something else (the brand, the store...). */
 const SKIP = /brand|seller|categor|store|department|manufacturer|vendor|fulfil|promotion|badge|rating|review|breadcrumb|facet|filter/i;
 const PRICE_KEY = /price|retail|amount/i;
 /** Prices for members of the store's loyalty program: kept apart from the price everyone pays. */
 const MEMBER_KEY = /member|club|loyal|with_?card|card_?price|prime|circle|reward/i;
-/** Price-looking keys that hold something else. */
-const NOT_PRICE = /(^|[a-z_])(id|Id|ID)$|retailer|count|quantity|qty|percent|rating|size|weight|limit|min|max/;
+/** Price-looking keys that hold something else: a saving is what a sale takes off, not the price. */
+const NOT_PRICE = /(^|[a-z_])(id|Id|ID)$|retailer|count|quantity|qty|percent|rating|size|weight|limit|min|max|saving/;
 const URL_KEY = /^(url|canonicalUrl|canonical_url|productUrl|product_url|pdpUrl|buy_url|productPageURI|href|link|seoUrl)$/;
 const GTIN_KEY = /^(upc|upcs|upc_?code|gtin|gtin8|gtin12|gtin13|gtin14|ean|ean13|barcode|primary_?barcode)$/i;
 const IMAGE_KEY = /image|thumbnail|img|photo|picture|media/i;
@@ -351,7 +351,7 @@ interface PriceHit {
 function pathScore(keys: string[]): number {
   const path = keys.join('.');
   if (/unit|per_?unit|perunit|per_?oz|per_?lb/i.test(path)) return -1;
-  if (/(^|[._])reg|regular|list|was|original|base|compare|msrp|strike|old|full_?price/i.test(path)) return 1;
+  if (/(^|[._])reg|regular|list|was|original|base|basis|compare|msrp|strike|old|full_?price/i.test(path)) return 1;
   if (/current|sale|promo|final|offer|now|selling|actual|reduced/i.test(path)) return 3;
   return 2;
 }

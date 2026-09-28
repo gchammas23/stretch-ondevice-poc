@@ -43,9 +43,11 @@ function StoreList({ retailer }: { retailer: RetailerConfig }) {
   const inRange = (s: NearbyStore) => !measured || (s.miles !== undefined && s.miles <= radiusMiles);
   const how = deps.apiTakesZip(retailer)
     ? `${retailer.name}’s official API is asked for that store’s prices.`
-    : retailer.storeFinder?.auto
-      ? `The phone makes it your store on ${site}’s store finder, hidden, the way you would.`
-      : `Its store number goes in each search the phone makes on ${site}.`;
+    : retailer.storeFinder?.setRequest && retailer.storeFinder.auto
+      ? `The phone makes it your store on ${site}, hidden, as its store picker does.`
+      : retailer.storeFinder?.auto
+        ? `The phone makes it your store on ${site}’s store finder, hidden, the way you would.`
+        : `Its store number goes in each search the phone makes on ${site}.`;
 
   const choose = async (s: NearbyStore) => {
     if (busy || working) return;

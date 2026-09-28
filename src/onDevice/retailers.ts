@@ -1,6 +1,6 @@
 import { isProfile } from './profiles';
 import type { OnlinePlan, OnlineRules, RetailerConfig, RetailerConfigBundle, Strategy } from './types';
-import { DEFAULT_CHALLENGE_MARKERS } from './webviewScript';
+import { DEFAULT_CHALLENGE_MARKERS, hostOf } from './webviewScript';
 
 const BY_NUMBER = 'Its store number, as its store finder lists it: it goes in the search requests its page makes. Empty: the site picks.';
 
@@ -430,10 +430,27 @@ export const BUNDLED_CONFIG: RetailerConfigBundle = {
         'Whole Foods',
         'https://www.wholefoodsmarket.com/grocery/search?k={{query}}',
         'https://www.wholefoodsmarket.com/',
-        'The page loads, but prices arrive afterwards.',
+        'Its search page carries the products and prices of the store set in its cookie, and none without one.',
       ),
-      // Opens the site's store picker.
-      storeFinder: { url: 'https://www.wholefoodsmarket.com/stores' },
+      // The results are in the page's own data (see the store finder's note below): read as soon as it's there.
+      waitFor: 'nextData',
+      storeHint: 'Its store number, as its store finder lists it. Your stores makes it the store on wholefoodsmarket.com, which keeps it in a cookie.',
+      // Checked 2026-09-28: /stores now opens the home page's store picker, a frame whose buttons tell the page around
+      // it, so the app can neither read it nor press them. The frame's own page, for a ZIP, lists the stores nearest it
+      // in its page data (an "a-state" block: storeCode, locationName, address, distance in miles), and picking one sends
+      // PUT /api/store-affinity {"storeId"}, answered with the store's cookie (wfm_store_d8, for the session only).
+      // With that cookie its search page carries that store's products and prices in its page data (offerDetails:
+      // price, basisPrice, the Prime price); without it, none, whichever the query.
+      storeFinder: {
+        url: 'https://www.wholefoodsmarket.com/aplf/list?almBrandId=VUZHIFdob2xlIEZvb2Rz&context=wholefoods&postalCode={{zip}}',
+        auto: true,
+        setRequest: {
+          method: 'PUT',
+          url: 'https://www.wholefoodsmarket.com/api/store-affinity',
+          body: '{"storeId":"{{storeId}}"}',
+          headers: { 'Content-Type': 'application/json' },
+        },
+      },
       storeBrands: ['365 by Whole Foods Market', 'Whole Foods Market', '365'],
       member: { program: 'Prime', label: 'Prime member deal' },
       // Checked 2026-09-25 on Amazon's help page (fees in the HTML a browser gets) and its May 2026 news: pickup is
@@ -591,7 +608,27 @@ function isStoreFinder(v: unknown): boolean {
     f.url.startsWith('https://') &&
     (f.jsonUrl === undefined || (typeof f.jsonUrl === 'string' && f.jsonUrl.startsWith('https://'))) &&
     (f.auto === undefined || typeof f.auto === 'boolean') &&
-    (f.buttons === undefined || (Array.isArray(f.buttons) && f.buttons.every((b) => typeof b === 'string')))
+    (f.buttons === undefined || (Array.isArray(f.buttons) && f.buttons.every((b) => typeof b === 'string'))) &&
+    (f.setRequest === undefined || isStoreSetRequest(f.setRequest, f.url))
+  );
+}
+
+/**
+ * A site's store-setting request in a rules file: a POST or PUT over https to the site of the finder's page, which it's
+ * sent from with the site's cookies; a short body and plain headers.
+ */
+function isStoreSetRequest(v: unknown, finderUrl: string): boolean {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const q = v as Record<string, unknown>;
+  const headers = q.headers;
+  return (
+    (q.method === 'POST' || q.method === 'PUT') &&
+    typeof q.url === 'string' &&
+    q.url.startsWith('https://') &&
+    hostOf(q.url) === hostOf(finderUrl) &&
+    (q.body === undefined || (typeof q.body === 'string' && q.body.length <= 2000)) &&
+    (headers === undefined ||
+      (typeof headers === 'object' && headers !== null && !Array.isArray(headers) && Object.values(headers).every((h) => typeof h === 'string')))
   );
 }
 

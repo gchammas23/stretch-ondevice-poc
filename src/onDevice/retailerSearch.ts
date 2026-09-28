@@ -5,7 +5,7 @@ import { MAX_ALTERNATIVES } from '../pricing/basket';
 import { PRODUCTS_KEPT } from '../pricing/priceCache';
 import { CONNECTION_ID, type AttemptEntry, type AttemptKind } from './attemptLog';
 import { priceEvidence, redactUrl, type PriceEvidence } from './evidence';
-import { StrategyError, buildRequest, fill, searchViaFetch } from './fetchStrategy';
+import { StrategyError, buildRequest, fill, isStoreNumber, searchViaFetch, storeSetRequest } from './fetchStrategy';
 import { krogerApiConfigured, krogerStoresNear, searchKrogerApi } from './krogerApi';
 import { mergeFeeReads, parseFeePage, type FeePageRead } from './feePage';
 import { leanRequest, leanSaving, leanVerdict } from './pageSize';
@@ -197,7 +197,8 @@ export interface RetailerSearch {
   readFromSite(cfg: RetailerConfig, query: string): Promise<SearchOutcome | null>;
   /**
    * Sets a store near `zip` on the retailer's own site, as a user would: opens its store finder for the ZIP, hidden,
-   * and presses "make this my store" on `target` (by number or name), or on the nearest. Where the finder allows it.
+   * and presses "make this my store" on `target` (by number or name), or on the nearest; or, where the rules give the
+   * site's own request for it, sends that for `target`, from the finder's page. Where the finder allows it.
    */
   setStoreAuto(cfg: RetailerConfig, zip: string, target?: { id?: string; name?: string }): Promise<StoreSetResult>;
   /**
@@ -588,6 +589,7 @@ export function createRetailerSearch(
     if (!parser) throw new StrategyError(`unknown_parser_${cfg.parser}`);
     const { clock, tune } = run;
 
+    await keepStoreSet(cfg, storeId);
     const lane = pool.lane(cfg.id, cfg.name);
     if (lane.context !== storeId) {
       lane.reset();
@@ -967,31 +969,70 @@ export function createRetailerSearch(
 
   // After a store changes, searches must start from a fresh page: a kept page and its replays point at the old one.
 
+  // Stores set by the site's own request, this session (see keepStoreSet).
+  const sessionStores = new Map<string, Promise<void>>();
+  const sessionKey = (cfg: RetailerConfig, storeId: string) => `${cfg.id}:${storeId}`;
+
   const setStoreAuto = async (cfg: RetailerConfig, zip: string, target?: { id?: string; name?: string }): Promise<StoreSetResult> => {
     const finder = cfg.storeFinder;
     if (!finder?.auto || !finder.url.includes('{{zip}}')) return { ok: false, reason: 'not_automatic' };
+    // The site's own request takes the store's number: there's no button to find it by name.
+    const request = finder.setRequest;
+    const id = target?.id;
+    if (request && !isStoreNumber(id)) return { ok: false, reason: 'no_store_number' };
     const lane = pool.lane(cfg.id, cfg.name);
     const t0 = Date.now();
+    // Without a ZIP, the store is set again for this session (see keepStoreSet): the finder's page lists none.
+    const near = zip ? ` near ${zip}` : ' again, for this session';
     try {
       const payload = await lane.run({
         url: fill(finder.url, { zip: encodeURIComponent(zip) }),
         challengeMarkers: cfg.challengeMarkers,
         timeoutMs: STORE_SET_TIMEOUT_MS,
         retailerName: cfg.name,
-        task: { kind: 'setStore', buttons: finder.buttons ?? STORE_BUTTONS, target },
+        task:
+          request && id
+            ? { kind: 'storeRequest', request: storeSetRequest(request, id) }
+            : { kind: 'setStore', buttons: finder.buttons ?? STORE_BUTTONS, target },
       });
-      const label = (payload.pageResult as { label?: unknown } | undefined)?.label;
-      const store = storeFromFinder(payload.pageResult, zip);
+      let label: string | undefined;
+      let store: KnownStore | undefined;
+      if (request && id) {
+        sessionStores.set(sessionKey(cfg, id), Promise.resolve());
+        label = target?.name || undefined;
+        store = { id, ...(label ? { name: label } : {}) };
+      } else {
+        const pressed = (payload.pageResult as { label?: unknown } | undefined)?.label;
+        label = typeof pressed === 'string' && pressed ? pressed : undefined;
+        store = storeFromFinder(payload.pageResult, zip);
+      }
       record({ retailerId: cfg.id, kind: 'store', strategy: 'webview', ok: true, ms: Date.now() - t0 });
-      log(cfg, 'store', true, `store set near ${zip}${store ? `: ${storeLine(store)}` : ''}`);
-      return { ok: true, label: typeof label === 'string' && label ? label : undefined, store };
+      log(cfg, 'store', true, `store set${near}${store ? `: ${storeLine(store)}` : ''}`);
+      return { ok: true, label, store };
     } catch (e) {
       record({ retailerId: cfg.id, kind: 'store', strategy: 'webview', ok: false, reason: reasonOf(e), ms: Date.now() - t0 });
-      log(cfg, 'store', false, `couldn’t set the store: ${reasonWords(reasonOf(e))}`);
+      log(cfg, 'store', false, `couldn’t set the store${zip ? '' : ' again'}: ${reasonWords(reasonOf(e))}`);
       return { ok: false, reason: reasonOf(e) };
     } finally {
       lane.reset();
     }
+  };
+
+  /**
+   * A store set by the site's own request (see StoreSetRequest) can last only as long as the app's session, in a
+   * cookie the WebView forgets when the app closes (Whole Foods'): it's set again before the session's first search
+   * there. Once a session, whatever the answer: the search then says which store its prices are for.
+   */
+  const keepStoreSet = (cfg: RetailerConfig, storeId: string): Promise<void> => {
+    const finder = cfg.storeFinder;
+    if (!finder?.auto || !finder.setRequest || !isStoreNumber(storeId)) return Promise.resolve();
+    const key = sessionKey(cfg, storeId);
+    let done = sessionStores.get(key);
+    if (!done) {
+      done = setStoreAuto(cfg, '', { id: storeId }).then(() => undefined);
+      sessionStores.set(key, done);
+    }
+    return done;
   };
 
   const storesNear = async (cfg: RetailerConfig, zip: string, radiusMiles: number, origin?: LatLng): Promise<StoresNearResult> => {

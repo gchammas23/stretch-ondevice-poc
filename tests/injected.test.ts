@@ -16,6 +16,7 @@ import {
   stopScript,
   STORE_BUTTONS,
   storeListScript,
+  storeRequestScript,
   storeScript,
   suggestScript,
 } from '../src/onDevice/webviewScript';
@@ -425,6 +426,55 @@ function makePage(html: string, url: string) {
     await sleep(100);
     assert.deepEqual([retyped, again.posts.map((m) => m.kind)], [0, ['data']]);
     assert.deepEqual(blocked.posts.map((m) => m.kind), ['challenge']);
+  });
+
+  await t('store list: stores in the page’s own data blocks count, as Whole Foods’ finder writes them (an "a-state" block)', async () => {
+    const state = { isDesktop: false, locations: [
+      { locationName: 'West Lane', locationId: '7KKZrXZ3zM', geocode: { latitude: 40.00653, longitude: -83.052569 },
+        address: { addressLines: ['1555 W Lane Ave'], city: 'Upper Arlington', state: 'OH', postalCode: '43221-3955' }, distance: 8.8099, distanceUnit: 'miles', storeCode: '10385' },
+      { locationName: 'Columbus', locationId: '6Po2SHCiuG', geocode: { latitude: 40.0981, longitude: -83.08666 },
+        address: { addressLines: ['3670 W Dublin Granville Rd'], city: 'Columbus', state: 'OH', postalCode: '43235-4904' }, distance: 2.8071, distanceUnit: 'miles', storeCode: '10214' },
+    ] };
+    const p = makePage(
+      `<html><body><div id="list"></div><script type="a-state" data-a-state='{"key":"list-page-state"}'>${JSON.stringify(state)}</script></body></html>`,
+      'https://www.wholefoodsmarket.com/aplf/list?almBrandId=VUZHIFdob2xlIEZvb2Rz&context=wholefoods&postalCode=43017',
+    );
+    p.run(storeListScript('l5', '43017', markers, { quietMs: 20, intervalMs: 10 }));
+    await sleep(100);
+    assert.deepEqual(p.posts[0].sources.map((s: { label: string }) => s.label), ['json script']);
+    assert.deepEqual(nearbyStores(p.posts[0]).map((st) => [st.id, st.name, st.address, st.miles]), [
+      ['10214', 'Columbus', '3670 W Dublin Granville Rd, Columbus, OH 43235-4904', 2.81],
+      ['10385', 'West Lane', '1555 W Lane Ave, Upper Arlington, OH 43221-3955', 8.81],
+    ], 'by their store numbers, not the finder’s ids for the places, nearest first');
+  });
+
+  await t('store request: the site’s own request goes out once from its page, with its cookies; a refusal or a bot check says so', async () => {
+    const req = { method: 'PUT', url: 'https://www.wholefoodsmarket.com/api/store-affinity', body: '{"storeId":"10214"}', headers: { 'Content-Type': 'application/json' } };
+    const make = (status: number, html = '<html><body><div id="list"></div></body></html>') => {
+      const p = makePage(html, 'https://www.wholefoodsmarket.com/aplf/list?postalCode=43017');
+      const sent: unknown[] = [];
+      p.w.fetch = (url: string, init: unknown) => {
+        sent.push([url, init]);
+        return Promise.resolve({ status });
+      };
+      return { p, sent };
+    };
+    const ok = make(200);
+    const script = storeRequestScript('r1', markers, req, { intervalMs: 5 });
+    ok.p.run(script);
+    ok.p.run(script); // The host injects it again after the load; it's sent once per page.
+    await sleep(40);
+    // Made in the page's own realm: compared as plain data.
+    assert.deepEqual(JSON.parse(JSON.stringify(ok.sent)), [[req.url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: '{"storeId":"10214"}' }]]);
+    assert.deepEqual(ok.p.posts.map((m) => [m.kind, m.nonce, m.pageResult]), [['data', 'r1', { status: 200 }]]);
+
+    const refused = make(403);
+    refused.p.run(storeRequestScript('r2', markers, req, { intervalMs: 5 }));
+    const checked = make(200, '<html><head><title>Robot or human?</title></head><body></body></html>');
+    checked.p.run(storeRequestScript('r3', markers, req, { intervalMs: 5 }));
+    await sleep(40);
+    assert.deepEqual(refused.p.posts.map((m) => [m.kind, m.error]), [['error', 'store_request_http_403']]);
+    assert.deepEqual([checked.p.posts.map((m) => m.kind), checked.sent.length], [['challenge'], 0], 'a bot check is said, and nothing is sent');
   });
 
   await t('store label: a search page says which store it’s set to, from its header; links to choose one don’t count', async () => {
