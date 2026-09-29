@@ -361,6 +361,7 @@ function HowItWorks() {
       <Bullet text="This phone: each search in the app’s own browser, hidden, at the store set in Your stores, read the way the app reads prices (a page load, or the store’s own request sent again from its page)." />
       <Bullet text="The cloud browser: a Browser Use browser in the U.S., through home internet addresses Browser Use rents. The app drives it from this phone: Walmart’s store page and its button, then a search page a term; Target’s search page, then its own search request sent again with your store." />
       <Bullet text="The AI agent, if added: Browser Use’s agent is asked, in words, to set the store and search, and answers in JSON." />
+      <Bullet text="Measured as a server would run it: the cloud browser’s time comes with an estimate for a server, which takes out what driving it from this phone added (a trip over your connection a step). Its data to this phone is the results a server would send; what driving it moved here is shown apart, and not counted. Each store’s browser starts from a profile Browser Use keeps for that store, so Walmart’s store stays set from one run to the next." />
       <Text style={styles.small}>
         Both run at the same time, since prices change. The same product is matched by the store’s own item number, and this phone’s price is the
         reference: it’s set to your store on the store’s own site. A price that differs may be the other store’s, a sale one side read and the other

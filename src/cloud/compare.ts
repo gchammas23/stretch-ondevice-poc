@@ -156,18 +156,39 @@ export interface SideFigures {
   confirmed: boolean;
   /** The store a search's data said instead, when one said another. */
   otherStore?: string;
-  /** From its start to its end. */
+  /** Products its searches priced for another store than the one asked (Target's, one by one): not compared. */
+  otherStoreItems: number;
+  /** From its start to its end, as measured on this phone. */
   totalMs?: number;
   /** Before its first search began: for the cloud browser, starting it and setting its store. */
   setupMs?: number;
   /** A search's time, the median of its searches'. */
   searchMs?: number;
-  /** Data this phone moved: its own searches' on the phone's side; driving the cloud browser (the DevTools link) on the cloud browser's. */
+  /**
+   * The cloud browser's times as a server driving it would have them, an estimate: as measured, less what driving it
+   * from this phone added (its trips over the phone's connection, see PageSession in cdp.ts).
+   */
+  serverMs?: number;
+  serverSetupMs?: number;
+  serverSearchMs?: number;
+  /**
+   * Data this phone would use: its own searches' on the phone's side; on a cloud side, the results a server would send
+   * it (see resultsBytes).
+   */
   phoneBytes?: number;
   /** Data moved in the cloud: through Browser Use's proxy as it reported it, else as the app metered the page. */
   cloudMb?: number;
+  /**
+   * The test's own cost of driving the cloud browser from this phone, which a server wouldn't have: the DevTools
+   * connection's data, and the time its trips took. Left out of the figures above.
+   */
+  linkBytes?: number;
+  linkMs?: number;
   usd: number;
   checkSeen: boolean;
+  /** The cloud browser started from the store's saved profile: kept from an earlier run, or made for this one. */
+  profile?: RetailerRun['profile'];
+  storeSet?: RetailerRun['storeSet'];
 }
 
 const median = (xs: number[]): number | undefined => {
@@ -187,9 +208,16 @@ export function sideFigures(side: CompareSide, run: RetailerRun): SideFigures {
   const firstBegan = timed.length ? Math.min(...timed.map((r) => r.at - r.ms!)) : undefined;
   const searchMs = median(done.filter((r) => r.ms !== undefined).map((r) => r.ms!));
   const cost = retailerCost(run);
-  const phoneBytes = side === 'phone' ? sum(run.results.map((r) => r.bytes)) : side === 'scripted' ? run.wireBytes : undefined;
+  const phoneBytes = side === 'phone' ? sum(run.results.map((r) => r.bytes)) : run.results.length ? resultsBytes(run) : undefined;
   const cloudMb = side === 'phone' ? undefined : cost.proxyMb || (run.bytes ? run.bytes / 1e6 : undefined);
   const other = run.results.find((r) => r.storeMatches === false);
+  const totalMs = run.startedAt !== undefined && run.finishedAt !== undefined ? run.finishedAt - run.startedAt : undefined;
+  const setupMs = side !== 'phone' && run.startedAt !== undefined && firstBegan !== undefined ? Math.max(0, firstBegan - run.startedAt) : undefined;
+  // Only the cloud browser is driven from this phone: what its link added comes out, for a server's time.
+  const link = side === 'scripted' ? run.linkMs : undefined;
+  const serverMs = link !== undefined && totalMs !== undefined ? Math.max(0, totalMs - link) : undefined;
+  const serverSetupMs = link !== undefined && setupMs !== undefined ? Math.max(0, setupMs - (run.setupLinkMs ?? 0)) : undefined;
+  const serverSearchMs = link !== undefined ? median(done.filter((r) => r.ms !== undefined).map((r) => Math.max(0, r.ms! - (r.linkMs ?? 0)))) : undefined;
   return {
     side,
     status: run.status,
@@ -198,14 +226,58 @@ export function sideFigures(side: CompareSide, run: RetailerRun): SideFigures {
     products: done.reduce((n, r) => n + (r.found ?? r.items.length), 0),
     confirmed: storeConfirmed(run),
     ...(other?.pageStoreId ? { otherStore: other.pageStoreId } : {}),
-    ...(run.startedAt !== undefined && run.finishedAt !== undefined ? { totalMs: run.finishedAt - run.startedAt } : {}),
-    ...(side !== 'phone' && run.startedAt !== undefined && firstBegan !== undefined ? { setupMs: Math.max(0, firstBegan - run.startedAt) } : {}),
+    otherStoreItems: done.reduce((n, r) => n + r.items.filter((i) => i.pricedAt).length, 0),
+    ...(totalMs !== undefined ? { totalMs } : {}),
+    ...(setupMs !== undefined ? { setupMs } : {}),
     ...(searchMs !== undefined ? { searchMs } : {}),
+    ...(serverMs !== undefined ? { serverMs } : {}),
+    ...(serverSetupMs !== undefined ? { serverSetupMs } : {}),
+    ...(serverSearchMs !== undefined ? { serverSearchMs } : {}),
     ...(phoneBytes !== undefined ? { phoneBytes } : {}),
     ...(cloudMb ? { cloudMb } : {}),
+    ...(side === 'scripted' && run.wireBytes !== undefined ? { linkBytes: run.wireBytes } : {}),
+    ...(link !== undefined ? { linkMs: link } : {}),
     usd: cost.usd,
     checkSeen: !!run.checkSeen || run.results.some((r) => r.status === 'blocked'),
+    ...(run.profile ? { profile: run.profile } : {}),
+    ...(run.storeSet ? { storeSet: run.storeSet } : {}),
   };
+}
+
+/**
+ * What a server would send this phone for a store's searches, in bytes: each search's products and what it said, as
+ * JSON (before compression, which would make it smaller). Its image links are in it, not its images.
+ */
+export function resultsBytes(run: RetailerRun): number {
+  const answer = {
+    retailer: run.retailerId,
+    storeId: run.storeId,
+    results: run.results.map((r) => ({
+      term: r.term,
+      status: r.status,
+      ...(r.found !== undefined ? { found: r.found } : {}),
+      ...(r.pageStoreId ? { pricedFor: r.pageStoreId } : {}),
+      ...(r.reason ? { reason: r.reason } : {}),
+      items: r.items,
+    })),
+  };
+  return utf8Length(JSON.stringify(answer));
+}
+
+/** Text's length in UTF-8 bytes, as it goes over the network ("™" is three). */
+function utf8Length(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length) {
+      // A pair of surrogates: one character of four bytes.
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
 }
 
 function sum(xs: (number | undefined)[]): number | undefined {
@@ -231,6 +303,8 @@ export interface TermMatch {
   /** Products both kept (up to 20 a side), by the retailer's item number; how many had the same price. */
   both: number;
   same: number;
+  /** Products both kept that a side priced for another store (CloudItem.pricedAt): left out of `both`. */
+  elsewhere: number;
   differ: PriceGap[];
   onlyPhone: number;
   onlyCloud: number;
@@ -253,6 +327,7 @@ export function matchTerm(term: string, phone: RetailerRun | undefined, cloud: R
   for (const item of cloudItems) if (!cloudBy.has(itemKey(item.itemId))) cloudBy.set(itemKey(item.itemId), item);
   let both = 0;
   let same = 0;
+  let elsewhere = 0;
   const differ: PriceGap[] = [];
   const matched = new Set<string>();
   for (const item of phoneItems) {
@@ -260,6 +335,11 @@ export function matchTerm(term: string, phone: RetailerRun | undefined, cloud: R
     const other = cloudBy.get(key);
     if (!other || matched.has(key)) continue;
     matched.add(key);
+    // Priced for another store than the one asked: not the store's price, so not compared.
+    if (item.pricedAt || other.pricedAt) {
+      elsewhere++;
+      continue;
+    }
     both++;
     if (samePrice(item.price, other.price)) same++;
     else
@@ -279,6 +359,7 @@ export function matchTerm(term: string, phone: RetailerRun | undefined, cloud: R
     ...(c ? { cloud: c } : {}),
     both,
     same,
+    elsewhere,
     differ,
     onlyPhone: phoneKeys.size - matched.size,
     onlyCloud: [...cloudBy.keys()].filter((k) => !phoneKeys.has(k)).length,
@@ -294,23 +375,33 @@ export interface SideSummary {
   blocked: number;
   /** The slowest store's time: the stores run at once. */
   totalMs?: number;
+  /** The cloud browser's slowest store as a server would have it, an estimate (see SideFigures.serverMs). */
+  serverMs?: number;
+  /** Data this phone would use: its searches' own, or the results a server would send it (see SideFigures). */
   phoneBytes?: number;
   cloudMb?: number;
+  /** The test's own traffic driving the cloud browser from this phone: not counted in `phoneBytes`. */
+  linkBytes?: number;
   usd: number;
 }
 
 export interface ComparisonSummary {
   sides: SideSummary[];
-  /** For each cloud side: the same products' prices against the phone's, every store and term. */
-  prices: { side: Exclude<CompareSide, 'phone'>; both: number; same: number; differ: number }[];
+  /**
+   * For each cloud side: the same products' prices against the phone's, every store and term, and the products left
+   * out of it for a side's price being another store's.
+   */
+  prices: { side: Exclude<CompareSide, 'phone'>; both: number; same: number; differ: number; elsewhere: number }[];
 }
 
 export function comparisonSummary(c: Comparison): ComparisonSummary {
   const sides = sidesOf(c).map((side): SideSummary => {
     const figures = c.retailers.map((r) => sideRun(c, side, r.retailerId)).filter((r): r is RetailerRun => !!r).map((r) => sideFigures(side, r));
     const totals = figures.map((f) => f.totalMs).filter((ms): ms is number => ms !== undefined);
+    const serverMs = slowestEstimate(figures);
     const phoneBytes = sum(figures.map((f) => f.phoneBytes));
     const cloudMb = sum(figures.map((f) => f.cloudMb));
+    const linkBytes = sum(figures.map((f) => f.linkBytes));
     return {
       side,
       stores: figures.length,
@@ -318,8 +409,10 @@ export function comparisonSummary(c: Comparison): ComparisonSummary {
       confirmed: figures.filter((f) => f.status === 'done' && f.confirmed).length,
       blocked: figures.filter((f) => f.status === 'blocked').length,
       ...(totals.length ? { totalMs: Math.max(...totals) } : {}),
+      ...(serverMs !== undefined ? { serverMs } : {}),
       ...(phoneBytes !== undefined ? { phoneBytes } : {}),
       ...(cloudMb !== undefined ? { cloudMb } : {}),
+      ...(linkBytes !== undefined ? { linkBytes } : {}),
       usd: Math.round(figures.reduce((n, f) => n + f.usd, 0) * 1e6) / 1e6,
     };
   });
@@ -329,17 +422,26 @@ export function comparisonSummary(c: Comparison): ComparisonSummary {
       let both = 0;
       let same = 0;
       let differ = 0;
+      let elsewhere = 0;
       for (const r of c.retailers) {
         for (const term of c.terms) {
           const m = matchTerm(term, sideRun(c, 'phone', r.retailerId), sideRun(c, side, r.retailerId));
           both += m.both;
           same += m.same;
           differ += m.differ.length;
+          elsewhere += m.elsewhere;
         }
       }
-      return { side, both, same, differ };
+      return { side, both, same, differ, elsewhere };
     });
   return { sides, prices };
+}
+
+/** The slowest store as a server would have it: only when every store that has a time has an estimate too. */
+function slowestEstimate(figures: SideFigures[]): number | undefined {
+  const timed = figures.filter((f) => f.totalMs !== undefined);
+  if (!timed.length || timed.some((f) => f.serverMs === undefined)) return undefined;
+  return Math.max(...timed.map((f) => f.serverMs!));
 }
 
 // --- What went wrong ------------------------------------------------------------------------------------------
@@ -350,7 +452,7 @@ export interface Problem {
   retailerId: CompareRetailerId;
   /** The search it happened in; none when it's the store's whole run. */
   term?: string;
-  kind: 'blocked' | 'failed' | 'interrupted' | 'cancelled' | 'other_store' | 'unconfirmed';
+  kind: 'blocked' | 'failed' | 'interrupted' | 'cancelled' | 'other_store' | 'mixed_store' | 'unconfirmed';
   /** Why, in plain words. */
   words: string;
   /** The exact error, as the cloud browser, Browser Use's API or this phone's search gave it. */
@@ -372,6 +474,7 @@ const KIND_WORDS: Record<Problem['kind'], string> = {
   interrupted: 'Cut off',
   cancelled: 'Cancelled',
   other_store: 'Another store’s prices',
+  mixed_store: 'Some prices another store’s',
   unconfirmed: 'Store not confirmed',
 };
 export const problemKindWords = (kind: Problem['kind']): string => KIND_WORDS[kind];
@@ -403,6 +506,13 @@ export function comparisonProblems(c: Comparison): Problem[] {
         if (t.status !== 'done') out.push({ side, retailerId, term: t.term, kind: t.status, words: sideReasonWords(side, t.reason) || t.status, ...(t.detail ? { detail: t.detail } : {}) });
         else if (t.storeMatches === false) {
           out.push({ side, retailerId, term: t.term, kind: 'other_store', words: `its data priced store ${t.pageStoreId ?? '?'}, not ${run.storeId}: those prices aren’t the store’s` });
+        } else {
+          const elsewhere = t.items.filter((i) => i.pricedAt);
+          if (elsewhere.length) {
+            const stores = [...new Set(elsewhere.map((i) => i.pricedAt!))].join(', ');
+            const count = `${elsewhere.length} of its ${t.items.length} products ${elsewhere.length === 1 ? 'was' : 'were'}`;
+            out.push({ side, retailerId, term: t.term, kind: 'mixed_store', words: `${count} priced for store ${stores}, not ${run.storeId}: left out of the price comparison` });
+          }
         }
       }
       if (run.status === 'done' && !storeConfirmed(run) && !run.results.some((t) => t.storeMatches === false)) {
@@ -428,6 +538,8 @@ export interface ProductCell {
   was?: number;
   unitPrice?: string;
   sponsored?: boolean;
+  /** The store its price is for, when that isn't the store asked for: then it isn't compared (see CloudItem). */
+  pricedAt?: string;
   differs?: boolean;
 }
 
@@ -475,15 +587,16 @@ export function termProducts(c: Comparison, retailerId: CompareRetailerId, term:
         ...(item.wasPrice !== undefined ? { was: item.wasPrice } : {}),
         ...(item.unitPrice ? { unitPrice: item.unitPrice } : {}),
         ...(item.sponsored ? { sponsored: true } : {}),
+        ...(item.pricedAt ? { pricedAt: item.pricedAt } : {}),
       };
     }
   }
   for (const row of rows.values()) {
     const phone = row.cells.phone;
-    if (!phone) continue;
+    if (!phone || phone.pricedAt) continue;
     for (const side of ['scripted', 'agent'] as const) {
       const cell = row.cells[side];
-      if (cell && !samePrice(phone.price, cell.price)) cell.differs = true;
+      if (cell && !cell.pricedAt && !samePrice(phone.price, cell.price)) cell.differs = true;
     }
   }
   return { term, results, rows: [...rows.values()] };
@@ -511,8 +624,15 @@ export interface SideTotals {
   setupMs?: number;
   /** A search's time, the median over every search. */
   searchMs?: number;
+  /** The same three as a server would have them, estimated (see SideFigures.serverMs). */
+  serverRunMs?: number;
+  serverSetupMs?: number;
+  serverSearchMs?: number;
+  /** Data this phone would use: its searches' own, or the results a server would send it (see SideFigures). */
   phoneBytes?: number;
   cloudMb?: number;
+  /** The tests' own traffic driving the cloud browser from this phone: not counted in `phoneBytes`. */
+  linkBytes?: number;
   usd: number;
 }
 
@@ -520,7 +640,9 @@ export function sideTotals(list: Comparison[]): SideTotals[] {
   return SIDES.filter((side) => list.some((c) => c.sides[side])).map((side) => {
     const figures: SideFigures[] = [];
     const runTimes: number[] = [];
+    const serverRunTimes: number[] = [];
     const searches: number[] = [];
+    const serverSearches: number[] = [];
     let both = 0;
     let same = 0;
     let runs = 0;
@@ -532,7 +654,15 @@ export function sideTotals(list: Comparison[]): SideTotals[] {
       figures.push(...f);
       const totals = f.map((x) => x.totalMs).filter((ms): ms is number => ms !== undefined);
       if (totals.length) runTimes.push(Math.max(...totals));
-      for (const run of mine) for (const t of run.results) if (t.status === 'done' && t.ms !== undefined) searches.push(t.ms);
+      const server = slowestEstimate(f);
+      if (server !== undefined) serverRunTimes.push(server);
+      for (const run of mine) {
+        for (const t of run.results) {
+          if (t.status !== 'done' || t.ms === undefined) continue;
+          searches.push(t.ms);
+          if (side === 'scripted' && run.linkMs !== undefined) serverSearches.push(Math.max(0, t.ms - (t.linkMs ?? 0)));
+        }
+      }
       const prices = side === 'phone' ? undefined : comparisonSummary(c).prices.find((p) => p.side === side);
       both += prices?.both ?? 0;
       same += prices?.same ?? 0;
@@ -540,8 +670,12 @@ export function sideTotals(list: Comparison[]): SideTotals[] {
     const runMs = median(runTimes);
     const setupMs = median(figures.map((f) => f.setupMs).filter((ms): ms is number => ms !== undefined));
     const searchMs = median(searches);
+    const serverRunMs = median(serverRunTimes);
+    const serverSetupMs = median(figures.map((f) => f.serverSetupMs).filter((ms): ms is number => ms !== undefined));
+    const serverSearchMs = median(serverSearches);
     const phoneBytes = sum(figures.map((f) => f.phoneBytes));
     const cloudMb = sum(figures.map((f) => f.cloudMb));
+    const linkBytes = sum(figures.map((f) => f.linkBytes));
     return {
       side,
       runs,
@@ -555,8 +689,12 @@ export function sideTotals(list: Comparison[]): SideTotals[] {
       ...(runMs !== undefined ? { runMs } : {}),
       ...(setupMs !== undefined ? { setupMs } : {}),
       ...(searchMs !== undefined ? { searchMs } : {}),
+      ...(serverRunMs !== undefined ? { serverRunMs } : {}),
+      ...(serverSetupMs !== undefined ? { serverSetupMs } : {}),
+      ...(serverSearchMs !== undefined ? { serverSearchMs } : {}),
       ...(phoneBytes !== undefined ? { phoneBytes } : {}),
       ...(cloudMb !== undefined ? { cloudMb } : {}),
+      ...(linkBytes !== undefined ? { linkBytes } : {}),
       usd: Math.round(figures.reduce((n, f) => n + f.usd, 0) * 1e6) / 1e6,
     };
   });
@@ -596,43 +734,88 @@ export function sideStatusWords(f: SideFigures, storeId: string): string {
   return why && f.status !== 'running' && f.status !== 'queued' ? `${words[f.status]}: ${why}` : words[f.status];
 }
 
-/** A side's figures in a line: "2 searches, 40 products · 45 s (22 s to set up, a search 9 s) · 5.2 MB proxy, 0.2 MB on this phone · $0.04". */
+/** "22 s to set up, a search 9 s". */
+function partsWords(setupMs: number | undefined, searchMs: number | undefined): string {
+  return [setupMs !== undefined && setupMs >= 1000 ? `${durationWords(setupMs)} to set up` : '', searchMs !== undefined ? `a search ${durationWords(searchMs)}` : ''].filter(Boolean).join(', ');
+}
+
+/**
+ * A side's time in words: as measured; for the cloud browser, first as a server driving it would have it, an
+ * estimate, then as measured from this phone. "about 38 s on a server (estimated: 20 s to set up, a search 9 s); 1 min
+ * 5 s as measured from this phone".
+ */
+export function timeWords(f: SideFigures): string {
+  if (f.totalMs === undefined) return '';
+  const measured = partsWords(f.setupMs, f.searchMs);
+  if (f.serverMs === undefined) return `${durationWords(f.totalMs)}${measured ? ` (${measured})` : ''}`;
+  const server = partsWords(f.serverSetupMs, f.serverSearchMs);
+  return `about ${durationWords(f.serverMs)} on a server (estimated${server ? `: ${server}` : ''}); ${durationWords(f.totalMs)} as measured from this phone${measured ? ` (${measured})` : ''}`;
+}
+
+/** The test's own cost of driving the cloud browser from this phone, left out of its figures: "32.7 MB and 40 s". */
+export function linkWords(f: Pick<SideFigures, 'linkBytes' | 'linkMs'>): string {
+  const parts = [f.linkBytes !== undefined ? dataWords(f.linkBytes) : '', f.linkMs !== undefined && f.linkMs >= 500 ? durationWords(f.linkMs) : ''].filter(Boolean);
+  return parts.length ? `${parts.join(' and ')} driving it from this phone` : '';
+}
+
+/**
+ * A side's figures in a line: "2 searches, 40 products · about 38 s on a server (estimated: …); 1 min 5 s as measured
+ * from this phone · 5.2 MB through the proxy, 12 KB of results to this phone · $0.04 · not counted: 3.1 MB and 27 s
+ * driving it from this phone".
+ */
 export function sideFigureWords(f: SideFigures): string {
-  const parts = [f.setupMs !== undefined && f.setupMs >= 1000 ? `${durationWords(f.setupMs)} to set up` : '', f.searchMs !== undefined ? `a search ${durationWords(f.searchMs)}` : ''].filter(Boolean);
-  const time = f.totalMs !== undefined ? `${durationWords(f.totalMs)}${parts.length ? ` (${parts.join(', ')})` : ''}` : '';
   const data =
     f.side === 'phone'
       ? f.phoneBytes !== undefined
         ? `${dataWords(f.phoneBytes)} of this phone’s data`
         : ''
-      : [f.cloudMb ? `${f.cloudMb.toFixed(1)} MB through the proxy` : '', f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} on this phone` : ''].filter(Boolean).join(', ');
+      : [f.cloudMb ? `${f.cloudMb.toFixed(1)} MB through the proxy` : '', f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} of results to this phone` : ''].filter(Boolean).join(', ');
   const cost = f.side === 'phone' ? 'free' : f.usd > 0 ? costWords(f.usd) : '';
-  return [f.searched || f.products ? `${f.searched} ${f.searched === 1 ? 'search' : 'searches'}, ${f.products} ${f.products === 1 ? 'product' : 'products'}` : '', time, data, cost]
+  const link = linkWords(f);
+  return [
+    f.searched || f.products ? `${f.searched} ${f.searched === 1 ? 'search' : 'searches'}, ${f.products} ${f.products === 1 ? 'product' : 'products'}` : '',
+    timeWords(f),
+    data,
+    cost,
+    f.storeSet === 'kept' ? 'store kept from its last run' : '',
+    link ? `not counted: ${link}` : '',
+  ]
     .filter(Boolean)
     .join(' · ');
 }
 
-/** A side's result in a line: "This phone: prices from 2 of 2 stores, 38 s, 6.1 MB of this phone's data, free." */
+/**
+ * A side's result in a line: "This phone: prices from 2 of 2 stores, 38 s, 6.1 MB of this phone's data, free." The
+ * cloud browser's time is a server's first, estimated, then as measured from this phone.
+ */
 export function sideSummaryWords(s: SideSummary): string {
   const parts = [`prices from ${s.withPrices} of ${s.stores} ${s.stores === 1 ? 'store' : 'stores'}${s.withPrices && s.confirmed < s.withPrices ? ` (confirmed for ${s.confirmed})` : ''}`];
   if (s.blocked) parts.push(`${s.blocked} blocked`);
-  if (s.totalMs !== undefined) parts.push(durationWords(s.totalMs));
+  if (s.serverMs !== undefined && s.totalMs !== undefined) parts.push(`about ${durationWords(s.serverMs)} on a server (an estimate; ${durationWords(s.totalMs)} as measured from this phone)`);
+  else if (s.totalMs !== undefined) parts.push(durationWords(s.totalMs));
   if (s.side === 'phone') {
     if (s.phoneBytes !== undefined) parts.push(`${dataWords(s.phoneBytes)} of this phone’s data`);
     parts.push('free');
   } else {
     if (s.cloudMb) parts.push(`${s.cloudMb.toFixed(1)} MB through Browser Use’s proxy`);
-    if (s.phoneBytes !== undefined) parts.push(`${dataWords(s.phoneBytes)} on this phone`);
+    if (s.phoneBytes !== undefined) parts.push(`${dataWords(s.phoneBytes)} of results to this phone`);
     parts.push(s.usd > 0 ? costWords(s.usd) : 'no cost reported yet');
   }
   return `${SIDE_NAMES[s.side]}: ${parts.join(', ')}.`;
 }
 
+/** What the test's own driving of the cloud browser moved, left out of the figures: "" when nothing was metered. */
+export function testLinkWords(s: Pick<SideSummary, 'linkBytes'>): string {
+  if (s.linkBytes === undefined) return '';
+  return `Not counted: this phone moved ${dataWords(s.linkBytes)} driving the cloud browser over its DevTools connection, which a server next to the browser wouldn’t send to a phone.`;
+}
+
 /** The same products' prices, in a line: "Same product, same price: 38 of 40 (cloud browser against this phone)." */
 export function pricesWords(p: ComparisonSummary['prices'][number]): string {
   const who = `${SIDE_WORDS[p.side].replace(/^the /, '')} against this phone`;
-  if (!p.both) return `No product was listed by both sides (${who}).`;
-  return `Same product, same price: ${p.same} of ${p.both}${p.differ ? `; ${p.differ} differ` : ''} (${who}).`;
+  const elsewhere = p.elsewhere ? ` ${p.elsewhere} more ${p.elsewhere === 1 ? 'was' : 'were'} priced for another store, and not compared.` : '';
+  if (!p.both) return `No product was listed by both sides (${who}).${elsewhere}`;
+  return `Same product, same price: ${p.same} of ${p.both}${p.differ ? `; ${p.differ} differ` : ''} (${who}).${elsewhere}`;
 }
 
 /** A price in a gap: "$3.32", "$2.50 (was $3.00)", "no price". */
@@ -663,6 +846,7 @@ export function comparisonText(c: Comparison, heading: string): string {
   const summary = comparisonSummary(c);
   const lines = [heading, `Searched: ${c.terms.join(', ')} · ${c.retailers.map((r) => `${RETAILER_NAMES[r.retailerId]} store ${r.storeId}`).join(', ')}`, ''];
   for (const s of summary.sides) lines.push(sideSummaryWords(s));
+  for (const s of summary.sides) if (testLinkWords(s)) lines.push(testLinkWords(s));
   for (const p of summary.prices) lines.push(pricesWords(p));
   for (const r of c.retailers) {
     lines.push('', `${RETAILER_NAMES[r.retailerId]} (store ${r.storeId})`);
@@ -684,9 +868,10 @@ export function comparisonText(c: Comparison, heading: string): string {
           lines.push(`  “${term}”, this phone and ${who}: nothing to compare (${parts.join('; ')}).`);
           continue;
         }
+        const elsewhere = m.elsewhere ? `; ${m.elsewhere} priced for another store, not compared` : '';
         const line = m.both
-          ? `  “${term}”, this phone and ${who}: ${m.both} products on both, ${m.same} the same price${m.onlyPhone || m.onlyCloud ? `; ${m.onlyPhone} only on the phone, ${m.onlyCloud} only in the cloud` : ''}.`
-          : `  “${term}”, this phone and ${who}: no product on both.`;
+          ? `  “${term}”, this phone and ${who}: ${m.both} products on both, ${m.same} the same price${m.onlyPhone || m.onlyCloud ? `; ${m.onlyPhone} only on the phone, ${m.onlyCloud} only in the cloud` : ''}${elsewhere}.`
+          : `  “${term}”, this phone and ${who}: no product on both${elsewhere}.`;
         lines.push(line);
         for (const g of m.differ) lines.push(`    ${gapWords(g, side)}`);
       }

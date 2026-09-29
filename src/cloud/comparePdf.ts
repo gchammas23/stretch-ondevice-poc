@@ -70,6 +70,25 @@ const pct = (part: number, whole: number) => (whole ? `${Math.round((part / whol
 const dash = '<span class="dash">–</span>';
 const cellText = (s: string | undefined) => (s ? esc(s) : dash);
 
+/**
+ * A time as a cell: as measured; for the cloud browser, as a server would have it first, marked as the estimate it is,
+ * and as measured from this phone below it.
+ */
+function timeCell(measured: number | undefined, server: number | undefined): string | undefined {
+  if (measured === undefined) return undefined;
+  if (server === undefined) return esc(durationWords(measured));
+  return `${esc(durationWords(server))} <span class="tag">Server estimate</span><br><span class="small">${esc(durationWords(measured))} measured from this phone</span>`;
+}
+
+/** How the store was set, in a few words. */
+const STORE_SET: Record<NonNullable<SideFigures['storeSet']>, string> = {
+  button: 'Set on its page',
+  already: 'Already set',
+  kept: 'Kept from its last run',
+  request: 'In each request',
+  agent: 'By the agent',
+};
+
 /** Every side any of the runs had, in their order. */
 const sidesIn = (list: Comparison[]): CompareSide[] => (['phone', 'scripted', 'agent'] as const).filter((s) => list.some((c) => c.sides[s]));
 
@@ -84,6 +103,8 @@ function storesWords(list: Comparison[]): string {
 
 function glanceRows(totals: SideTotals[], all: boolean): { label: string; cells: string[] }[] {
   const row = (label: string, f: (t: SideTotals) => string | undefined) => ({ label, cells: totals.map((t) => cellText(f(t))) });
+  /** A row whose cells are HTML already. */
+  const rowHtml = (label: string, f: (t: SideTotals) => string | undefined) => ({ label, cells: totals.map((t) => f(t) ?? dash) });
   const trouble = (t: SideTotals) => {
     const parts = [t.blocked ? `${t.blocked} blocked` : '', t.failed ? `${t.failed} failed` : '', t.cutOff ? `${t.cutOff} cut off` : ''].filter(Boolean);
     return parts.length ? parts.join(', ') : 'None';
@@ -94,11 +115,12 @@ function glanceRows(totals: SideTotals[], all: boolean): { label: string; cells:
     row('Prices confirmed for the store', (t) => `${t.confirmed} of ${t.stores}`),
     row('Blocked, failed or cut off', trouble),
     row('Same price as this phone', (t) => (t.side === 'phone' ? 'The reference' : t.both ? `${t.same} of ${t.both} (${pct(t.same ?? 0, t.both)})` : undefined)),
-    row(all ? 'A run’s time (median)' : 'Time, start to end', (t) => (t.runMs !== undefined ? durationWords(t.runMs) : undefined)),
-    row('Setting up (median)', (t) => (t.setupMs !== undefined ? durationWords(t.setupMs) : undefined)),
-    row('A search (median)', (t) => (t.searchMs !== undefined ? durationWords(t.searchMs) : undefined)),
-    row('Data on this phone', (t) => (t.phoneBytes !== undefined ? dataWords(t.phoneBytes) : undefined)),
+    rowHtml(all ? 'A run’s time (median)' : 'Time, start to end', (t) => timeCell(t.runMs, t.serverRunMs)),
+    rowHtml('Setting up (median)', (t) => timeCell(t.setupMs, t.serverSetupMs)),
+    rowHtml('A search (median)', (t) => timeCell(t.searchMs, t.serverSearchMs)),
+    row('Data to this phone', (t) => (t.phoneBytes !== undefined ? `${dataWords(t.phoneBytes)}${t.side === 'phone' ? '' : ' of results'}` : undefined)),
     row('Data through Browser Use’s proxy', (t) => (t.cloudMb ? `${t.cloudMb.toFixed(1)} MB` : undefined)),
+    ...(totals.some((t) => t.linkBytes !== undefined) ? [row('Left out: driving it from this phone', (t) => (t.linkBytes !== undefined ? dataWords(t.linkBytes) : undefined))] : []),
     row('Cost', (t) => (t.side === 'phone' ? 'Free' : t.usd > 0 ? `${costWords(t.usd)}${all && t.runs > 1 ? ` in all · ${costWords(t.usd / t.runs)} a run` : ''}` : undefined)),
   ];
 }
@@ -111,7 +133,10 @@ function inShort(totals: SideTotals[], all: boolean): string[] {
     .map((t) => {
       const parts = [`prices from ${t.withPrices} of ${t.stores} ${t.stores === 1 ? 'store' : 'stores'}${phone ? ` (this phone: ${phone.withPrices} of ${phone.stores})` : ''}`];
       if (t.both) parts.push(`this phone’s price for ${t.same} of the ${t.both} products both listed (${pct(t.same ?? 0, t.both)})`);
-      if (t.runMs !== undefined && phone?.runMs !== undefined) parts.push(`${durationWords(t.runMs)} ${all ? 'a run' : 'in all'} against this phone’s ${durationWords(phone.runMs)}`);
+      if (t.serverRunMs !== undefined && t.runMs !== undefined && phone?.runMs !== undefined) {
+        parts.push(`about ${durationWords(t.serverRunMs)} ${all ? 'a run' : 'in all'} on a server, estimated (${durationWords(t.runMs)} as measured from this phone), against this phone’s ${durationWords(phone.runMs)}`);
+      } else if (t.runMs !== undefined && phone?.runMs !== undefined) parts.push(`${durationWords(t.runMs)} ${all ? 'a run' : 'in all'} against this phone’s ${durationWords(phone.runMs)}`);
+      if (t.phoneBytes !== undefined && phone?.phoneBytes !== undefined) parts.push(`${dataWords(t.phoneBytes)} of results to this phone against the ${dataWords(phone.phoneBytes)} its own searches used`);
       if (t.usd > 0) parts.push(`${costWords(t.usd)}${all ? ' in all' : ''}`);
       return `<b>${esc(SIDE_NAMES[t.side])}:</b> ${esc(parts.join('; '))}.`;
     });
@@ -160,6 +185,9 @@ function runsTable(list: Comparison[], when: PdfInput['when']): string {
 function sideRows(figures: { side: CompareSide; f: SideFigures; tried: number }[], storeId: string): string {
   const row = (label: string, f: (x: SideFigures) => string | undefined, cls = '') =>
     `<tr><td class="label">${esc(label)}</td>${figures.map(({ f: x }) => `<td class="${cls}">${cellText(f(x))}</td>`).join('')}</tr>`;
+  /** A row whose cells are HTML already. */
+  const rowHtml = (label: string, f: (x: SideFigures) => string | undefined) =>
+    `<tr><td class="label">${esc(label)}</td>${figures.map(({ f: x }) => `<td>${f(x) ?? dash}</td>`).join('')}</tr>`;
   const result = `<tr><td class="label">Result</td>${figures
     .map(({ f, tried }) => {
       const cls = f.status === 'done' ? (f.confirmed && !f.otherStore ? 'ok' : 'warn') : f.status === 'running' || f.status === 'queued' ? '' : 'bad';
@@ -171,22 +199,29 @@ function sideRows(figures: { side: CompareSide; f: SideFigures; tried: number }[
   return [
     result,
     row('Products', (x) => (x.searched || x.products ? `${x.products} from ${x.searched} ${x.searched === 1 ? 'search' : 'searches'}` : undefined)),
-    row('Time, start to end', (x) => (x.totalMs !== undefined ? durationWords(x.totalMs) : undefined)),
-    row('Setting up', (x) => (x.setupMs !== undefined && x.setupMs >= 1000 ? durationWords(x.setupMs) : undefined)),
-    row('A search (median)', (x) => (x.searchMs !== undefined ? durationWords(x.searchMs) : undefined)),
-    row('Data on this phone', (x) => (x.phoneBytes !== undefined ? dataWords(x.phoneBytes) : undefined)),
+    rowHtml('Time, start to end', (x) => timeCell(x.totalMs, x.serverMs)),
+    rowHtml('Setting up', (x) => (x.setupMs !== undefined && x.setupMs >= 1000 ? timeCell(x.setupMs, x.serverSetupMs) : undefined)),
+    rowHtml('A search (median)', (x) => timeCell(x.searchMs, x.serverSearchMs)),
+    row('The store', (x) => (x.storeSet ? STORE_SET[x.storeSet] : undefined)),
+    row('Data to this phone', (x) => (x.phoneBytes !== undefined ? `${dataWords(x.phoneBytes)}${x.side === 'phone' ? '' : ' of results'}` : undefined)),
     row('Data through the proxy', (x) => (x.cloudMb ? `${x.cloudMb.toFixed(1)} MB` : undefined)),
+    ...(figures.some(({ f }) => f.linkBytes !== undefined || f.linkMs !== undefined)
+      ? [row('Left out: driving it from this phone', (x) => [x.linkBytes !== undefined ? dataWords(x.linkBytes) : '', x.linkMs !== undefined ? durationWords(x.linkMs) : ''].filter(Boolean).join(', ') || undefined)]
+      : []),
     row('Cost', (x) => (x.side === 'phone' ? 'Free' : x.usd > 0 ? costWords(x.usd) : undefined)),
     row('Bot check', (x) => (x.checkSeen ? 'Seen' : 'None')),
   ].join('');
 }
 
-/** A price cell: the price, what it was, sponsored; a cloud side's marked when it isn't this phone's. */
+/**
+ * A price cell: the price, what it was; a cloud side's marked when it isn't this phone's, and one priced for another
+ * store said so (it isn't compared).
+ */
 function priceCell(cell: ProductCell | undefined): string {
   if (!cell) return `<td class="missing">${dash}</td>`;
   const price = cell.price === null ? 'no price' : money(cell.price);
-  const extra = cell.was !== undefined ? `was ${money(cell.was)}` : '';
-  return `<td class="${cell.differs ? 'differs' : ''}">${cell.differs ? '≠ ' : ''}${esc(price)}${extra ? `<br><span class="small">${esc(extra)}</span>` : ''}</td>`;
+  const extra = [cell.was !== undefined ? `was ${money(cell.was)}` : '', cell.pricedAt ? `store ${cell.pricedAt}’s price` : ''].filter(Boolean).join(', ');
+  return `<td class="${cell.differs ? 'differs' : cell.pricedAt ? 'elsewhere' : ''}">${cell.differs ? '≠ ' : ''}${esc(price)}${extra ? `<br><span class="small">${esc(extra)}</span>` : ''}</td>`;
 }
 
 /** What a side's search came to, in a line: "40 products in 6 s, a page load, 1.4 MB", or why it didn't. */
@@ -195,9 +230,12 @@ function searchLine(side: CompareSide, r: TermResult | undefined, running: boole
   if (r.status !== 'done') return `${SIDE_NAMES[side]}: ${r.status === 'blocked' ? 'blocked' : 'failed'}, ${sideReasonWords(side, r.reason) || r.status}.`;
   const how = r.how === 'replay' ? ', a request sent again' : r.how === 'page' ? ', a page load' : r.how === 'api' ? ', its API' : '';
   const found = r.found ?? r.items.length;
-  return `${SIDE_NAMES[side]}: ${found} ${found === 1 ? 'product' : 'products'}${r.ms !== undefined ? ` in ${durationWords(r.ms)}${how}` : ''}${
-    r.bytes !== undefined ? `, ${dataWords(r.bytes)}` : ''
-  }${r.storeMatches === false ? `; priced store ${r.pageStoreId ?? '?'}, not this one` : ''}.`;
+  const server = side === 'scripted' && r.ms !== undefined && r.linkMs !== undefined ? ` (about ${durationWords(Math.max(0, r.ms - r.linkMs))} on a server)` : '';
+  // The phone's own data; a cloud side's is its browser's page, through the proxy.
+  const data = r.bytes !== undefined ? `, ${dataWords(r.bytes)}${side === 'phone' ? '' : ' through the proxy'}` : '';
+  return `${SIDE_NAMES[side]}: ${found} ${found === 1 ? 'product' : 'products'}${r.ms !== undefined ? ` in ${durationWords(r.ms)}${server}${how}` : ''}${data}${
+    r.storeMatches === false ? `; priced store ${r.pageStoreId ?? '?'}, not this one` : ''
+  }.`;
 }
 
 function termBlock(c: Comparison, retailerId: CompareRetailerId, term: string): string {
@@ -212,8 +250,9 @@ function termBlock(c: Comparison, retailerId: CompareRetailerId, term: string): 
     .map((side) => {
       const m = matchTerm(term, sideRun(c, 'phone', retailerId), sideRun(c, side, retailerId));
       if (m.phone?.status !== 'done' || m.cloud?.status !== 'done') return '';
+      const elsewhere = m.elsewhere ? ` ${m.elsewhere} more on both ${m.elsewhere === 1 ? 'was' : 'were'} priced for another store, and not compared.` : '';
       return `<b>${esc(SIDE_NAMES[side])} against this phone:</b> ${esc(
-        m.both ? `${m.both} products on both, ${m.same} at the same price${m.differ.length ? `, ${m.differ.length} not` : ''}; ${m.onlyPhone} only on this phone, ${m.onlyCloud} only in the cloud.` : 'no product on both.',
+        (m.both ? `${m.both} products on both, ${m.same} at the same price${m.differ.length ? `, ${m.differ.length} not` : ''}; ${m.onlyPhone} only on this phone, ${m.onlyCloud} only in the cloud.` : 'no product on both.') + elsewhere,
       )}`;
     })
     .filter(Boolean);
@@ -237,7 +276,7 @@ function problemsBlock(c: Comparison): string {
     .map((p) => {
       const where = [RETAILER_NAMES[p.retailerId], SIDE_NAMES[p.side], p.term ? `“${p.term}”` : ''].filter(Boolean).join(' · ');
       const why = p.words.charAt(0).toUpperCase() + p.words.slice(1);
-      const tone = p.kind === 'other_store' || p.kind === 'unconfirmed' || p.kind === 'cancelled' ? 'minor' : 'major';
+      const tone = p.kind === 'other_store' || p.kind === 'mixed_store' || p.kind === 'unconfirmed' || p.kind === 'cancelled' ? 'minor' : 'major';
       return `<div class="problem ${tone}"><p><b>${esc(where)}</b> <span class="kind">${esc(problemKindWords(p.kind))}</span></p><p>${esc(why)}.</p>${
         p.detail ? `<p class="detail"><span class="small">Exact error:</span> <code>${esc(p.detail)}</code></p>` : ''
       }</div>`;
@@ -277,10 +316,11 @@ function howBlock(list: Comparison[]): string {
   const points = [
     '<b>This phone</b>: each search in the app’s own browser, hidden, at the store set in Your stores on the store’s own site: a page load, or the store’s own request sent again from its page. The reference for prices.',
     '<b>Cloud browser</b>: a Browser Use browser in the U.S., through home internet addresses Browser Use rents, driven by the app from this phone: for Walmart, its store page and its button, then a search page a term; for Target, its search page, then its own search request sent again with the store’s number.',
+    '<b>Its store</b>: each store’s browser starts from a Browser Use profile kept for that store, as a server keeps its browser’s cookies. The first run sets Walmart’s store on its page; later runs find it still set (“Kept from its last run”), and the first search checks it held, setting it again if not.',
     ...(agent ? ['<b>AI agent</b>: Browser Use’s agent, asked in words to set the store and search each term, answering in JSON.'] : []),
-    '<b>Same product</b>: matched by the store’s own item number (Walmart’s usItemId, Target’s TCIN) among the first 20 products each side kept a search. ≠ marks a cloud price that isn’t this phone’s; – a product that side didn’t list.',
-    '<b>Time</b>: a store from its start to its end, both sides started together. The cloud browser’s setting up (starting it, setting the store) is apart from a search’s time.',
-    '<b>Data</b>: this phone’s own searches, as the app metered them; the cloud’s, through Browser Use’s proxy, as Browser Use reported it; and what driving the cloud browser moved on this phone.',
+    '<b>Same product</b>: matched by the store’s own item number (Walmart’s usItemId, Target’s TCIN) among the first 20 products each side kept a search. ≠ marks a cloud price that isn’t this phone’s; – a product that side didn’t list. Target prices each product for a store: one it priced for another store than the one asked isn’t compared.',
+    '<b>Time</b>: a store from its start to its end, both sides started together; the cloud browser’s setting up (starting it, setting the store) is apart from a search’s time. The cloud browser’s times are given as a server driving it would have them, an estimate: as measured, less what driving it from this phone added. Each command the app sent took a trip over this phone’s connection, counted as no more than the fastest of three pings, so the browser’s own work stays in; each page load took what it took beyond the browser’s own clock for it. A server in the same region as the browser would add back a few milliseconds a command.',
+    '<b>Data</b>: this phone’s own searches, as the app metered them. For a cloud side, what a server would send this phone: the results, as JSON, before any compression. The cloud’s own traffic went through Browser Use’s proxy, as Browser Use reported it. What driving the cloud browser from this phone moved (its DevTools connection, which streams the page’s network events) is the test’s own, and left out: a server next to the browser wouldn’t send it to a phone.',
     '<b>Cost</b>: as Browser Use reported it for each browser and agent run. This phone’s searches cost nothing but its data and battery.',
     '<b>Bot checks</b> were noted on both sides, never shown or pressed. A price can differ for another store’s prices, a sale one side read and the other didn’t, or a change between the two reads.',
   ];
@@ -329,7 +369,9 @@ td.name { color: #1f1f1f; word-break: break-word; }
 th.num, td.num { text-align: left; padding-left: 0; width: 16px; }
 table.glance td.label { font-weight: 600; width: 34%; }
 table.glance td, table.sides td { white-space: normal; }
-table.sides td.label { width: 22%; }
+/* Each side's column as wide as the others', whatever one says: a long reason mustn't squeeze the figures beside it. */
+table.sides { table-layout: fixed; }
+table.sides th.label, table.sides td.label { width: 22%; }
 table.products td.name { width: 52%; }
 tbody tr:nth-child(even) td { background: #f8f6f2; }
 td.result { font-weight: 600; }
@@ -337,6 +379,7 @@ td.result { font-weight: 600; }
 .bad { color: #a8322a; }
 .warn { color: #8a5300; }
 td.differs { font-weight: 700; color: #8a5300; background: #fff1d6 !important; }
+td.elsewhere { color: #6b6660; }
 td.missing, .dash { color: #8c8883; }
 .small { font-size: 7.6px; color: #6b6660; font-weight: 400; }
 .caption { color: #55514c; font-size: 7.8px; }

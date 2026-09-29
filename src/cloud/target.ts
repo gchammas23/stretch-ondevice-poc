@@ -68,7 +68,12 @@ export interface RedskySearch {
   found: number;
   /** The stores the prices say they're for (each product's price.location_id), first seen first. */
   locationIds: string[];
-  /** True when every price is for the job's store; false flags them as another store's. */
+  /** The store most of the prices are for: the job's store when as many are for it as for any other. */
+  pageStoreId?: string;
+  /**
+   * True when most prices are for the job's store; false flags the search as another store's. Either way, a product
+   * priced for another store (one the store asked for doesn't carry, say) says so itself (CloudItem.pricedAt).
+   */
   storeMatches?: boolean;
 }
 
@@ -79,19 +84,27 @@ export function parseRedsky(json: unknown, storeId: string): RedskySearch {
   const list = Array.isArray(search) ? search : Array.isArray(summaries) ? summaries : null;
   const items: CloudItem[] = [];
   const locations: string[] = [];
+  const priced = new Map<string, number>();
   for (const p of list ?? []) {
     if (!isObj(p)) continue;
-    const item = targetItem(p);
-    if (item && !items.some((i) => i.itemId === item.itemId)) items.push(item);
     const location = idOf(get(p, 'price', 'location_id'));
-    if (location && !locations.includes(location)) locations.push(location);
+    const item = targetItem(p);
+    if (!item || items.some((i) => i.itemId === item.itemId)) continue;
+    items.push(location && !sameStoreId(location, storeId) ? { ...item, pricedAt: location } : item);
+    if (!location) continue;
+    if (!locations.includes(location)) locations.push(location);
+    const key = sameStoreId(location, storeId) ? storeId : location;
+    priced.set(key, (priced.get(key) ?? 0) + 1);
   }
+  const ours = priced.get(storeId) ?? 0;
+  const [mostly, most] = [...priced.entries()].filter(([k]) => k !== storeId).sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+  const matches = ours >= most;
   return {
     payload: !!list,
     items: items.slice(0, ITEMS_PER_TERM),
     found: items.length,
     locationIds: locations,
-    ...(locations.length ? { storeMatches: locations.every((l) => sameStoreId(l, storeId)) } : {}),
+    ...(priced.size ? { pageStoreId: matches ? storeId : mostly, storeMatches: matches } : {}),
   };
 }
 
@@ -249,7 +262,7 @@ export async function targetFlow(page: FlowPage, storeId: string, terms: string[
       status: parsed.payload ? 'done' : 'failed',
       items: parsed.items,
       found: parsed.found,
-      ...(parsed.locationIds.length ? { pageStoreId: parsed.locationIds[0], storeMatches: parsed.storeMatches } : {}),
+      ...(parsed.pageStoreId ? { pageStoreId: parsed.pageStoreId, storeMatches: parsed.storeMatches } : {}),
       ...(parsed.payload ? {} : { reason: 'no_search_results' }),
       ...(res.size ? { bytes: res.size } : {}),
       at: ctx.now(),

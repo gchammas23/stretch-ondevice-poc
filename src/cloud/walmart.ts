@@ -1,5 +1,5 @@
 import { get, isObj, num, parseMoney, str, type Obj } from '../onDevice/json';
-import { saleFrom } from '../onDevice/parsers';
+import { saleFrom, walmartPrice, walmartPriceLine as priceLine } from '../onDevice/parsers';
 import { sameStoreId, storeIdFromPageData } from '../onDevice/storeIdentity';
 import { parseSize } from '../pricing/sizes';
 import { BUTTON_WAIT_MS, HEAVY_FILES, ITEMS_PER_TERM, NEXT_DATA_RETRY_MS, NEXT_DATA_TRIES } from './config';
@@ -15,20 +15,6 @@ export const WALMART = 'https://www.walmart.com';
 /** Walmart's store cookie: the store the site prices for. */
 export const STORE_COOKIE = 'assortmentStoreId';
 
-type PriceLine = { lineType?: string; values?: { key?: string; value?: string }[] };
-
-/** A value from the page's price lines: ("CURRENT_PRICE", "PRICE") → "3.32". */
-function priceLine(o: Obj, types: string[], key: string): string | undefined {
-  const lines = get(o, 'priceInfo', 'priceDetails', 'priceLines');
-  if (!Array.isArray(lines)) return undefined;
-  for (const type of types) {
-    const line = (lines as PriceLine[]).find((l) => l?.lineType === type);
-    const value = line?.values?.find((v) => v?.key === key)?.value;
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
 const numberOf = (text: string | undefined): number | undefined => {
   if (!text) return undefined;
   const n = Number(text.replace(/[$,\s]/g, ''));
@@ -43,20 +29,15 @@ function productUrl(canonical: string | undefined): string | undefined {
 }
 
 /**
- * One search result as a product: its price as the page shows it (the number, or its price lines, or the older
- * currentPrice), the regular price on a sale, the unit price as printed, the size from its name, and whether a store
- * sells it (its fulfillment names a store) or it only ships (store "0").
+ * One search result as a product: its price as the card shows it, read as the phone reads it (see walmartPrice), the
+ * regular price on a sale, the unit price as printed, the size from its name, and whether a store sells it (its
+ * fulfillment names a store) or it only ships (store "0").
  */
 export function walmartItem(o: Obj): CloudItem | null {
   const itemId = str(o.usItemId) ?? (typeof o.usItemId === 'number' ? String(o.usItemId) : undefined);
   const name = str(o.name);
   if (!itemId || !name) return null;
-  const price =
-    num(o.price) ??
-    numberOf(priceLine(o, ['CURRENT_PRICE', 'DISCOUNTED_PRICE'], 'PRICE')) ??
-    num(get(o, 'priceInfo', 'currentPrice', 'price')) ??
-    parseMoney(str(get(o, 'priceInfo', 'currentPrice', 'priceString')) ?? str(get(o, 'priceInfo', 'linePrice'))) ??
-    null;
+  const price = walmartPrice(o)?.price ?? parseMoney(str(get(o, 'priceInfo', 'currentPrice', 'priceString')) ?? str(get(o, 'priceInfo', 'linePrice'))) ?? null;
   const was =
     numberOf(priceLine(o, ['COMPARISON'], 'WAS_PRICE')) ??
     num(get(o, 'priceInfo', 'wasPrice', 'price')) ??
@@ -254,12 +235,11 @@ async function readSearchData(page: FlowPage, ctx: FlowContext): Promise<string 
 }
 
 /**
- * Walmart, scripted: the home page, then the store's own page, where "Make this my store" is pressed with a real
- * mouse click and the store cookie checked; then each term's search page, read from its data. A bot check stops
- * everything for up to 45 s; if it stays, Walmart is blocked. The browser itself is created and stopped by the runner.
+ * Sets the store the long way: the home page, then the store's own page, where "Make this my store" is pressed with a
+ * real mouse click and the store cookie checked. Its outcome when it can't (blocked, or the store not set); null once
+ * it's set.
  */
-export async function walmartFlow(page: FlowPage, storeId: string, terms: string[], ctx: FlowContext): Promise<FlowOutcome> {
-  await page.prepare(HEAVY_FILES);
+async function setStore(page: FlowPage, storeId: string, ctx: FlowContext): Promise<FlowOutcome | null> {
   step(ctx);
   await page.navigate(`${WALMART}/`);
   await ctx.sleep(3000);
@@ -289,8 +269,31 @@ export async function walmartFlow(page: FlowPage, storeId: string, terms: string
     if (!cookie || !sameStoreId(cookie, storeId)) return { status: 'failed', reason: 'no_store_button' };
     ctx.onStoreSet('already');
   }
+  return null;
+}
 
-  for (const term of terms) {
+/**
+ * Walmart, scripted: the store set (see setStore), then each term's search page, read from its data. A browser started
+ * from the store's saved profile may have the store still set from an earlier run: its cookie says so before any page
+ * loads, and the store pages are skipped, as a server keeping its browser's cookies would skip them. The first search
+ * checks it held: if its data priced another store, the store is set the long way and that search done again. A bot
+ * check stops everything for up to 45 s; if it stays, Walmart is blocked. The browser itself is created and stopped by
+ * the runner.
+ */
+export async function walmartFlow(page: FlowPage, storeId: string, terms: string[], ctx: FlowContext): Promise<FlowOutcome> {
+  await page.prepare(HEAVY_FILES);
+  step(ctx);
+  const kept = await cookieValue(page, `${WALMART}/`, STORE_COOKIE);
+  /** The store was kept, and no search has said yet whether it held. */
+  let unproven = !!kept && sameStoreId(kept, storeId);
+  if (unproven) ctx.onStoreSet('kept');
+  else {
+    const unset = await setStore(page, storeId, ctx);
+    if (unset) return unset;
+  }
+
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
     step(ctx);
     if (overBudget(page, ctx)) return { status: 'failed', reason: 'data_budget' };
     const url = `${WALMART}/search?q=${encodeURIComponent(term)}`;
@@ -318,6 +321,16 @@ export async function walmartFlow(page: FlowPage, storeId: string, terms: string
     } catch {
       ctx.onTerm({ term, status: 'failed', items: [], reason: 'no_page_data', at: ctx.now() });
       continue;
+    }
+    if (unproven && parsed.pageStoreId) {
+      unproven = false;
+      if (parsed.storeMatches === false) {
+        // The kept store didn't hold: set the long way, and this search done again.
+        const unset = await setStore(page, storeId, ctx);
+        if (unset) return unset;
+        i--;
+        continue;
+      }
     }
     ctx.onTerm({
       term,

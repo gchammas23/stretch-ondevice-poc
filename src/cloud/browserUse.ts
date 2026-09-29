@@ -155,15 +155,33 @@ export class BrowserUseApi {
 
   /**
    * A new cloud browser through a U.S. residential proxy, which Browser Use stops by itself after `timeoutMin`
-   * minutes. Labeled, with its job, so the app can find it again (see BROWSER_LABEL).
+   * minutes. Labeled, with its job, so the app can find it again (see BROWSER_LABEL). With `profileId`, it starts with
+   * that profile's cookies and local storage (HTTP 404 when there's no such profile).
    */
-  async createBrowser(labels: Record<string, string> = {}, timeoutMin = BROWSER_TIMEOUT_MIN): Promise<CloudBrowser> {
+  async createBrowser(labels: Record<string, string> = {}, timeoutMin = BROWSER_TIMEOUT_MIN, profileId?: string): Promise<CloudBrowser> {
     const json = await this.call('POST', `${API_V4}/browsers`, {
       proxyCountryCode: 'us',
       timeout: timeoutMin,
       metadata: { ...BROWSER_LABEL, ...labels },
+      ...(profileId ? { profileId } : {}),
     });
     return toBrowser(json);
+  }
+
+  /**
+   * A new profile (POST /v4/profiles): where Browser Use keeps a browser's cookies and local storage for the browsers
+   * started from it later. HTTP 402 when the account has as many profiles as it may.
+   */
+  async createProfile(name: string): Promise<{ id: string }> {
+    const json = await this.call('POST', `${API_V4}/profiles`, { name: name.slice(0, 100) });
+    const id = isObj(json) && typeof json.id === 'string' ? json.id : '';
+    if (!id) throw new BrowserUseError(0, 'no profile id in the answer', '/v4/profiles');
+    return { id };
+  }
+
+  /** Deletes a profile and what it kept. */
+  async deleteProfile(id: string): Promise<void> {
+    await this.call('DELETE', `${API_V4}/profiles/${encodeURIComponent(id)}`);
   }
 
   /** Stops a browser. Closing the DevTools connection does not: this does, and ends its billing. */

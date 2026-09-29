@@ -11,8 +11,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrowserUseApi } from '../src/cloud/browserUse';
-import { comparisonSummary, matchTerm, sideFigures, type Comparison } from '../src/cloud/compare';
-import { connectToPage, type PageSession } from '../src/cloud/cdp';
+import { comparisonSummary, matchTerm, resultsBytes, sideFigures, type Comparison } from '../src/cloud/compare';
+import { connectToPage, type PageSession, type SocketFactory, type SocketLike } from '../src/cloud/cdp';
 import type { FlowContext } from '../src/cloud/flow';
 import type { TermResult } from '../src/cloud/jobs';
 import { CloudRunner, type LivePage } from '../src/cloud/runner';
@@ -23,6 +23,29 @@ import { hits, startChrome, startSites, waitForChrome } from './cloud-fakes';
 const SLOW = process.argv.includes('--slow');
 const fetchJson = (url: string) => fetch(url);
 const connect = (port: number) => connectToPage(`http://127.0.0.1:${port}`, { fetchJson });
+
+/** A WebSocket as a slow phone connection would carry it: every message held `oneWayMs` on its way, each way, in order. */
+const slowLink =
+  (oneWayMs: number): SocketFactory =>
+  (url) => {
+    const ws = new WebSocket(url);
+    const s: SocketLike = {
+      get readyState() {
+        return ws.readyState;
+      },
+      send: (data) => void setTimeout(() => ws.readyState === 1 && ws.send(data), oneWayMs),
+      close: (code, reason) => ws.close(code, reason),
+      onopen: null,
+      onmessage: null,
+      onerror: null,
+      onclose: null,
+    };
+    ws.onopen = (e) => s.onopen?.(e);
+    ws.onmessage = (e) => void setTimeout(() => s.onmessage?.({ data: e.data }), oneWayMs);
+    ws.onerror = (e) => s.onerror?.(e);
+    ws.onclose = (e) => void setTimeout(() => s.onclose?.(e), oneWayMs);
+    return s;
+  };
 
 function context(results: TermResult[], extra: Partial<FlowContext> = {}): FlowContext & { set: string[]; checks: number } {
   const ctx = {
@@ -87,14 +110,54 @@ const t = async (name: string, fn: () => Promise<void>) => {
       page.close();
     });
 
-    await t('walmart: no button, and the cookie already this store: already set (after the 15 s wait for the button)', async () => {
+    await t('walmart: a browser that kept its cookies (as one from a saved profile does): no store pages, the first search confirms the store', async () => {
       const page = (await connect(9331)) as PageSession;
       const results: TermResult[] = [];
       const ctx = context(results);
+      const [home, store] = [hits.home, hits.storePage];
       const out = await walmartFlow(page, '5260', ['eggs'], ctx);
+      assert.deepEqual(out, { status: 'done' });
+      assert.deepEqual(ctx.set, ['kept']);
+      assert.deepEqual([hits.home - home, hits.storePage - store], [0, 0], 'straight to the search');
+      assert.deepEqual([results[0].pageStoreId, results[0].storeMatches], ['5260', true]);
+      page.close();
+    });
+
+    await t('walmart: a fresh browser whose first page picks this store: no button, already set (after the 15 s wait for the button)', async () => {
+      const page = (await connect(9331)) as PageSession;
+      await page.send('Network.clearBrowserCookies');
+      const results: TermResult[] = [];
+      const ctx = context(results);
+      const out = await walmartFlow(page, '3081', ['eggs'], ctx);
       assert.deepEqual(out, { status: 'done' });
       assert.deepEqual(ctx.set, ['already']);
       assert.equal(results[0].storeMatches, true);
+      page.close();
+    });
+
+    await t('link timing on a real browser, over a link slowed to 200 ms each way: a trip a command, page loads by the browser’s own clock', async () => {
+      const page = (await connectToPage('http://127.0.0.1:9332', { fetchJson, socket: slowLink(200) })) as PageSession;
+      await page.prepare([]);
+      assert.ok(page.rttMs! >= 400 && page.rttMs! < 700, `its fastest trip ${page.rttMs} ms`);
+      // A script that runs 300 ms in the browser: one trip is the link's, the rest the browser's.
+      let before = page.linkMs;
+      let began = Date.now();
+      assert.equal(await page.evaluate<number>('new Promise((r) => setTimeout(() => r(1), 300))', { world: 'main' }), 1);
+      let wall = Date.now() - began;
+      let link = page.linkMs - before;
+      assert.ok(Math.abs(wall - link - 300) < 150, `script: ${wall} ms here, ${link} ms of it the link's`);
+      const script = `script ${wall} ms here, ${Math.round(link)} ms link`;
+      // A page the site takes a second to answer: its time here less the link's is the browser's own clock's for it.
+      before = page.linkMs;
+      began = Date.now();
+      await page.navigate('https://www.walmart.com/slow');
+      wall = Date.now() - began;
+      link = page.linkMs - before;
+      const own = await page.evaluate<number>("performance.getEntriesByType('navigation')[0].domContentLoadedEventEnd", { world: 'main' });
+      assert.ok(own > 900, `the browser took ${Math.round(own)} ms`);
+      assert.ok(Math.abs(wall - link - own) < 200, `page load: ${wall} ms here, ${link} ms the link's, ${Math.round(own)} ms by the browser's own timing`);
+      assert.ok(link >= 350, 'at least a trip there and back');
+      console.log(`   trip ${page.rttMs} ms; ${script}; page load ${wall} ms here, ${Math.round(link)} ms link, ${Math.round(own)} ms in the browser`);
       page.close();
     });
 
@@ -261,6 +324,9 @@ const t = async (name: string, fn: () => Promise<void>) => {
       assert.ok(cloud.wireBytes! > 10_000, 'the DevTools link’s traffic counted');
       const figures = sideFigures('scripted', cloud);
       assert.ok(figures.setupMs! > 0 && figures.setupMs! < figures.totalMs!, 'setting up is told apart from the search');
+      // A local link: the estimate for a server is about the time as measured.
+      assert.ok(cloud.rttMs! < 50 && figures.serverMs! <= figures.totalMs! && figures.totalMs! - figures.serverMs! < 1000, `link ${cloud.linkMs} ms of ${figures.totalMs} ms`);
+      assert.equal(figures.phoneBytes, resultsBytes(cloud), 'this phone’s data: the results a server would send');
       const m = matchTerm('milk', c.sides.phone!.retailers[0], cloud);
       assert.deepEqual([m.both, m.same, m.differ.length], [phoneItems.length, phoneItems.length - 1, 1]);
       for (let i = 0; i < 50 && !calls.includes('PATCH /v4/browsers/b-compare'); i++) await new Promise((r) => setTimeout(r, 100));

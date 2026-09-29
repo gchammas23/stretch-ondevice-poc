@@ -17,10 +17,17 @@ import {
   itemKey,
   matchTerm,
   pricesWords,
+  comparisonProblems,
+  linkWords,
+  resultsBytes,
   sideFigures,
   sideFigureWords,
   sideStatusWords,
   sideSummaryWords,
+  sideTotals,
+  termProducts,
+  testLinkWords,
+  timeWords,
   type CompareRequest,
   type Comparison,
 } from '../src/cloud/compare';
@@ -36,6 +43,7 @@ import {
   type TermResult,
 } from '../src/cloud/jobs';
 import { DeviceSearchError } from '../src/cloud/runner';
+import { parseRedsky } from '../src/cloud/target';
 import { parseWalmartSearch } from '../src/cloud/walmart';
 import { reasonWords } from '../src/cloud/words';
 import { fakeBrowserUse, FakePage, makeRunner, memory, tick, walmartFor, walmartJob } from './cloudKit';
@@ -210,15 +218,23 @@ function finish(job: CloudJob, results: Partial<Record<string, TermResult[]>> = 
     { startedAt: 1000, finishedAt: 46_000, storeSet: 'button', wireBytes: 250_000, bytes: 7_800_000, browsers: { b1: { stopped: true, proxyMb: 7.8, proxyUsd: 0.039, browserUsd: 0.0007 } } },
   );
 
-  await t('figures: time in all, to set up and a search’s; data on this phone and in the cloud; cost; the store confirmed or not', () => {
+  await t('figures: time in all, to set up and a search’s; data to this phone and in the cloud; cost; the store confirmed or not', () => {
     const phone = sideFigures('phone', phoneRun);
     assert.deepEqual(
       [phone.totalMs, phone.setupMs, phone.searchMs, phone.phoneBytes, phone.cloudMb, phone.usd, phone.confirmed, phone.products, phone.searched],
       [20_000, undefined, 10_000, 3_200_000, undefined, 0, true, 80, 2],
     );
     const cloud = sideFigures('scripted', cloudRun);
-    assert.deepEqual([cloud.totalMs, cloud.setupMs, cloud.searchMs, cloud.phoneBytes, cloud.cloudMb, cloud.usd, cloud.confirmed], [45_000, 22_000, 11_500, 250_000, 7.8, 0.0397, true]);
-    assert.equal(sideFigureWords(cloud), '2 searches, 80 products · 45 s (22 s to set up, a search 12 s) · 7.8 MB through the proxy, 250 KB on this phone · $0.04');
+    // This phone's data on a cloud side: what a server would send it, the results; driving the browser is left out.
+    assert.deepEqual(
+      [cloud.totalMs, cloud.setupMs, cloud.searchMs, cloud.phoneBytes, cloud.linkBytes, cloud.cloudMb, cloud.usd, cloud.confirmed],
+      [45_000, 22_000, 11_500, resultsBytes(cloudRun), 250_000, 7.8, 0.0397, true],
+    );
+    assert.equal(cloud.serverMs, undefined, 'no estimate without the link timed');
+    assert.equal(
+      sideFigureWords(cloud),
+      `2 searches, 80 products · 45 s (22 s to set up, a search 12 s) · 7.8 MB through the proxy, ${dataWords(resultsBytes(cloudRun))} of results to this phone · $0.04 · not counted: 250 KB driving it from this phone`,
+    );
     assert.equal(sideFigureWords(phone), '2 searches, 80 products · 20 s (a search 10 s) · 3.2 MB of this phone’s data · free');
     assert.equal(sideStatusWords(cloud, '5260'), 'Prices for store 5260');
     const other = sideFigures('scripted', { ...cloudRun, results: [term('milk', { storeMatches: false, pageStoreId: '3081' })] });
@@ -247,16 +263,17 @@ function finish(job: CloudJob, results: Partial<Record<string, TermResult[]>> = 
         ['scripted', 1, 2, 1, 0.0397],
       ],
     );
-    assert.deepEqual(summary.prices, [{ side: 'scripted', both: 13, same: 12, differ: 1 }]);
+    assert.deepEqual(summary.prices, [{ side: 'scripted', both: 13, same: 12, differ: 1, elsewhere: 0 }]);
     assert.equal(pricesWords(summary.prices[0]), 'Same product, same price: 12 of 13; 1 differ (cloud browser against this phone).');
-    assert.equal(sideSummaryWords(summary.sides[1]), 'Cloud browser: prices from 1 of 2 stores, 1 blocked, 1 s, 7.8 MB through Browser Use’s proxy, $0.04.');
+    const results = dataWords(resultsBytes(cloud.retailers[0]));
+    assert.equal(sideSummaryWords(summary.sides[1]), `Cloud browser: prices from 1 of 2 stores, 1 blocked, 1 s, 7.8 MB through Browser Use’s proxy, ${results} of results to this phone, $0.04.`);
     assert.deepEqual(comparisonNotice(c), { title: 'Phone vs. cloud ready: “milk”', body: 'This phone 2 of 2 · Cloud browser 1 of 2 · same price 12 of 13' });
     const text = comparisonText(c, 'Phone vs. cloud, test');
     for (const line of [
       'Phone vs. cloud, test',
       'Searched: milk · Walmart store 5260, Target store 1375',
       'Walmart (store 5260)',
-      '- Cloud browser: Prices for store 5260 · 1 search, 40 products · 1 s · 7.8 MB through the proxy · $0.04',
+      `- Cloud browser: Prices for store 5260 · 1 search, 40 products · 1 s · 7.8 MB through the proxy, ${results} of results to this phone · $0.04`,
       '  “milk”, this phone and the cloud browser: 13 products on both, 12 the same price; 1 only on the phone, 1 only in the cloud.',
       '    Great Value Whole Vitamin D Milk, Gallon: $3.12 on this phone, $3.32 in the cloud browser',
       `- Cloud browser: Blocked: ${reasonWords('challenge')} · 1 s`,
@@ -301,9 +318,94 @@ function finish(job: CloudJob, results: Partial<Record<string, TermResult[]>> = 
     assert.ok(cloud.wireBytes! > 0, 'the DevTools link metered');
     assert.ok(api.calls.includes('PATCH /v4/browsers/b1'), 'its browser stopped');
     assert.equal(cloud.browsers.b1.proxyMb, 7.8);
-    assert.deepEqual(comparisonSummary(c).prices, [{ side: 'scripted', both: 13, same: 12, differ: 1 }]);
+    assert.deepEqual(comparisonSummary(c).prices, [{ side: 'scripted', both: 13, same: 12, differ: 1, elsewhere: 0 }]);
     const f = sideFigures('scripted', cloud);
     assert.ok(f.setupMs! > 0 && f.setupMs! < f.totalMs!, 'setting up is apart from the search');
+  });
+
+  await t('as a server would have it: the cloud browser’s times less what driving it from this phone added, marked as estimates; results as the phone’s data', () => {
+    const timed: RetailerRun = {
+      ...cloudRun,
+      linkMs: 15_000,
+      setupLinkMs: 8_000,
+      rttMs: 180,
+      commands: 40,
+      results: cloudRun.results.map((r, i) => ({ ...r, linkMs: i ? 5000 : 3000 })),
+    };
+    const f = sideFigures('scripted', timed);
+    assert.deepEqual([f.serverMs, f.serverSetupMs, f.serverSearchMs, f.linkMs], [30_000, 14_000, 7500, 15_000]);
+    assert.equal(timeWords(f), 'about 30 s on a server (estimated: 14 s to set up, a search 8 s); 45 s as measured from this phone (22 s to set up, a search 12 s)');
+    assert.equal(linkWords(f), '250 KB and 15 s driving it from this phone');
+    // The agent and this phone aren't driven over the DevTools link: no estimate, their times as measured.
+    assert.equal(sideFigures('agent', { ...timed, via: 'agent' }).serverMs, undefined);
+    assert.equal(sideFigures('phone', { ...phoneRun, linkMs: 5000 }).serverMs, undefined);
+    // Never below nothing, whatever the link's time.
+    assert.equal(sideFigures('scripted', { ...timed, linkMs: 90_000 }).serverMs, 0);
+
+    // What a server would send this phone: the results as JSON, in UTF-8 bytes ("™" is three).
+    const one = { ...cloudRun, results: [term('milk', { items: [{ itemId: '1', name: 'Good & Gather™ Milk', price: 3.49 }] })] };
+    const json = JSON.stringify({ retailer: 'walmart', storeId: '5260', results: [{ term: 'milk', status: 'done', items: [{ itemId: '1', name: 'Good & Gather™ Milk', price: 3.49 }] }] });
+    assert.equal(resultsBytes(one), Buffer.byteLength(json, 'utf8'));
+    assert.ok(resultsBytes(one) > json.length);
+
+    // Over runs: medians of the estimates beside those measured; the tests' own link data added up, apart.
+    const c = { id: 'x', terms: ['milk', 'eggs'], createdAt: 1, retailers: [{ retailerId: 'walmart' as const, storeId: '5260' }], sides: {} } as Comparison;
+    const job = (side: CompareSide, r: RetailerRun): CloudJob => ({ id: `j-${side}`, engine: 'scripted', terms: c.terms, createdAt: 1, retailers: [r], compare: { id: 'x', side } });
+    const runA = { ...c, sides: { phone: job('phone', phoneRun), scripted: job('scripted', timed) } };
+    const runB = { ...c, id: 'y', sides: { phone: job('phone', phoneRun), scripted: job('scripted', { ...timed, linkMs: 25_000 }) } };
+    const cloudTotals = sideTotals([runA, runB]).find((x) => x.side === 'scripted')!;
+    assert.deepEqual(
+      [cloudTotals.runMs, cloudTotals.serverRunMs, cloudTotals.serverSetupMs, cloudTotals.serverSearchMs, cloudTotals.linkBytes, cloudTotals.phoneBytes],
+      [45_000, 25_000, 14_000, 7500, 500_000, resultsBytes(timed) * 2],
+    );
+    const summary = comparisonSummary(runA);
+    assert.equal(
+      sideSummaryWords(summary.sides[1]),
+      `Cloud browser: prices from 1 of 1 store, about 30 s on a server (an estimate; 45 s as measured from this phone), 7.8 MB through Browser Use’s proxy, ${dataWords(resultsBytes(timed))} of results to this phone, $0.04.`,
+    );
+    assert.equal(testLinkWords(summary.sides[1]), 'Not counted: this phone moved 250 KB driving the cloud browser over its DevTools connection, which a server next to the browser wouldn’t send to a phone.');
+    assert.equal(testLinkWords(summary.sides[0]), '');
+  });
+
+  await t('Target: a product priced for another store says so, and is left out of the prices compared; most prices decide the search’s store', () => {
+    const product = (tcin: string, price: number, location: string) => ({ tcin, price: { current_retail: price, location_id: location }, item: { product_description: { title: `Milk ${tcin}` } } });
+    const answer = { data: { search: { products: [product('1', 3.49, '1072'), product('2', 2.99, '1086'), product('3', 4.19, '1072')] } } };
+    const got = parseRedsky(answer, '1072');
+    assert.deepEqual([got.pageStoreId, got.storeMatches, got.items.map((i) => i.pricedAt)], ['1072', true, [undefined, '1086', undefined]]);
+    const elsewhere = parseRedsky({ data: { search: { products: [product('1', 3.49, '1086'), product('2', 2.99, '1086'), product('3', 4.19, '1072')] } } }, '1072');
+    assert.deepEqual([elsewhere.pageStoreId, elsewhere.storeMatches], ['1086', false], 'most of them another store’s: the search is');
+
+    const target = (via: RetailerRun['via'], items: CloudItem[]): RetailerRun => ({ ...run(via, [term('milk', { items, pageStoreId: '1072', storeMatches: true })]), retailerId: 'target', storeId: '1072' });
+    const phone = target('device', [
+      { itemId: '1', name: 'Milk 1', price: 3.49 },
+      { itemId: '2', name: 'Milk 2', price: 3.29 },
+      { itemId: '3', name: 'Milk 3', price: 4.19 },
+    ]);
+    const cloud = target('browser', got.items);
+    const m = matchTerm('milk', phone, cloud);
+    assert.deepEqual([m.both, m.same, m.elsewhere, m.differ.length], [2, 2, 1, 0], 'the other store’s $2.99 isn’t a difference');
+    const c: Comparison = {
+      id: 'z',
+      terms: ['milk'],
+      createdAt: 1,
+      retailers: [{ retailerId: 'target', storeId: '1072' }],
+      sides: {
+        phone: { id: 'p', engine: 'scripted', terms: ['milk'], createdAt: 1, retailers: [phone], compare: { id: 'z', side: 'phone' } },
+        scripted: { id: 's', engine: 'scripted', terms: ['milk'], createdAt: 1, retailers: [{ ...cloud, storeSet: 'request' }], compare: { id: 'z', side: 'scripted' } },
+      },
+    };
+    const row = termProducts(c, 'target', 'milk').rows.find((r) => r.key === '2')!;
+    assert.deepEqual([row.cells.scripted?.pricedAt, row.cells.scripted?.differs], ['1086', undefined]);
+    const problems = comparisonProblems(c).filter((p) => p.kind === 'mixed_store');
+    assert.deepEqual(
+      problems.map((p) => [p.side, p.term, p.words]),
+      [['scripted', 'milk', '1 of its 3 products was priced for store 1086, not 1072: left out of the price comparison']],
+    );
+    assert.equal(sideFigures('scripted', cloud).otherStoreItems, 1);
+    assert.equal(
+      pricesWords(comparisonSummary(c).prices[0]),
+      'Same product, same price: 2 of 2 (cloud browser against this phone). 1 more was priced for another store, and not compared.',
+    );
   });
 
   await t('runner: this phone blocked is blocked, not failed; one comparison at a time; Cancel stops the cloud side and tells nobody', async () => {

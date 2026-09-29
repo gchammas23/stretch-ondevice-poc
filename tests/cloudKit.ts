@@ -55,11 +55,31 @@ export class FakePage implements LivePage {
       alive?: boolean;
       /** Bytes each script run moves between the phone and the browser. */
       wire?: number;
+      /**
+       * Started from a saved profile: its cookies (the store's, `store`) are there before any page loads. A fresh
+       * browser has none until a Walmart page sets them.
+       */
+      profile?: boolean;
+      /** What driving it from the phone adds, in ms: to each page load, and to each script run (see PageSession). */
+      link?: { load: number; script: number };
     } = {},
   ) {
     this.cookie = opts.store ?? '3081';
     if (opts.wire) this.wireBytes = 0;
+    if (opts.link) {
+      this.linkMs = 0;
+      this.rttMs = opts.link.script;
+      this.commands = 0;
+    }
     this.partial = opts.partialReads ?? 0;
+  }
+  linkMs?: number;
+  rttMs?: number;
+  commands?: number;
+  private linked(ms: number) {
+    if (this.linkMs === undefined) return;
+    this.linkMs += ms;
+    this.commands! += 1;
   }
   async prepare() {
     return { blocking: true };
@@ -71,10 +91,12 @@ export class FakePage implements LivePage {
     if (this.opts.hangAt && url.includes(this.opts.hangAt)) await new Promise((_, reject) => this.hangs.push(reject));
     this.url = url;
     this.bytes += (this.opts.mb ?? 2.6) * 1e6;
+    this.linked(this.opts.link?.load ?? 0);
   }
   async evaluate<T>(expression: string): Promise<T> {
     if (this.closed) throw new CdpClosed('closed');
     if (this.wireBytes !== undefined) this.wireBytes += this.opts.wire ?? 0;
+    this.linked(this.opts.link?.script ?? 0);
     if (expression === PX_SNAPSHOT) {
       this.checks++;
       return { url: this.url, title: 'Walmart', dialogs: this.opts.px?.(this.url) ? ['Robot or human? Activate and hold'] : [] } as T;
@@ -96,6 +118,7 @@ export class FakePage implements LivePage {
     if (store) this.cookie = store;
   }
   async cookies(): Promise<Cookie[]> {
+    if (!this.navigations.length && !this.opts.profile) return [];
     return [{ name: 'assortmentStoreId', value: this.cookie }];
   }
   watchRequests() {}
@@ -127,9 +150,23 @@ export function flowContext(results: TermResult[], c = clock(), extra: Partial<F
 }
 
 /** Browser Use's API as the runner uses it, simulated: browsers, agent runs and the account, with every call kept. */
-export function fakeBrowserUse(init: { balance?: number | 'error'; agent?: Record<string, { status?: string; result?: string; cost?: string; error?: string }[]>; active?: { id: string; label?: boolean; session?: string }[]; failStop?: string[] } = {}) {
+export function fakeBrowserUse(
+  init: {
+    balance?: number | 'error';
+    agent?: Record<string, { status?: string; result?: string; cost?: string; error?: string }[]>;
+    active?: { id: string; label?: boolean; session?: string }[];
+    failStop?: string[];
+    /** Browser Use won't make a profile (its limit on them): HTTP 402. */
+    profileLimit?: boolean;
+    /** Profiles it doesn't have (deleted in its dashboard, say): a browser asked to start from one gets HTTP 404. */
+    missingProfiles?: string[];
+  } = {},
+) {
   const calls: string[] = [];
   const stopped = new Set<string>();
+  /** Each browser made, and the profile it started from. */
+  const made: { id: string; profileId?: string }[] = [];
+  let profiles = 0;
   const tasks: { task: string; sessionId?: string; maxCostUsd?: number; model: string }[] = [];
   let browsers = 0;
   let runs = 0;
@@ -142,9 +179,18 @@ export function fakeBrowserUse(init: { balance?: number | 'error'; agent?: Recor
     const ok = (body: unknown, status = 200) => ({ ok: status < 400, status, text: async () => JSON.stringify(body) });
     if (path === '/v2/billing/account') return init.balance === 'error' ? ok({ detail: 'down' }, 503) : ok({ totalCreditsBalanceUsd: init.balance ?? 12.5 });
     if (method === 'POST' && path === '/v4/browsers') {
+      const body = JSON.parse(req!.body!);
+      if (body.profileId && init.missingProfiles?.includes(body.profileId)) return ok({ detail: 'Profile not found' }, 404);
       browsers++;
+      made.push({ id: `b${browsers}`, ...(body.profileId ? { profileId: body.profileId } : {}) });
       return ok({ id: `b${browsers}`, status: 'active', cdpUrl: `https://b${browsers}.cdp.example` }, 201);
     }
+    if (method === 'POST' && path === '/v4/profiles') {
+      if (init.profileLimit) return ok({ detail: 'Profile limit reached' }, 402);
+      profiles++;
+      return ok({ id: `p${profiles}`, name: JSON.parse(req!.body!).name, cookieDomains: [] }, 201);
+    }
+    if (method === 'DELETE' && path.startsWith('/v4/profiles/')) return { ok: true, status: 204, text: async () => '' };
     if (method === 'GET' && path.startsWith('/v4/browsers?')) {
       const q = new URL(url).searchParams;
       const items = (init.active ?? []).filter((b) => !stopped.has(b.id) && (q.get('agentSessionId') ? b.session === q.get('agentSessionId') : b.label));
@@ -176,7 +222,7 @@ export function fakeBrowserUse(init: { balance?: number | 'error'; agent?: Recor
     if (/\/cancel$/.test(path)) return ok({});
     return ok({ detail: 'not found' }, 404);
   };
-  return { fetchFn, calls, tasks, stopped };
+  return { fetchFn, calls, tasks, stopped, made };
 }
 
 export function makeRunner(api: ReturnType<typeof fakeBrowserUse>, pages: (cdpUrl: string) => FakePage, extra: Partial<RunnerDeps> = {}, key = 'bu_test') {

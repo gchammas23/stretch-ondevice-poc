@@ -95,7 +95,7 @@ export default function PrivacyScreen() {
           <Line text={`To ${maps}: your ZIP code, to measure how far each store is; and when you tap Use my location, where the phone is, once, to get its ZIP code.`} />
           <Line text={krogerApiConfigured() ? 'To Kroger’s official API: your ZIP code, to list its stores near you, and your searches.' : 'Nothing to Kroger’s API: no keys are set.'} />
           {state.settings.cloud.on || cloudJobs.length ? (
-            <Line text="Cloud fetch: each cloud search, and the cloud’s side of each phone vs. cloud comparison, goes to Browser Use (its words and your stores’ numbers, and for the AI agent the task in words), whose cloud browsers visit Walmart’s and Target’s own sites through U.S. residential proxies. The stores see Browser Use’s addresses, not this phone’s. The API key is in this build of the app." />
+            <Line text="Cloud fetch: each cloud search, and the cloud’s side of each phone vs. cloud comparison, goes to Browser Use (its words and your stores’ numbers, and for the AI agent the task in words), whose cloud browsers visit Walmart’s and Target’s own sites through U.S. residential proxies. The stores see Browser Use’s addresses, not this phone’s. Browser Use keeps a profile for each store the cloud browser searched (the sites’ cookies, such as the store Walmart is set to, and nothing of yours), so the next search starts from it; erasing below deletes them. The API key is in this build of the app." />
           ) : null}
           <Line text={state.settings.rulesUrl ? 'A download of the store rules file you set in Store health.' : 'No store rules file: the app uses its built-in rules.'} />
           <Line

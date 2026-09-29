@@ -10,6 +10,7 @@ import { MAX_RUN_COST_USD } from '../src/cloud/config';
 import { pxBlockedAnswer, pxForm, PX_SNAPSHOT, waitOutCheck } from '../src/cloud/perimeterx';
 import { decodeEntities, parseRedsky, redskySearchUrl, replayScript } from '../src/cloud/target';
 import { FIND_STORE_BUTTON, parseWalmartProductPage, parseWalmartSearch, READ_SEARCH_DATA, walmartItem } from '../src/cloud/walmart';
+import { walmartNextData } from '../src/onDevice/parsers';
 
 // Cloud fetch's readers, against saved answers only (tests/fixtures/cloud): a real Walmart search page's data and
 // block page and redsky's PerimeterX answer, read on 2026-09-28 from the machine this was built on; a redsky search answer and a
@@ -109,6 +110,18 @@ function fakeSocket() {
       unitPrice: '1.9 ¢/fl oz',
     });
     assert.equal(walmartItem({ __typename: 'AdPlaceholder' }), null, 'no id or name: not a product');
+  });
+
+  await t('walmart price: the one the card shows (its current price, or its current-price line) before the bare price, on the phone and in the cloud alike', () => {
+    const line = (value: string) => ({ priceDetails: { priceLines: [{ lineType: 'CURRENT_PRICE', values: [{ key: 'PRICE', value }] }] } });
+    const shown = { __typename: 'Product', usItemId: '8', name: 'Tomato Ketchup, 38 oz', price: 7.2, priceInfo: line('4.78') };
+    assert.equal(walmartItem(shown)?.price, 4.78);
+    assert.equal(walmartItem({ ...shown, priceInfo: { ...line('4.78'), currentPrice: { price: 4.5 } } })?.price, 4.5, 'the older current price first');
+    assert.equal(walmartItem({ ...shown, priceInfo: {} })?.price, 7.2, 'the bare price when nothing else says');
+    // The phone's own parser reads the same price from the same data.
+    const page = JSON.stringify({ props: { pageProps: { initialData: { searchResult: { itemStacks: [{ items: [shown] }] } } } } });
+    const phone = walmartNextData({ nextDataText: page }, { retailer: 'walmart', storeId: '5260', query: 'ketchup' } as Parameters<typeof walmartNextData>[1]);
+    assert.deepEqual([phone.products[0]?.price, phone.evidence?.['8']?.pricePath], [4.78, 'priceInfo.priceDetails.priceLines.values.value']);
   });
 
   await t('walmart search: prices for another store are flagged, never taken for the one asked for', () => {
@@ -307,6 +320,24 @@ function fakeSocket() {
     assert.equal(calls[4].url, 'https://api.browser-use.com/api/v4/browsers?filterBy=active&pageSize=50&metadata=app%3Dstretch-poc');
   });
 
+  await t('browser use: a profile made, a browser started from it, and the profile deleted', async () => {
+    const calls: { url: string; init: any }[] = [];
+    const api = new BrowserUseApi('bu_test', async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith('/profiles') && init?.method === 'POST') return { ok: true, status: 201, text: async () => '{"id":"3f1c2a9e-0000-4000-8000-000000000001","name":"stretch-poc walmart 5260","cookieDomains":[]}' };
+      if (init?.method === 'DELETE') return { ok: true, status: 204, text: async () => '' };
+      return { ok: true, status: 201, text: async () => '{"id":"b1","status":"active","cdpUrl":"https://b1.cdp.example"}' };
+    });
+    assert.deepEqual(await api.createProfile('stretch-poc walmart 5260'), { id: '3f1c2a9e-0000-4000-8000-000000000001' });
+    assert.deepEqual([calls[0].init.method, calls[0].url, JSON.parse(calls[0].init.body)], ['POST', 'https://api.browser-use.com/api/v4/profiles', { name: 'stretch-poc walmart 5260' }]);
+    await api.createBrowser({ job: 'j1' }, 10, '3f1c2a9e-0000-4000-8000-000000000001');
+    assert.equal(JSON.parse(calls[1].init.body).profileId, '3f1c2a9e-0000-4000-8000-000000000001');
+    await api.deleteProfile('3f1c2a9e-0000-4000-8000-000000000001');
+    assert.deepEqual([calls[2].init.method, calls[2].url], ['DELETE', 'https://api.browser-use.com/api/v4/profiles/3f1c2a9e-0000-4000-8000-000000000001']);
+    const full = new BrowserUseApi('bu_test', async () => ({ ok: false, status: 402, text: async () => '{"detail":"Profile limit reached"}' }));
+    await assert.rejects(full.createProfile('x'), (e: unknown) => e instanceof BrowserUseError && e.status === 402);
+  });
+
   await t('browser use: refusals carry their status and what the API said; no key refuses before asking', async () => {
     const api = new BrowserUseApi('bu_test', async () => ({ ok: false, status: 402, text: async () => '{"detail":{"code":"api_key_monthly_spend_limit_reached","message":"API key monthly spend limit reached","cap":5,"spent":5.1}}' }));
     await assert.rejects(api.createBrowser(), (e: unknown) => e instanceof BrowserUseError && e.status === 402 && e.detail === 'API key monthly spend limit reached');
@@ -384,6 +415,80 @@ function fakeSocket() {
     assert.equal(page.bytes, 2_600_000, 'only its own');
     page.close();
     assert.equal(await page.alive(), false);
+  });
+
+  await t('cdp page: what driving it from the phone adds: a trip a command at most, a page load beyond the browser’s own clock, counted once', async () => {
+    const clock = { now: 0 };
+    // The browser's side: each command answered after `took` ms on the test's clock, with events before and after.
+    const sent: any[] = [];
+    let answer: (msg: any) => { took: number; result?: unknown; before?: unknown[]; after?: { took: number; events: unknown[] } } = () => ({ took: 100 });
+    const socket: SocketLike & { readyState: number } = {
+      readyState: 0,
+      onopen: null,
+      onmessage: null,
+      onerror: null,
+      onclose: null,
+      send: (data: string) => {
+        const msg = JSON.parse(data);
+        sent.push(msg);
+        const a = answer(msg);
+        const emit = (m: unknown) => socket.onmessage?.({ data: JSON.stringify(m) });
+        setTimeout(() => {
+          for (const e of a.before ?? []) emit(e);
+          clock.now += a.took;
+          emit({ id: msg.id, result: a.result ?? {} });
+          if (a.after) {
+            const after = a.after;
+            setTimeout(() => {
+              clock.now += after.took;
+              for (const e of after.events) emit(e);
+            }, 5);
+          }
+        }, 0);
+      },
+      close: () => {},
+    };
+    setTimeout(() => {
+      socket.readyState = 1;
+      socket.onopen?.({});
+    }, 0);
+    const conn = await CdpConnection.open('wss://x', () => socket);
+    const page = new PageSession(conn, 'S1', () => clock.now);
+
+    // Three pings, the fastest the link's trip; the pings are the test's own, so all of their time is the link's.
+    const pings = [120, 100, 140];
+    answer = (msg) => (msg.method === 'Browser.getVersion' ? { took: pings.shift()! } : { took: 100, result: msg.method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'F' } } } : {} });
+    await page.prepare([]);
+    assert.equal(sent.filter((m) => m.method === 'Browser.getVersion' && !m.sessionId).length, 3, 'asked of the browser, not the page');
+    assert.deepEqual([page.rttMs, page.linkMs, page.commands], [100, 360 + 4 * 100, 4]);
+
+    // A script that runs 800 ms counts one trip: the rest is the browser's work.
+    answer = () => ({ took: 800, result: { result: { value: 1 } } });
+    await page.evaluate('1', { world: 'main' });
+    assert.equal(page.linkMs, 760 + 100);
+
+    // A page load: the browser's clock says 1.5 s from its document's request to its DOMContentLoaded; it took 2.15 s here.
+    answer = () => ({
+      took: 150,
+      result: { frameId: 'F', loaderId: 'L1' },
+      before: [{ method: 'Network.requestWillBeSent', params: { requestId: 'L1', loaderId: 'L1', type: 'Document', timestamp: 1000, request: { url: 'https://www.walmart.com/' } }, sessionId: 'S1' }],
+      after: { took: 2000, events: [{ method: 'Page.lifecycleEvent', params: { name: 'DOMContentLoaded', loaderId: 'L1', frameId: 'F', timestamp: 1001.5 }, sessionId: 'S1' }] },
+    });
+    await page.navigate('https://www.walmart.com/');
+    assert.equal(page.linkMs, 860 + 650);
+
+    // Without the browser's stamps, a load counts one trip, as a command does.
+    answer = () => ({ took: 50, result: { frameId: 'F', loaderId: 'L2' }, after: { took: 900, events: [{ method: 'Page.lifecycleEvent', params: { name: 'DOMContentLoaded', loaderId: 'L2', frameId: 'F' }, sessionId: 'S1' }] } });
+    await page.navigate('https://www.walmart.com/search?q=milk');
+    assert.equal(page.linkMs, 1510 + 100);
+
+    // Two commands under way at once, answered together: their trips overlap, and count once.
+    const took = [100, 0];
+    answer = () => ({ took: took.shift()!, result: { cookies: [] } });
+    await Promise.all([page.cookies(['https://www.walmart.com/']), page.cookies(['https://www.target.com/'])]);
+    assert.equal(page.linkMs, 1610 + 100);
+    assert.equal(page.commands, 4 + 1 + 2 + 2);
+    page.close();
   });
 
   await t('cdp: base64 bodies to text, UTF-8 included', () => {

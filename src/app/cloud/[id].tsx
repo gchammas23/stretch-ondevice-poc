@@ -114,6 +114,8 @@ function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: Retailer
         {run.checkSeen ? <Chip label="Bot check seen" icon="alert" tone="orange" /> : null}
         {run.storeSet === 'button' ? <Chip label="Store set with its button" icon="check" tone="green" /> : null}
         {run.storeSet === 'already' ? <Chip label="Store already set" icon="check" tone="green" /> : null}
+        {run.storeSet === 'kept' ? <Chip label="Store kept from its last run" icon="check" tone="green" /> : null}
+        {run.profile === 'new' ? <Chip label="Its profile kept for next time" tone="plain" /> : null}
         {run.storeSet === 'request' ? <Chip label="Store asked for in each request" tone="plain" /> : null}
         {run.storeSet === 'agent' ? <Chip label="The agent set the store" tone="plain" /> : null}
       </View>
@@ -121,6 +123,8 @@ function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: Retailer
         {[
           run.startedAt ? `Started ${whenLabel(run.startedAt, now)}` : '',
           run.startedAt && run.finishedAt ? `took ${Math.round((run.finishedAt - run.startedAt) / 1000)} s` : '',
+          // Driven from this phone: without its trips to the browser, about what a server's would take.
+          run.startedAt && run.finishedAt && run.linkMs !== undefined ? `about ${Math.round(Math.max(0, run.finishedAt - run.startedAt - run.linkMs) / 1000)} s on a server (estimate)` : '',
           run.bytes ? `${(run.bytes / 1e6).toFixed(1)} MB metered` : '',
           cost.usd > 0 ? `cost ${costWords(cost.usd)}${cost.proxyMb ? ` (${cost.proxyMb.toFixed(1)} MB proxy)` : ''}` : '',
           run.attempts > 1 ? `try ${run.attempts}` : '',
@@ -171,7 +175,7 @@ function TermBlock({ result, storeId }: { result: TermResult; storeId: string })
         <Text style={styles.good}>Priced for store {result.pageStoreId}, as the store’s own data says.</Text>
       ) : null}
       {items.map((item) => (
-        <ItemRow key={item.itemId} item={item} flagged={flagged} />
+        <ItemRow key={item.itemId} item={item} flagged={flagged || !!item.pricedAt} />
       ))}
       {result.items.length > SHOWN ? (
         <Pressable accessibilityRole="button" accessibilityState={{ expanded: all }} hitSlop={12} onPress={() => setAll(!all)}>
@@ -183,7 +187,14 @@ function TermBlock({ result, storeId }: { result: TermResult; storeId: string })
 }
 
 function ItemRow({ item, flagged }: { item: CloudItem; flagged: boolean }) {
-  const detail = [item.size, item.unitPrice, item.sponsored ? 'Sponsored' : '', item.inStock === false ? 'Out of stock' : '', item.atStore === false ? 'Ships only, not sold in stores' : '']
+  const detail = [
+    item.size,
+    item.unitPrice,
+    item.sponsored ? 'Sponsored' : '',
+    item.inStock === false ? 'Out of stock' : '',
+    item.atStore === false ? 'Ships only, not sold in stores' : '',
+    item.pricedAt ? `Store ${item.pricedAt}’s price` : '',
+  ]
     .filter(Boolean)
     .join(' · ');
   return (

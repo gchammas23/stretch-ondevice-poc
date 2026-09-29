@@ -292,6 +292,48 @@ process.on('exit', (code) => {
     await assert.rejects(walmartFlow(new FakePage(), '5260', ['milk'], flowContext([], clock(), { stopped: () => true })), FlowStopped);
   });
 
+  await t('walmart flow: a browser from the store’s saved profile with the store still set skips the store pages; its first search checks it held', async () => {
+    const page = new FakePage({ store: '5260', profile: true });
+    const results: TermResult[] = [];
+    const ctx = flowContext(results);
+    assert.deepEqual(await walmartFlow(page, '5260', ['milk', 'eggs'], ctx), { status: 'done' });
+    assert.deepEqual(page.navigations, ['https://www.walmart.com/search?q=milk', 'https://www.walmart.com/search?q=eggs']);
+    assert.deepEqual(ctx.set, ['kept']);
+    assert.deepEqual(results.map((r) => [r.term, r.pageStoreId, r.storeMatches]), [
+      ['milk', '5260', true],
+      ['eggs', '5260', true],
+    ]);
+    // Another store in the profile: set the long way, as ever.
+    const other = new FakePage({ store: '3081', profile: true });
+    const otherCtx = flowContext([]);
+    assert.deepEqual(await walmartFlow(other, '5260', ['milk'], otherCtx), { status: 'done' });
+    assert.deepEqual([other.navigations[0], otherCtx.set], ['https://www.walmart.com/', ['button']]);
+  });
+
+  await t('walmart flow: a kept store that didn’t hold (the search priced another) is set the long way, and that search done again, once', async () => {
+    const page: FakePage = new FakePage({ store: '5260', profile: true, dataStore: () => (page.navigations.some((u) => u.includes('/store/')) ? '5260' : '3081') });
+    const results: TermResult[] = [];
+    const ctx = flowContext(results);
+    assert.deepEqual(await walmartFlow(page, '5260', ['milk', 'eggs'], ctx), { status: 'done' });
+    assert.deepEqual(page.navigations, [
+      'https://www.walmart.com/search?q=milk',
+      'https://www.walmart.com/',
+      'https://www.walmart.com/store/5260',
+      'https://www.walmart.com/search?q=milk',
+      'https://www.walmart.com/search?q=eggs',
+    ]);
+    assert.deepEqual(ctx.set, ['kept', 'already'], 'the site had it as the store already: nothing to press');
+    assert.deepEqual(results.map((r) => [r.term, r.pageStoreId, r.storeMatches]), [
+      ['milk', '5260', true],
+      ['eggs', '5260', true],
+    ]);
+    // Still another store's after that: said so, as any search that priced another store is; not tried a third time.
+    const stuck = new FakePage({ store: '5260', profile: true, dataStore: () => '3081' });
+    const stuckResults: TermResult[] = [];
+    assert.deepEqual(await walmartFlow(stuck, '5260', ['milk'], flowContext(stuckResults)), { status: 'done' });
+    assert.deepEqual([stuck.navigations.filter((u) => u.includes('/search')).length, stuckResults.map((r) => r.storeMatches)], [2, [false]]);
+  });
+
   // --- The runner, end to end ------------------------------------------------------------------------------------
 
   await t('runner: refuses a job below $1 of credit, without a key, when the credit can’t be read, or a third at once; nothing is created', async () => {
@@ -350,6 +392,78 @@ process.on('exit', (code) => {
     await runner.flush();
     const saved = JSON.parse(disk.map.get('stretch.cloud.v1')!);
     assert.equal(saved.jobs[0].retailers[0].browsers.b1.stopped, true);
+  });
+
+  await t('runner: each store’s browser starts from its saved profile: made the first time, kept on the phone, the store kept after', async () => {
+    const api = fakeBrowserUse();
+    const disk = memory();
+    // Browser Use keeps the first browser's cookies in the profile: the next one starts with the store set.
+    const { runner } = makeRunner(api, (cdpUrl) => (cdpUrl.startsWith('https://b1.') ? new FakePage() : new FakePage({ store: '5260', profile: true })));
+    await runner.hydrate(disk);
+    assert.ok((await runner.start(walmartJob(['milk']))).ok);
+    await tick(80);
+    const first = runner.getJobs()[0].retailers[0];
+    assert.deepEqual([first.status, first.profile, first.storeSet], ['done', 'new', 'button']);
+    assert.deepEqual(api.made, [{ id: 'b1', profileId: 'p1' }]);
+    assert.equal(api.calls.filter((c) => c === 'POST /v4/profiles').length, 1);
+    await runner.flush();
+    assert.deepEqual(JSON.parse(disk.map.get('stretch.cloud.v1')!).profiles, { 'walmart:5260': 'p1' });
+
+    // The app opened again: the profile is read back and used, not made again.
+    const again = makeRunner(api, () => new FakePage({ store: '5260', profile: true }));
+    await again.runner.hydrate(disk);
+    assert.ok((await again.runner.start(walmartJob(['milk']))).ok);
+    await tick(80);
+    const second = again.runner.getJobs()[0].retailers[0];
+    assert.deepEqual([second.status, second.profile, second.storeSet], ['done', 'saved', 'kept']);
+    assert.deepEqual(api.made[1], { id: 'b2', profileId: 'p1' });
+    assert.equal(api.calls.filter((c) => c === 'POST /v4/profiles').length, 1);
+
+    // Erasing everything deletes the profiles in Browser Use too.
+    await again.runner.clear();
+    assert.ok(api.calls.includes('DELETE /v4/profiles/p1'));
+    assert.equal(JSON.parse(disk.map.get('stretch.cloud.v1')!).profiles, undefined);
+  });
+
+  await t('runner: no profile when Browser Use won’t make one, or has lost it: the browser starts empty and the store is set on its page', async () => {
+    const full = fakeBrowserUse({ profileLimit: true });
+    const { runner } = makeRunner(full, () => new FakePage());
+    await runner.hydrate(memory());
+    assert.ok((await runner.start(walmartJob(['milk']))).ok);
+    await tick(80);
+    const r = runner.getJobs()[0].retailers[0];
+    assert.deepEqual([r.status, r.profile, r.storeSet, full.made], ['done', undefined, 'button', [{ id: 'b1' }]]);
+
+    // A profile deleted in Browser Use's dashboard: forgotten, this browser starts empty, and the next run makes another.
+    const lost = fakeBrowserUse({ missingProfiles: ['p9'] });
+    const disk = memory();
+    await disk.setItem('stretch.cloud.v1', JSON.stringify({ v: 1, jobs: [], orphans: [], profiles: { 'walmart:5260': 'p9' } }));
+    const kit = makeRunner(lost, () => new FakePage());
+    await kit.runner.hydrate(disk);
+    assert.ok((await kit.runner.start(walmartJob(['milk']))).ok);
+    await tick(80);
+    const r2 = kit.runner.getJobs()[0].retailers[0];
+    assert.deepEqual([r2.status, r2.profile, lost.made], ['done', undefined, [{ id: 'b1' }]]);
+    await kit.runner.flush();
+    assert.equal(JSON.parse(disk.map.get('stretch.cloud.v1')!).profiles, undefined);
+    assert.ok((await kit.runner.start(walmartJob(['eggs']))).ok);
+    await tick(80);
+    assert.deepEqual(lost.made[1], { id: 'b2', profileId: 'p1' });
+  });
+
+  await t('runner: what driving the browser from this phone added, a search at a time and in all, before and after the store was set', async () => {
+    const api = fakeBrowserUse();
+    const kit = makeRunner(api, () => new FakePage({ link: { load: 900, script: 150 } }));
+    await kit.runner.hydrate(memory());
+    assert.ok((await kit.runner.start(walmartJob(['milk', 'eggs']))).ok);
+    await tick(80);
+    const r = kit.runner.getJobs()[0].retailers[0];
+    // Setting the store: 2 page loads, and scripts (5 bot-check looks and store-button finds and so on).
+    assert.ok(r.setupLinkMs! >= 2 * 900, `setup ${r.setupLinkMs}`);
+    // Each search: its page load, its bot-check look, its data read.
+    assert.deepEqual(r.results.map((x) => x.linkMs), [900 + 2 * 150, 900 + 2 * 150]);
+    assert.equal(r.linkMs, r.setupLinkMs! + 2 * (900 + 2 * 150));
+    assert.deepEqual([r.rttMs, r.commands! > 0], [150, true]);
   });
 
   await t('runner: a page error fails the retailer with what went wrong, and its browser is still stopped', async () => {
