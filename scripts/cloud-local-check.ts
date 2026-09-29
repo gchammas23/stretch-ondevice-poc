@@ -16,7 +16,7 @@ import { connectToPage, type PageSession, type SocketFactory, type SocketLike } 
 import type { FlowContext } from '../src/cloud/flow';
 import type { TermResult } from '../src/cloud/jobs';
 import { CloudRunner, type LivePage } from '../src/cloud/runner';
-import { targetFlow } from '../src/cloud/target';
+import { parseRedsky, redskySearchUrl, replayScript, targetFlow } from '../src/cloud/target';
 import { parseWalmartSearch, walmartFlow } from '../src/cloud/walmart';
 import { hits, startChrome, startSites, waitForChrome } from './cloud-fakes';
 
@@ -55,7 +55,7 @@ function context(results: TermResult[], extra: Partial<FlowContext> = {}): FlowC
     now: Date.now,
     stopped: () => false,
     onTerm: (r: TermResult) => results.push(r),
-    onStoreSet: (how: string) => ctx.set.push(how),
+    onStoreSet: (how: string, picked?: string) => ctx.set.push(picked ? `${how} over ${picked}` : how),
     onCheck: () => ctx.checks++,
     maxMb: 40,
     ...extra,
@@ -181,19 +181,67 @@ const t = async (name: string, fn: () => Promise<void>) => {
       page.close();
     });
 
-    await t('target: the page’s own redsky request is captured, replayed with the user’s store, and location_id checked', async () => {
+    await t('target, the old way: its own request edited to ask for store 1375 still gets the store the site picked (2766), as the live runs did', async () => {
+      const page = (await connect(9332)) as PageSession;
+      await page.send('Network.clearBrowserCookies');
+      await page.prepare([]);
+      page.watchRequests((url) => /redsky/.test(url));
+      await page.navigate('https://www.target.com/s?searchTerm=milk');
+      for (let i = 0; i < 40 && !page.requests.some((r) => r.status); i++) await new Promise((r) => setTimeout(r, 100));
+      const own = page.requests.find((r) => /plp_search/.test(r.url))!;
+      assert.equal(new URL(own.url).searchParams.get('pricing_store_id'), '2766', 'a new visitor: the site picked a store');
+      const res = await page.evaluate<{ status: number; text: string }>(replayScript(redskySearchUrl(own.url, 'milk', '1375')), { world: 'main' });
+      const got = parseRedsky(JSON.parse(res.text), '1375');
+      assert.deepEqual([got.pageStoreId, got.storeMatches], ['2766', false]);
+      page.close();
+    });
+
+    await t('target: store 1375 set on its own page with “Shop this store”; the search page then asks for it, and every answer is priced for it', async () => {
       const page = (await connect(9332)) as PageSession;
       const results: TermResult[] = [];
       const ctx = context(results);
+      const pages = hits.targetStorePage;
       const out = await targetFlow(page, '1375', ['milk', 'eggs'], ctx);
       assert.deepEqual(out, { status: 'done' });
-      assert.deepEqual(ctx.set, ['request']);
-      assert.deepEqual(results.map((r) => [r.term, r.status, r.pageStoreId, r.storeMatches]), [
-        ['milk', 'done', '1375', true],
-        ['eggs', 'done', '1375', true],
+      assert.deepEqual([ctx.set, hits.targetStorePage - pages], [['button over 2766'], 1]);
+      assert.deepEqual(results.map((r) => [r.term, r.status, r.pageStoreId, r.storeMatches, r.siteStoreId]), [
+        ['milk', 'done', '1375', true, '1375'],
+        ['eggs', 'done', '1375', true, '1375'],
       ]);
-      assert.equal(results[0].items[0].price, 3.49, 'store 1375’s price, not the page’s store 2766 ($3.69)');
+      assert.equal(results[0].items[0].price, 3.49, 'store 1375’s price, not the picked store 2766’s ($3.69)');
       assert.match(results[1].items[0].name, /\(eggs\)$/);
+      page.close();
+    });
+
+    await t('target: the store kept in its cookies (as a saved profile keeps it): no store page, and still store 1375’s prices', async () => {
+      const page = (await connect(9332)) as PageSession;
+      const results: TermResult[] = [];
+      const ctx = context(results);
+      const pages = hits.targetStorePage;
+      assert.deepEqual(await targetFlow(page, '1375', ['milk'], ctx), { status: 'done' });
+      assert.deepEqual([ctx.set, hits.targetStorePage - pages, results[0].pageStoreId], [['kept'], 0, '1375']);
+      page.close();
+    });
+
+    await t('target: a “Shop this store” that doesn’t take: the store set in its cookies, from what its page says', async () => {
+      const page = (await connect(9332)) as PageSession;
+      const results: TermResult[] = [];
+      const ctx = context(results);
+      assert.deepEqual(await targetFlow(page, '4242', ['milk'], ctx), { status: 'done' });
+      assert.deepEqual([ctx.set, results[0].pageStoreId, results[0].storeMatches], [['cookie over 1375'], '4242', true]);
+      const cookies = await page.cookies(['https://www.target.com/']);
+      assert.equal(cookies.find((c) => c.name === 'fiatsCookie')?.value, 'DSI_4242|DSN_Button%20Broken|DSZ_10001');
+      assert.equal(cookies.find((c) => c.name === 'UserLocation')?.value, '10001|40.751|-73.997|NY|US');
+      // Back to 1375 for what follows.
+      assert.deepEqual(await targetFlow(page, '1375', ['milk'], context([])), { status: 'done' });
+      page.close();
+    });
+
+    await t('target: a store with no page: failed, saying so, and no prices read', async () => {
+      const page = (await connect(9332)) as PageSession;
+      const results: TermResult[] = [];
+      const out = await targetFlow(page, '4040', ['milk'], context(results));
+      assert.deepEqual([out.status, out.status !== 'done' && out.reason, results.length], ['failed', 'no_store_page', 0]);
       page.close();
     });
 

@@ -4,7 +4,7 @@ import { agentTask, followUpTask, readAgentAnswer, type AgentRetailer } from './
 import { BrowserUseApi, BrowserUseError, TERMINAL_RUN, type RunStatus } from './browserUse';
 import { CdpClosed, CdpTimeout } from './cdp';
 import { checkComparison, comparisonJobs, comparisonOf, comparisonStatus, type CompareProblem, type CompareRequest, type Comparison } from './compare';
-import { AGENT_MODEL, BROWSER_LABEL, BROWSER_TIMEOUT_MIN, browserUseKey, MAX_MB_PER_BROWSER, MAX_RUN_COST_USD, POLL_MS } from './config';
+import { AGENT_MODEL, AGENT_MODEL_PARAMS, BROWSER_LABEL, BROWSER_TIMEOUT_MIN, browserUseKey, MAX_MB_PER_BROWSER, MAX_RUN_COST_USD, POLL_MS } from './config';
 import { FlowStopped, type FlowContext, type FlowOutcome, type FlowPage } from './flow';
 import {
   applyToJob,
@@ -51,11 +51,16 @@ export interface LivePage extends FlowPage {
   readonly commands?: number;
 }
 
-/** A term searched on this phone: its products, the store its search said it priced, and what the search took. */
+/**
+ * A term searched on this phone: its products (each priced for another store than the one asked marked so, where
+ * the answer said), the store its prices are for (the answer's own say where it gave one, else the request's), the
+ * store the site's own page asked for by itself, and what the search took.
+ */
 export interface DeviceResult {
   items: CloudItem[];
   found: number;
   storeId?: string;
+  siteStoreId?: string;
   ms?: number;
   bytes?: number;
   how?: TermResult['how'];
@@ -589,11 +594,11 @@ export class CloudRunner {
       now: d.now,
       stopped: () => live.stopped,
       onTerm: (result) => this.apply(jobId, retailerId, { type: 'term', result: { ...since(), ...result } }),
-      onStoreSet: (how) => {
+      onStoreSet: (how, picked) => {
         since();
         // The link's time until the store was set, in all: setting it may have taken more than one go.
         const linkMs = live.page?.linkMs;
-        this.apply(jobId, retailerId, { type: 'storeSet', how, ...(linkMs !== undefined ? { linkMs: Math.round(linkMs) } : {}) });
+        this.apply(jobId, retailerId, { type: 'storeSet', how, ...(linkMs !== undefined ? { linkMs: Math.round(linkMs) } : {}), ...(picked ? { picked } : {}) });
       },
       onCheck: () => this.apply(jobId, retailerId, { type: 'checkSeen' }),
       maxMb: MAX_MB_PER_BROWSER,
@@ -604,7 +609,7 @@ export class CloudRunner {
   private endFlow(jobId: string, retailerId: CloudRetailerId, outcome: FlowOutcome): void {
     const at = this.d.now();
     if (outcome.status !== 'done') {
-      this.apply(jobId, retailerId, { type: 'finish', status: outcome.status, reason: outcome.reason, at });
+      this.apply(jobId, retailerId, { type: 'finish', status: outcome.status, reason: outcome.reason, ...(outcome.detail ? { detail: outcome.detail } : {}), at });
       return;
     }
     const results = this.retailer(jobId, retailerId)?.results ?? [];
@@ -741,7 +746,12 @@ export class CloudRunner {
     const d = this.d;
     const terms = this.job(jobId)?.terms ?? [];
     try {
-      const run = await d.api.createRun({ task: agentTask(retailerId as AgentRetailer, storeId, terms), model: AGENT_MODEL, maxCostUsd: MAX_RUN_COST_USD });
+      const run = await d.api.createRun({
+        task: agentTask(retailerId as AgentRetailer, storeId, terms),
+        model: AGENT_MODEL,
+        modelParams: AGENT_MODEL_PARAMS,
+        maxCostUsd: MAX_RUN_COST_USD,
+      });
       this.apply(jobId, retailerId, { type: 'agentRun', runId: run.id, sessionId: run.sessionId });
       await this.saveNow();
       // Cancelled while it was being created: cancelled in the cloud too.
@@ -830,6 +840,7 @@ export class CloudRunner {
           const next = await d.api.createRun({
             task: followUpTask(retailerId as AgentRetailer, r.storeId, job.terms, reading.why),
             model: AGENT_MODEL,
+            modelParams: AGENT_MODEL_PARAMS,
             maxCostUsd: MAX_RUN_COST_USD,
             sessionId,
           });
@@ -905,6 +916,7 @@ export class CloudRunner {
               items: got.items,
               found: got.found,
               ...(got.storeId ? { pageStoreId: got.storeId, storeMatches: matches } : {}),
+              ...(got.siteStoreId ? { siteStoreId: got.siteStoreId } : {}),
               ms: got.ms ?? d.now() - began,
               ...(got.bytes !== undefined ? { bytes: got.bytes } : {}),
               ...(got.how ? { how: got.how } : {}),

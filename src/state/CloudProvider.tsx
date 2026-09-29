@@ -7,7 +7,7 @@ import { comparisonOf, comparisons, type Comparison } from '../cloud/compare';
 import { browserUseKey, ITEMS_PER_TERM } from '../cloud/config';
 import type { CloudJob } from '../cloud/jobs';
 import { askForNotifications, notifyComparisonDone, notifyJobDone, openJobsFromNotifications } from '../cloud/notify';
-import { fromProduct } from '../cloud/plan';
+import { deviceResult } from '../cloud/plan';
 import { browserUseApi, cloudRunner, DeviceSearchError, type CloudRunner } from '../cloud/runner';
 import { fromFailure } from '../onDevice/phoneVsServer';
 import type { SearchOutcome } from '../onDevice/types';
@@ -55,14 +55,8 @@ export function CloudProvider({ children }: { children: React.ReactNode }) {
             ...(side.bytes !== undefined ? { bytes: side.bytes } : {}),
           });
         }
-        return {
-          items: outcome.products.slice(0, ITEMS_PER_TERM).map(fromProduct),
-          found: outcome.products.length,
-          storeId: outcome.store?.id,
-          ms: outcome.ms,
-          ...(outcome.bytes !== undefined ? { bytes: outcome.bytes } : {}),
-          how: outcome.strategy === 'api' ? 'api' : outcome.strategy === 'fetch' ? 'request' : outcome.via === 'replay' ? 'replay' : 'page',
-        };
+        // The store its answer priced, where the answer says (Target's do, product by product), not just the one asked.
+        return deviceResult(outcome, storeId, ITEMS_PER_TERM);
       },
     });
     const off = cloudRunner.onFinished((job) => void notifyJobDone(job));

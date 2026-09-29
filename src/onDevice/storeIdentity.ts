@@ -203,6 +203,54 @@ function swapPairs(query: string, key: string, from: string, to: string, jsonPar
     .join('&');
 }
 
+/** A product's own id, as a store's answer writes it (Target's `tcin`). */
+const ITEM_IDS = ['tcin', 'usItemId', 'itemId', 'item_id', 'productId', 'product_id', 'sku', 'id'];
+
+/**
+ * The store an answer itself says its prices are for, where each product's price names its store (Target's
+ * `price.location_id`, seen in redsky's answers): the store most of them name (the one asked for, `storeId`, when as
+ * many name it as any other), and each product's own store, by its id. Undefined when no price names a store: then
+ * only the request says which store was asked for, not which one answered.
+ */
+export function storesInAnswer(text: string | undefined, storeId?: string): { pricedFor: string; items: Record<string, string> } | undefined {
+  const t = text?.trim();
+  if (!t || !(t.startsWith('{') || t.startsWith('['))) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(t);
+  } catch {
+    return undefined;
+  }
+  const counts = new Map<string, number>();
+  const items: Record<string, string> = {};
+  let budget = 200_000;
+  const walk = (node: unknown, depth: number) => {
+    if (budget-- <= 0 || depth > 40) return;
+    if (Array.isArray(node)) {
+      node.forEach((v) => walk(v, depth + 1));
+      return;
+    }
+    if (!isObj(node)) return;
+    const price = node.price;
+    if (isObj(price)) {
+      const key = Object.keys(price).find((k) => /^location_?id$/.test(fieldKey(k)));
+      const store = key ? storeValue(price[key]) : undefined;
+      if (store) {
+        const at = storeId && sameStoreId(store, storeId) ? storeId : store;
+        counts.set(at, (counts.get(at) ?? 0) + 1);
+        const idKey = ITEM_IDS.find((k) => typeof node[k] === 'string' || typeof node[k] === 'number');
+        if (idKey) items[String(node[idKey])] = store;
+      }
+    }
+    for (const v of Object.values(node)) if (typeof v === 'object' && v !== null) walk(v, depth + 1);
+  };
+  walk(json, 0);
+  if (!counts.size) return undefined;
+  const ours = storeId ? (counts.get(storeId) ?? 0) : 0;
+  const [other, most] = [...counts.entries()].filter(([k]) => k !== storeId).sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+  return { pricedFor: storeId && ours >= most ? storeId : other, items };
+}
+
 /**
  * The same request, asking for `storeId`'s prices: its store field (as storeIdFromRequest finds it) set to that
  * store. `pinned` is false when the request names no store, so it can't be pointed at one.

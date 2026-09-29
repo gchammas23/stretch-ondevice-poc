@@ -23,6 +23,7 @@ import {
   type SideTotals,
 } from './compare';
 import type { CompareSide, TermResult } from './jobs';
+import { sameStoreId } from '../onDevice/storeIdentity';
 import { costWords, RETAILER_NAMES } from './words';
 
 // Pure: Phone vs. cloud as a PDF to share, as HTML for expo-print (see src/ui/pdf.ts). One run's, or every run's with
@@ -85,6 +86,7 @@ const STORE_SET: Record<NonNullable<SideFigures['storeSet']>, string> = {
   button: 'Set on its page',
   already: 'Already set',
   kept: 'Kept from its last run',
+  cookie: 'Set in its store cookies',
   request: 'In each request',
   agent: 'By the agent',
 };
@@ -202,7 +204,7 @@ function sideRows(figures: { side: CompareSide; f: SideFigures; tried: number }[
     rowHtml('Time, start to end', (x) => timeCell(x.totalMs, x.serverMs)),
     rowHtml('Setting up', (x) => (x.setupMs !== undefined && x.setupMs >= 1000 ? timeCell(x.setupMs, x.serverSetupMs) : undefined)),
     rowHtml('A search (median)', (x) => timeCell(x.searchMs, x.serverSearchMs)),
-    row('The store', (x) => (x.storeSet ? STORE_SET[x.storeSet] : undefined)),
+    row('The store', (x) => (x.storeSet ? `${STORE_SET[x.storeSet]}${x.sitePicked && x.storeSet !== 'kept' ? ` (the site had picked ${x.sitePicked})` : ''}` : undefined)),
     row('Data to this phone', (x) => (x.phoneBytes !== undefined ? `${dataWords(x.phoneBytes)}${x.side === 'phone' ? '' : ' of results'}` : undefined)),
     row('Data through the proxy', (x) => (x.cloudMb ? `${x.cloudMb.toFixed(1)} MB` : undefined)),
     ...(figures.some(({ f }) => f.linkBytes !== undefined || f.linkMs !== undefined)
@@ -225,7 +227,7 @@ function priceCell(cell: ProductCell | undefined): string {
 }
 
 /** What a side's search came to, in a line: "40 products in 6 s, a page load, 1.4 MB", or why it didn't. */
-function searchLine(side: CompareSide, r: TermResult | undefined, running: boolean): string {
+function searchLine(side: CompareSide, r: TermResult | undefined, running: boolean, storeId = ''): string {
   if (!r) return `${SIDE_NAMES[side]}: ${running ? 'still searching' : 'not searched'}.`;
   if (r.status !== 'done') return `${SIDE_NAMES[side]}: ${r.status === 'blocked' ? 'blocked' : 'failed'}, ${sideReasonWords(side, r.reason) || r.status}.`;
   const how = r.how === 'replay' ? ', a request sent again' : r.how === 'page' ? ', a page load' : r.how === 'api' ? ', its API' : '';
@@ -233,7 +235,8 @@ function searchLine(side: CompareSide, r: TermResult | undefined, running: boole
   const server = side === 'scripted' && r.ms !== undefined && r.linkMs !== undefined ? ` (about ${durationWords(Math.max(0, r.ms - r.linkMs))} on a server)` : '';
   // The phone's own data; a cloud side's is its browser's page, through the proxy.
   const data = r.bytes !== undefined ? `, ${dataWords(r.bytes)}${side === 'phone' ? '' : ' through the proxy'}` : '';
-  return `${SIDE_NAMES[side]}: ${found} ${found === 1 ? 'product' : 'products'}${r.ms !== undefined ? ` in ${durationWords(r.ms)}${server}${how}` : ''}${data}${
+  const asked = r.siteStoreId && storeId && !sameStoreId(r.siteStoreId, storeId) ? `; the site’s own page asked for store ${r.siteStoreId}` : '';
+  return `${SIDE_NAMES[side]}: ${found} ${found === 1 ? 'product' : 'products'}${r.ms !== undefined ? ` in ${durationWords(r.ms)}${server}${how}` : ''}${data}${asked}${
     r.storeMatches === false ? `; priced store ${r.pageStoreId ?? '?'}, not this one` : ''
   }.`;
 }
@@ -243,7 +246,7 @@ function termBlock(c: Comparison, retailerId: CompareRetailerId, term: string): 
   const t = termProducts(c, retailerId, term);
   const lines = sides.map((side) => {
     const run = sideRun(c, side, retailerId);
-    return searchLine(side, t.results[side], run?.status === 'running' || run?.status === 'queued');
+    return searchLine(side, t.results[side], run?.status === 'running' || run?.status === 'queued', run?.storeId);
   });
   const matches = (['scripted', 'agent'] as const)
     .filter((side) => sides.includes(side))
@@ -314,11 +317,11 @@ function runSection(c: Comparison, index: number, input: PdfInput): string {
 function howBlock(list: Comparison[]): string {
   const agent = list.some((c) => c.sides.agent);
   const points = [
-    '<b>This phone</b>: each search in the app’s own browser, hidden, at the store set in Your stores on the store’s own site: a page load, or the store’s own request sent again from its page. The reference for prices.',
-    '<b>Cloud browser</b>: a Browser Use browser in the U.S., through home internet addresses Browser Use rents, driven by the app from this phone: for Walmart, its store page and its button, then a search page a term; for Target, its search page, then its own search request sent again with the store’s number.',
-    '<b>Its store</b>: each store’s browser starts from a Browser Use profile kept for that store, as a server keeps its browser’s cookies. The first run sets Walmart’s store on its page; later runs find it still set (“Kept from its last run”), and the first search checks it held, setting it again if not.',
-    ...(agent ? ['<b>AI agent</b>: Browser Use’s agent, asked in words to set the store and search each term, answering in JSON.'] : []),
-    '<b>Same product</b>: matched by the store’s own item number (Walmart’s usItemId, Target’s TCIN) among the first 20 products each side kept a search. ≠ marks a cloud price that isn’t this phone’s; – a product that side didn’t list. Target prices each product for a store: one it priced for another store than the one asked isn’t compared.',
+    '<b>This phone</b>: each search in the app’s own browser, hidden, on the store’s own site, at the store set in Your stores (Walmart’s set on its site; Target’s number put in its page’s own requests): a page load, or the store’s own request sent again from its page. The reference for prices.',
+    '<b>Cloud browser</b>: a Browser Use browser in the U.S., through home internet addresses Browser Use rents, driven by the app from this phone: for Walmart, its store page and its button, then a search page a term; for Target, its store page and its “Shop this store” (or, when that doesn’t take, the site’s store cookies set as it would leave them), then its search page, whose own request must ask for the store, sent again for each term.',
+    '<b>Its store</b>: each store’s browser starts from a Browser Use profile kept for that store, as a server keeps its browser’s cookies. The first run sets Walmart’s and Target’s stores on their pages; later runs find them still set (“Kept from its last run”), and the first search checks the store held, setting it again if not. Target picks a store by itself for a new browser, from where its connection seems to be: the one it had picked is said beside how the store was set.',
+    ...(agent ? ['<b>AI agent</b>: Browser Use’s agent, asked in words to set the store on its page and open each term’s search page, answering in JSON with the first 10 products of each.'] : []),
+    '<b>Same product</b>: matched by the store’s own item number (Walmart’s usItemId, Target’s TCIN) among the first 20 products each side kept a search (the AI agent’s first 10). ≠ marks a cloud price that isn’t this phone’s; – a product that side didn’t list. Target prices each product for a store: one it priced for another store than the one asked isn’t compared.',
     '<b>Time</b>: a store from its start to its end, both sides started together; the cloud browser’s setting up (starting it, setting the store) is apart from a search’s time. The cloud browser’s times are given as a server driving it would have them, an estimate: as measured, less what driving it from this phone added. Each command the app sent took a trip over this phone’s connection, counted as no more than the fastest of three pings, so the browser’s own work stays in; each page load took what it took beyond the browser’s own clock for it. A server in the same region as the browser would add back a few milliseconds a command.',
     '<b>Data</b>: this phone’s own searches, as the app metered them. For a cloud side, what a server would send this phone: the results, as JSON, before any compression. The cloud’s own traffic went through Browser Use’s proxy, as Browser Use reported it. What driving the cloud browser from this phone moved (its DevTools connection, which streams the page’s network events) is the test’s own, and left out: a server next to the browser wouldn’t send it to a phone.',
     '<b>Cost</b>: as Browser Use reported it for each browser and agent run. This phone’s searches cost nothing but its data and battery.',

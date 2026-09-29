@@ -9,7 +9,7 @@ export type CloudRetailerId = 'walmart' | 'target' | 'kroger';
 export const CLOUD_RETAILERS: CloudRetailerId[] = ['walmart', 'target', 'kroger'];
 /**
  * How a retailer is read in a job: a cloud browser the app drives ('browser'), a cloud agent ('agent'), or this phone
- * ('device': Kroger's official API as always, or Target's page when its cloud spike failed, see the README).
+ * ('device': Kroger's official API as always, or Target's page when it fails in the cloud, see the README).
  */
 export type Via = 'browser' | 'agent' | 'device';
 
@@ -51,6 +51,11 @@ export interface TermResult {
   items: CloudItem[];
   /** The store the retailer's own data said the prices are for. */
   pageStoreId?: string;
+  /**
+   * The store the site's own search request asked for, before the app changed anything in it: the store the site
+   * has for this browser or phone (Target picks one from where it thinks the connection is, unless one was set).
+   */
+  siteStoreId?: string;
   /** True when that's the job's store. False: its prices are flagged, and not shown as the store's. */
   storeMatches?: boolean;
   /** Products the page listed, before keeping the first ITEMS_PER_TERM. */
@@ -101,9 +106,12 @@ export interface RetailerRun {
   runs: Record<string, number>;
   /**
    * How the store was set: pressed on its page, found already set, kept from an earlier run in the browser's saved
-   * profile, asked for by number in each request (Target's pricing_store_id), or as the agent said.
+   * profile, set in the site's own store cookies (Target's, when its button didn't take), asked for by number in each
+   * request (Target's pricing_store_id), or as the agent said.
    */
-  storeSet?: 'button' | 'already' | 'kept' | 'request' | 'agent';
+  storeSet?: 'button' | 'already' | 'kept' | 'cookie' | 'request' | 'agent';
+  /** Scripted: the store the site had picked for the browser by itself, before the app set the one asked for. */
+  sitePicked?: string;
   /**
    * Scripted: the browser started from the retailer and store's saved profile (Browser Use keeps its cookies between
    * browsers): made for this run ('new'), or kept from an earlier one ('saved'). None: it started empty.
@@ -158,7 +166,7 @@ export type RunEvent =
   | { type: 'browserStopped'; id: string; use?: Omit<BrowserUse, 'stopped'> }
   | { type: 'agentRun'; runId: string; sessionId: string; followUp?: boolean }
   | { type: 'runCost'; runId: string; usd: number }
-  | { type: 'storeSet'; how: NonNullable<RetailerRun['storeSet']>; linkMs?: number }
+  | { type: 'storeSet'; how: NonNullable<RetailerRun['storeSet']>; linkMs?: number; picked?: string }
   | { type: 'term'; result: TermResult }
   | { type: 'bytes'; bytes: number; wireBytes?: number; linkMs?: number; rttMs?: number; commands?: number }
   | { type: 'checkSeen' }
@@ -200,7 +208,12 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
     case 'runCost':
       return { ...run, runs: { ...run.runs, [event.runId]: event.usd } };
     case 'storeSet':
-      return { ...run, storeSet: event.how, ...(event.linkMs !== undefined ? { setupLinkMs: event.linkMs } : {}) };
+      return {
+        ...run,
+        storeSet: event.how,
+        ...(event.linkMs !== undefined ? { setupLinkMs: event.linkMs } : {}),
+        ...(event.picked ? { sitePicked: event.picked } : {}),
+      };
     case 'term':
       return { ...run, results: [...run.results.filter((r) => r.term !== event.result.term), event.result] };
     case 'bytes':
@@ -229,6 +242,7 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
         detail: undefined,
         results: [],
         storeSet: undefined,
+        sitePicked: undefined,
         browserId: undefined,
         runId: undefined,
         followUpId: undefined,

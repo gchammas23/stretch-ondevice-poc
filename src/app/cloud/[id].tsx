@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SIDE_WORDS } from '../../cloud/compare';
 import { jobCost, jobStatus, retailerCost, storeConfirmed, type CloudItem, type CloudJob, type RetailerRun, type TermResult } from '../../cloud/jobs';
 import { costWords, problemWords, reasonWords, RETAILER_NAMES, retailerLine } from '../../cloud/words';
+import { sameStoreId } from '../../onDevice/storeIdentity';
 import { whenLabel } from '../../pricing/receipt';
 import { useCloudJob, useCloudRunner } from '../../state/CloudProvider';
 import { Chip } from '../../ui/bits';
@@ -115,6 +116,7 @@ function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: Retailer
         {run.storeSet === 'button' ? <Chip label="Store set with its button" icon="check" tone="green" /> : null}
         {run.storeSet === 'already' ? <Chip label="Store already set" icon="check" tone="green" /> : null}
         {run.storeSet === 'kept' ? <Chip label="Store kept from its last run" icon="check" tone="green" /> : null}
+        {run.storeSet === 'cookie' ? <Chip label="Store set in its cookies" icon="check" tone="green" /> : null}
         {run.profile === 'new' ? <Chip label="Its profile kept for next time" tone="plain" /> : null}
         {run.storeSet === 'request' ? <Chip label="Store asked for in each request" tone="plain" /> : null}
         {run.storeSet === 'agent' ? <Chip label="The agent set the store" tone="plain" /> : null}
@@ -132,6 +134,11 @@ function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: Retailer
           .filter(Boolean)
           .join(' · ')}
       </Text>
+      {run.sitePicked ? (
+        <Text style={styles.meta}>
+          The site had picked store {run.sitePicked} for this browser by itself; store {run.storeId} was set on it.
+        </Text>
+      ) : null}
       {run.detail ? <Text style={styles.detail}>{run.detail}</Text> : null}
       {run.browserId || run.runId ? (
         <Text style={styles.detail} selectable>
@@ -167,6 +174,9 @@ function TermBlock({ result, storeId }: { result: TermResult; storeId: string })
       </Text>
       {result.status !== 'done' ? <Text style={styles.warnText}>{reasonWords(result.reason) || result.status}</Text> : null}
       {result.detail ? <Text style={styles.detail}>{result.detail}</Text> : null}
+      {result.siteStoreId && !sameStoreId(result.siteStoreId, storeId) ? (
+        <Text style={styles.meta}>The site’s own page asked for store {result.siteStoreId} by itself.</Text>
+      ) : null}
       {flagged ? (
         <Text style={styles.warnText}>
           These prices are for store {result.pageStoreId ?? '?'}, not store {storeId}: they aren’t shown as your store’s.

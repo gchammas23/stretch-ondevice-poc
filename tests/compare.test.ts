@@ -25,6 +25,7 @@ import {
   sideStatusWords,
   sideSummaryWords,
   sideTotals,
+  storeSetWords,
   termProducts,
   testLinkWords,
   timeWords,
@@ -42,7 +43,10 @@ import {
   type RetailerRun,
   type TermResult,
 } from '../src/cloud/jobs';
+import { deviceResult } from '../src/cloud/plan';
 import { DeviceSearchError } from '../src/cloud/runner';
+import { storesInAnswer } from '../src/onDevice/storeIdentity';
+import type { SearchOutcome } from '../src/onDevice/types';
 import { parseRedsky } from '../src/cloud/target';
 import { parseWalmartSearch } from '../src/cloud/walmart';
 import { reasonWords } from '../src/cloud/words';
@@ -178,10 +182,10 @@ function finish(job: CloudJob, results: Partial<Record<string, TermResult[]>> = 
 
   await t('estimate: the cloud browser a few cents (2.6 MB pages through a $5/GB proxy), the agent at most its cap a store; the phone free', () => {
     const scripted = comparisonEstimate(req());
-    // Walmart: home, store page and a search at 2.6 MB each; Target: a page, then a small answer.
-    assert.deepEqual([Math.round(scripted.usd * 1000) / 1000, scripted.capped], [0.056, false]);
+    // Walmart: home, store page and a search at 2.6 MB each; Target: its store page and a search page, then a small answer.
+    assert.deepEqual([Math.round(scripted.usd * 1000) / 1000, scripted.capped], [0.069, false]);
     const agent = comparisonEstimate(req({ agent: true }));
-    assert.deepEqual([Math.round(agent.usd * 1000) / 1000, agent.capped], [1.556, true]);
+    assert.deepEqual([Math.round(agent.usd * 1000) / 1000, agent.capped], [1.569, true]);
   });
 
   // --- How the sides compare ----------------------------------------------------------------------------------
@@ -285,6 +289,58 @@ function finish(job: CloudJob, results: Partial<Record<string, TermResult[]>> = 
     assert.equal(comparisonNotice(cut).title, 'Phone vs. cloud interrupted');
     const stopped = comparisonOf([phone, applyToJob(sideJob('c', 'scripted', 5, req()), 'walmart', { type: 'cancel', at: 3 })].map((j, i) => (i ? applyToJob(j, 'target', { type: 'cancel', at: 3 }) : j)), 'c')!;
     assert.deepEqual(comparisonNotice(stopped), { title: 'Phone vs. cloud cancelled', body: '“milk”: what came back before stays.' });
+  });
+
+  await t('this phone’s side: the store Target’s answer priced, product by product, not just the one the phone asked for', () => {
+    const product = (tcin: string, location: number) => ({ tcin, item: { product_description: { title: `Milk ${tcin}` } }, price: { current_retail: 3, location_id: location } });
+    const answer = (...locations: number[]) => JSON.stringify({ data: { search: { products: locations.map((l, i) => product(String(i + 1), l)) } } });
+    // The phone asked for 1072; most of the answer is 2930's.
+    assert.deepEqual(storesInAnswer(answer(2930, 2930, 1072), '1072'), { pricedFor: '2930', items: { 1: '2930', 2: '2930', 3: '1072' } });
+    assert.equal(storesInAnswer(answer(2930, 1072), '1072')?.pricedFor, '1072', 'as many for the store asked: it');
+    assert.equal(storesInAnswer(answer(2930, 1086, 1086))?.pricedFor, '1086', 'nothing asked: the most');
+    // An answer whose prices don't name a store says nothing: Walmart's page data, Kroger's API.
+    assert.equal(storesInAnswer(walmartFor('5260'), '5260'), undefined);
+    assert.equal(storesInAnswer(JSON.stringify({ data: [{ productId: '1', items: [{ price: { regular: 3.49, promo: 0 } }] }] }), '01400943'), undefined);
+    assert.equal(storesInAnswer('<html></html>', '1072'), undefined);
+
+    const products = ['1', '2', '3'].map((id) => ({ retailer: 'Target', storeId: '1072', id, name: `Milk ${id}`, price: 3 }));
+    const outcome: SearchOutcome = {
+      retailer: 'Target',
+      products,
+      strategy: 'webview',
+      ms: 4000,
+      attempts: [],
+      via: 'replay',
+      bytes: 800_000,
+      store: { id: '1072' },
+      pricedFor: '2930',
+      itemStores: { 1: '2930', 2: '2930', 3: '1072' },
+      siteStore: '2930',
+    };
+    const got = deviceResult(outcome, '1072', 20);
+    assert.deepEqual([got.storeId, got.siteStoreId, got.items.map((i) => i.pricedAt), got.how], ['2930', '2930', ['2930', '2930', undefined], 'replay']);
+    // Without the answer's say, the store the request asked for, as before.
+    assert.equal(deviceResult({ ...outcome, pricedFor: undefined, itemStores: undefined }, '1072', 20).storeId, '1072');
+  });
+
+  await t('how the store was set, in words; a search whose store wasn’t the one asked says what the site’s own page asked for', () => {
+    assert.equal(storeSetWords({ storeSet: 'cookie', sitePicked: '2930' }, '1072'), 'the site had picked store 2930; 1072 set in its store cookies');
+    assert.equal(storeSetWords({ storeSet: 'button', sitePicked: '2930' }, '1072'), 'the site had picked store 2930; 1072 set with its button');
+    assert.equal(storeSetWords({ storeSet: 'kept' }, '1072'), 'store kept from its last run');
+    assert.equal(storeSetWords({ storeSet: 'button' }, '1072'), '', 'nothing picked over: nothing to say');
+    const target = (via: RetailerRun['via'], result: TermResult): RetailerRun => ({ ...run(via, [result]), retailerId: 'target', storeId: '1072' });
+    const phone = target('device', term('milk', { items: [], pageStoreId: '2930', storeMatches: false, siteStoreId: '2930' }));
+    const c: Comparison = {
+      id: 'w',
+      terms: ['milk'],
+      createdAt: 1,
+      retailers: [{ retailerId: 'target', storeId: '1072' }],
+      sides: { phone: { id: 'p', engine: 'scripted', terms: ['milk'], createdAt: 1, retailers: [phone], compare: { id: 'w', side: 'phone' } } },
+    };
+    assert.deepEqual(
+      comparisonProblems(c).map((p) => [p.kind, p.detail]),
+      [['other_store', 'The site’s own page asked for store 2930 by itself; 1072 was asked for.']],
+    );
   });
 
   // --- The runner ---------------------------------------------------------------------------------------------

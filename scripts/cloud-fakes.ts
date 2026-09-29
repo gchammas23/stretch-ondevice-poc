@@ -11,8 +11,10 @@ export const PORT = 8443;
 const root = join(__dirname, '..');
 const walmartFixture = JSON.parse(readFileSync(join(root, 'tests/fixtures/cloud/walmart-search-milk.json'), 'utf8'));
 const targetFixture = JSON.parse(readFileSync(join(root, 'tests/fixtures/cloud/target-plp-search-milk.json'), 'utf8'));
+/** Target's own page for store 2641, cut down (see its comment): the fake's store pages are made from it. */
+const targetStoreFixture = readFileSync(join(root, 'tests/fixtures/cloud/target-store-2641.html'), 'utf8');
 /** What the fake sites were asked for: heavy files (which blocking should keep away), store saves, redsky answers. */
-export const hits = { image: 0, font: 0, setStore: 0, redsky: 0, product: 0, home: 0, storePage: 0 };
+export const hits = { image: 0, font: 0, setStore: 0, redsky: 0, product: 0, home: 0, storePage: 0, targetStorePage: 0 };
 
 export function chromePath(): string {
   if (process.env.CHROME) return process.env.CHROME;
@@ -64,10 +66,91 @@ function storePage(id: string, current: string | undefined): string {
   );
 }
 
-function redsky(query: URLSearchParams, path = ''): { status: number; body: string } {
+/**
+ * Target's stores, as the fake knows them. 2766 is the one Target picks for this machine's connection, as the real
+ * site picked it for a San Francisco address (2026-09-29). 4242's "Shop this store" does nothing (the real one asks
+ * Target's API about the store first, which can refuse); 4040 has no page.
+ */
+const TARGET_STORES: Record<string, { name: string; zip: string; state: string; lat: number; lon: number }> = {
+  '2766': { name: 'San Francisco Central', zip: '94103', state: 'CA', lat: 37.7839, lon: -122.4071 },
+  '1375': { name: 'Minneapolis Uptown', zip: '55408', state: 'MN', lat: 44.9483, lon: -93.2977 },
+  '4242': { name: 'Button Broken', zip: '10001', state: 'NY', lat: 40.7506, lon: -73.9972 },
+};
+const PICKED = '2766';
+
+/** A Target store cookie's store ("DSI_1375|DSN_…|DSZ_55408" → "1375"), and a UserLocation's ZIP. */
+const cookieStoreOf = (header: string | undefined) => /DSI_([^|;]+)/.exec(decodeURIComponent(cookieOf(header, 'fiatsCookie') ?? ''))?.[1];
+const cookieZipOf = (header: string | undefined) => /^(\d{5})/.exec(decodeURIComponent(cookieOf(header, 'UserLocation') ?? ''))?.[1];
+
+/** What Target's site sets for a new visitor: the store and place it picks from where it thinks the connection is. */
+function targetFirstVisit(header: string | undefined): Record<string, string[]> {
+  if (cookieOf(header, 'fiatsCookie')) return {};
+  const s = TARGET_STORES[PICKED];
+  const named = `DSI_${PICKED}|DSN_${encodeURIComponent(s.name)}|DSZ_${s.zip}`;
+  return {
+    'set-cookie': [
+      `fiatsCookie=${named}; Domain=target.com; Path=/; Secure; SameSite=Lax`,
+      `sddStore=${named}; Domain=target.com; Path=/`,
+      `UserLocation=94104|37.790|-122.400|CA|US; Domain=target.com; Path=/; Secure; SameSite=Lax`,
+    ],
+  };
+}
+
+/**
+ * A Target store's own page, made from the real one's (tests/fixtures/cloud/target-store-2641.html) with this store's
+ * details in its data; its "Shop this store" drawn late, as the real page's script draws it, and saving the store in
+ * the site's cookies when pressed (4242's saves nothing).
+ */
+function targetStorePage(id: string): string | null {
+  const s = TARGET_STORES[id];
+  if (!s) return null;
+  const page = targetStoreFixture
+    .split('2641')
+    .join(id)
+    .split('Salt Lake City')
+    .join(s.name)
+    .split('84101-3053')
+    .join(`${s.zip}-0000`)
+    .split('\\"address_region\\":\\"UT\\"')
+    .join(`\\"address_region\\":\\"${s.state}\\"`)
+    .split('40.744916')
+    .join(String(s.lat))
+    .split('-111.901664')
+    .join(String(s.lon))
+    // The button is the script's to draw.
+    .replace(/<button type="button" data-test="@store-locator\/StoreCard\/MakeItMyStoreBtn">Shop this store<\/button>/, '<span id="card"></span>');
+  const named = `DSI_${id}|DSN_${encodeURIComponent(s.name)}|DSZ_${s.zip}`;
+  const place = `${s.zip}|${s.lat.toFixed(3)}|${s.lon.toFixed(3)}|${s.state}|US`;
+  const save =
+    id === '4242'
+      ? ''
+      : `document.cookie = ${JSON.stringify(`fiatsCookie=${named}; domain=target.com; path=/; secure; samesite=lax`)};
+         document.cookie = ${JSON.stringify(`sddStore=${named}; domain=target.com; path=/`)};
+         document.cookie = ${JSON.stringify(`UserLocation=${place}; domain=target.com; path=/; secure; samesite=lax`)};`;
+  return page.replace(
+    '</body>',
+    `<script>
+      setTimeout(() => {
+        const b = document.createElement('button');
+        b.setAttribute('data-test', '@store-locator/StoreCard/MakeItMyStoreBtn');
+        b.textContent = 'Shop this store';
+        b.onclick = () => { ${save} };
+        document.getElementById('card').appendChild(b);
+      }, 800);
+    </script></body>`,
+  );
+}
+
+/**
+ * Redsky answers for the store the site has for the visitor (its store cookie, sent with the request), whatever store
+ * number the request asks for: as the live runs had it (their answers were the site's store's, the request's own
+ * edited number aside). Without that cookie, for the number asked.
+ */
+function redsky(query: URLSearchParams, path = '', cookie?: string): { status: number; body: string } {
   hits.redsky++;
+  const site = cookieStoreOf(cookie);
   if (path.includes('product_summary')) {
-    const store = query.get('pricing_store_id') ?? query.get('store_id') ?? '2766';
+    const store = site ?? query.get('pricing_store_id') ?? query.get('store_id') ?? '2766';
     const products = JSON.parse(JSON.stringify(targetFixture)).data.search.products.slice(0, 2);
     for (const p of products) {
       p.price.location_id = Number(store);
@@ -79,7 +162,7 @@ function redsky(query: URLSearchParams, path = ''): { status: number; body: stri
   if (keyword === 'blockme') {
     return { status: 435, body: JSON.stringify({ appId: 'PXGWPp4wUS', blockScript: 'https://captcha.px-cdn.net/PXGWPp4wUS/captcha.js', vid: '' }) };
   }
-  const store = query.get('pricing_store_id') ?? '2766';
+  const store = site ?? query.get('pricing_store_id') ?? '2766';
   const data = JSON.parse(JSON.stringify(targetFixture));
   for (const p of data.data.search.products) {
     if (!p.price) continue;
@@ -91,13 +174,16 @@ function redsky(query: URLSearchParams, path = ''): { status: number; body: stri
   return { status: 200, body: JSON.stringify(data) };
 }
 
-function targetPage(term: string): string {
+/** A search page: its own request asks for the store the site has for the visitor, and its place's ZIP, as the real one's. */
+function targetPage(term: string, cookie: string | undefined): string {
+  const store = cookieStoreOf(cookie) ?? PICKED;
+  const zip = cookieZipOf(cookie) ?? '94104';
   // "sum-…": a page that only asks for product summaries (by product numbers, here the term), not the search.
   if (term.startsWith('sum-')) {
-    const summary = `https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&tcins=${encodeURIComponent(term)}&store_id=2766&pricing_store_id=2766&has_required_store_id=true&channel=WEB`;
+    const summary = `https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&tcins=${encodeURIComponent(term)}&store_id=${store}&pricing_store_id=${store}&has_required_store_id=true&channel=WEB`;
     return html(`${term} : Target`, `<div id="r">loading</div><script>fetch(${JSON.stringify(summary)}, { credentials: 'include' }).then((r) => r.json());</script>`);
   }
-  const url = `https://redsky.target.com/redsky_aggregations/v1/web/plp_search_v2?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&channel=WEB&count=24&default_purchasability_filter=true&include_sponsored=true&keyword=${encodeURIComponent(term)}&new_search=true&offset=0&page=%2Fs%2F${encodeURIComponent(term)}&platform=desktop&pricing_store_id=2766&scheduled_delivery_store_id=2766&store_ids=2766%2C2768&visitor_id=01A0EA7528A70200&zip=94103`;
+  const url = `https://redsky.target.com/redsky_aggregations/v1/web/plp_search_v2?count=24&default_purchasability_filter=true&include_sponsored=true&keyword=${encodeURIComponent(term)}&new_search=true&offset=0&page=%2Fs%2F${encodeURIComponent(term)}&platform=desktop&pricing_store_id=${store}&spellcheck=true&store_ids=${store}&visitor_id=01A0EA7528A70200&scheduled_delivery_store_id=${store}&zip=${zip}&key=9f36aeafbe60771e321a7cc95a78140772ab3e96&channel=WEB`;
   return html(`${term} : Target`, `<div id="r">loading</div><img src="/hero.webp"><script>
     fetch(${JSON.stringify(url)}, { credentials: 'include' }).then((r) => r.json()).then((j) => { document.getElementById('r').textContent = j.data.search.products.length + ' products'; });
   </script>`);
@@ -148,11 +234,27 @@ export function startSites(dir: string) {
         return send(200, html('Great Value Whole Vitamin D Milk - Walmart.com', `<script id="__NEXT_DATA__" type="application/json">${data}</script>`));
       }
     }
-    if (host === 'www.target.com' && url.pathname === '/s') return send(200, targetPage(url.searchParams.get('searchTerm') ?? ''));
+    if (host === 'www.target.com') {
+      // A new visitor gets the store Target picks for its connection, on whichever page it lands first.
+      const first = targetFirstVisit(req.headers.cookie);
+      const cookie = first['set-cookie'] ? `${req.headers.cookie ?? ''}; ${first['set-cookie'].map((c) => c.split(';')[0]).join('; ')}` : req.headers.cookie;
+      const reply = (status: number, body: string) => {
+        res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', ...first });
+        res.end(body);
+      };
+      if (url.pathname === '/s') return reply(200, targetPage(url.searchParams.get('searchTerm') ?? '', cookie));
+      // Its store pages: /sl/<any name>/<number>.
+      const sl = /^\/sl\/[^/]+\/([^/]+)$/.exec(url.pathname);
+      if (sl) {
+        hits.targetStorePage++;
+        const page = targetStorePage(sl[1]);
+        return page ? reply(200, page) : reply(404, html('Target', 'Sorry, something went wrong.'));
+      }
+    }
     if (host === 'redsky.target.com') {
       const cors = { 'access-control-allow-origin': 'https://www.target.com', 'access-control-allow-credentials': 'true', 'content-type': 'application/json' };
       if (req.method === 'OPTIONS') return send(204, '', { ...cors, 'access-control-allow-headers': 'accept' });
-      const { status, body } = redsky(url.searchParams, url.pathname);
+      const { status, body } = redsky(url.searchParams, url.pathname, req.headers.cookie);
       return send(status, body, cors);
     }
     send(404, html('Not found', 'Not found'));

@@ -2,11 +2,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BrowserUseApi, type FetchLike } from '../src/cloud/browserUse';
-import { CdpClosed, type Cookie, type SeenRequest } from '../src/cloud/cdp';
+import { CdpClosed, type Cookie, type CookieParam, type SeenRequest } from '../src/cloud/cdp';
 import type { FlowContext } from '../src/cloud/flow';
 import type { CloudJob, JobRequest, TermResult } from '../src/cloud/jobs';
 import { PX_SNAPSHOT } from '../src/cloud/perimeterx';
 import { CloudRunner, type LivePage, type RunnerDeps } from '../src/cloud/runner';
+import { FIND_SHOP_BUTTON, readStorePage, type TargetStore } from '../src/cloud/target';
 import { FIND_STORE_BUTTON, READ_SEARCH_DATA } from '../src/cloud/walmart';
 
 // What the cloud tests share: a simulated Browser Use API, a simulated Walmart page, a runner on a fake clock, and the
@@ -121,6 +122,11 @@ export class FakePage implements LivePage {
     if (!this.navigations.length && !this.opts.profile) return [];
     return [{ name: 'assortmentStoreId', value: this.cookie }];
   }
+  /** Cookies set by the flow, in order. */
+  setCookieCalls: CookieParam[][] = [];
+  async setCookies(cookies: CookieParam[]) {
+    this.setCookieCalls.push(cookies);
+  }
   watchRequests() {}
   async responseBody() {
     return '';
@@ -134,6 +140,95 @@ export class FakePage implements LivePage {
   }
 }
 
+/**
+ * A Target cloud browser as the flow sees it, as the live one behaved: a new visitor's first page gets the store the
+ * site picks for its connection (in its store cookie); store pages whose "Shop this store" makes that store the
+ * cookie's (or, `broken`, doesn't); search pages whose own request asks for the cookie's store (or, `forgets`, for
+ * the picked one whatever the cookie says); and answers priced for the site's store, whatever number is asked.
+ */
+export class FakeTargetPage implements LivePage {
+  bytes = 0;
+  readonly requests: SeenRequest[] = [];
+  url = 'about:blank';
+  navigations: string[] = [];
+  store: string | undefined;
+  setCookieCalls: CookieParam[][] = [];
+  constructor(
+    private opts: {
+      picked?: string;
+      /** A saved profile's store cookie, there before any page loads. */
+      profile?: string;
+      button?: 'works' | 'broken' | 'none';
+      /** What each store's page says of it (null: the page isn't the store's). */
+      stores?: Record<string, TargetStore | null>;
+      forgets?: boolean;
+    } = {},
+  ) {
+    this.store = opts.profile;
+  }
+  private get picked() {
+    return this.opts.picked ?? '2766';
+  }
+  private get siteStore() {
+    return this.opts.forgets ? this.picked : this.store;
+  }
+  async prepare() {
+    return { blocking: true };
+  }
+  async navigate(url: string) {
+    this.navigations.push(url);
+    this.url = url;
+    this.store ??= this.picked;
+    this.bytes += 1e6;
+    const term = /\/s\?searchTerm=([^&]*)/.exec(url)?.[1];
+    if (term !== undefined) {
+      const asks = this.siteStore;
+      this.requests.push({
+        requestId: String(this.requests.length + 1),
+        url: `https://redsky.target.com/redsky_aggregations/v1/web/plp_search_v2?keyword=${term}&pricing_store_id=${asks}&store_ids=${asks}&scheduled_delivery_store_id=${asks}&zip=94104&key=k`,
+        method: 'GET',
+        headers: {},
+        status: 200,
+      });
+    }
+  }
+  async evaluate<T>(expression: string): Promise<T> {
+    if (expression === PX_SNAPSHOT) return { url: this.url, title: 'Target', dialogs: [] } as T;
+    const page = /\/sl\/[^/]+\/([^/?#]+)/.exec(this.url)?.[1];
+    if (expression === FIND_SHOP_BUTTON) return (page && this.opts.button !== 'none' ? { x: 100, y: 200 } : null) as T;
+    if (page && expression === readStorePage(page)) {
+      const said = this.opts.stores?.[page];
+      return (said === null ? null : (said ?? { id: page, name: `Store ${page}`, zip: '55408', state: 'MN', lat: 44.9483, lon: -93.2977 })) as T;
+    }
+    if (expression.includes('redsky.target.com')) {
+      const at = Number(this.siteStore);
+      const products = [1, 2, 3].map((n) => ({ tcin: String(n), item: { product_description: { title: `Milk ${n}` } }, price: { current_retail: 3 + n / 10, location_id: at } }));
+      return { status: 200, text: JSON.stringify({ data: { search: { products } } }), size: 1000 } as T;
+    }
+    throw new Error(`unexpected script: ${expression.slice(0, 40)}`);
+  }
+  async click() {
+    const page = /\/sl\/[^/]+\/([^/?#]+)/.exec(this.url)?.[1];
+    if (page && this.opts.button !== 'broken') this.store = page;
+  }
+  async cookies(): Promise<Cookie[]> {
+    return this.store ? [{ name: 'fiatsCookie', value: `DSI_${this.store}|DSN_x|DSZ_00000` }] : [];
+  }
+  async setCookies(cookies: CookieParam[]) {
+    this.setCookieCalls.push(cookies);
+    const id = /DSI_([^|]+)/.exec(cookies.find((c) => c.name === 'fiatsCookie')?.value ?? '')?.[1];
+    if (id) this.store = id;
+  }
+  watchRequests() {}
+  async responseBody() {
+    return '';
+  }
+  async alive() {
+    return true;
+  }
+  close() {}
+}
+
 export function flowContext(results: TermResult[], c = clock(), extra: Partial<FlowContext> = {}) {
   const ctx = {
     set: [] as string[],
@@ -141,7 +236,7 @@ export function flowContext(results: TermResult[], c = clock(), extra: Partial<F
     ...c,
     stopped: () => false,
     onTerm: (r: TermResult) => void results.push(r),
-    onStoreSet: (how: string) => void ctx.set.push(how),
+    onStoreSet: (how: string, picked?: string) => void ctx.set.push(picked ? `${how} over ${picked}` : how),
     onCheck: () => void ctx.seen++,
     maxMb: 40,
     ...extra,
@@ -167,7 +262,7 @@ export function fakeBrowserUse(
   /** Each browser made, and the profile it started from. */
   const made: { id: string; profileId?: string }[] = [];
   let profiles = 0;
-  const tasks: { task: string; sessionId?: string; maxCostUsd?: number; model: string }[] = [];
+  const tasks: { task: string; sessionId?: string; maxCostUsd?: number; model: string; modelParams?: unknown }[] = [];
   let browsers = 0;
   let runs = 0;
   // Each run's answers, in the order they're polled: the last one stays.

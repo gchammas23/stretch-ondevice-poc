@@ -120,8 +120,9 @@ export default function CloudScreen() {
                 <Choice label="This phone" selected={cloud.targetScripted === 'device'} onPress={() => store.setCloud({ targetScripted: 'device' })} />
               </View>
               <Text style={styles.meta}>
-                Target in a cloud browser is a spike: its search page is loaded, then its own search request sent again with your store. Untested live
-                yet (see the README). This phone: Target is searched here, as before.
+                Target in a cloud browser: your store is set on its site (its store page’s “Shop this store”, or its store cookies), then its search
+                page’s own request is sent again for each term. Target picks a store of its own for a new browser: if its site still asks for another
+                once yours is set, Target fails rather than read that store’s prices. This phone: Target is searched here, as before.
               </Text>
             </>
           ) : null}

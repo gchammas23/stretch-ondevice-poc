@@ -130,7 +130,7 @@ export interface CloudSettings {
   on: boolean;
   /** 'scripted': the app drives a cloud browser itself. 'agent': a Browser Use agent does it from a task in words. */
   engine: Engine;
-  /** Target in scripted mode: a cloud browser, or this phone as before (if its cloud spike fails; see the README). */
+  /** Target in scripted mode: a cloud browser, or this phone as before (if Target fails in the cloud; see the README). */
   targetScripted: 'cloud' | 'device';
   /** Store numbers for cloud searches, used where Your stores has none: Walmart's, Target's, Kroger's locationId. */
   storeIds: Partial<Record<CloudRetailerId, string>>;

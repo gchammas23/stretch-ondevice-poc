@@ -23,6 +23,7 @@ import {
   sidesOf,
   sideStatusWords,
   sideSummaryWords,
+  storeSetWords,
   testLinkWords,
   type CompareRetailerId,
   type Comparison,
@@ -30,6 +31,7 @@ import {
   type TermMatch,
 } from '../../cloud/compare';
 import type { CompareSide } from '../../cloud/jobs';
+import { sameStoreId } from '../../onDevice/storeIdentity';
 import { costWords, RETAILER_NAMES } from '../../cloud/words';
 import { whenLabel } from '../../pricing/receipt';
 import { useCloudRunner, useComparison } from '../../state/CloudProvider';
@@ -332,7 +334,7 @@ function SideValue({ figures: f, storeId }: { figures: SideFigures; storeId: str
   const lines = [
     f.searched || f.products ? `${f.products} ${f.products === 1 ? 'product' : 'products'}, ${f.searched} ${f.searched === 1 ? 'search' : 'searches'}` : '',
     ...time,
-    f.storeSet === 'kept' ? 'Store kept from its last run' : '',
+    upper(storeSetWords(f, storeId)),
     f.side === 'phone' ? (f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} of this phone’s data` : '') : f.cloudMb ? `${f.cloudMb.toFixed(1)} MB through the proxy` : '',
     f.side !== 'phone' && f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} of results to this phone` : '',
     f.side === 'phone' ? 'Free' : f.usd > 0 ? costWords(f.usd) : 'Cost not reported yet',
@@ -375,6 +377,8 @@ function TermBlock({ comparison: c, retailerId, term }: { comparison: Comparison
 }
 
 const isRunning = (status: string | undefined) => status === 'running' || status === 'queued';
+/** A line's first letter in capitals. */
+const upper = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** A side's search, when it didn't bring products, or brought another store's. */
 function TermSide({ side, result, storeId, running }: { side: CompareSide; result: TermMatch['phone']; storeId: string; running: boolean }) {
@@ -390,6 +394,11 @@ function TermSide({ side, result, storeId, running }: { side: CompareSide; resul
         {result.ms !== undefined ? ` in ${durationWords(result.ms)}${server}${how}` : ''}
         {result.bytes !== undefined ? `, ${dataWords(result.bytes)}${side === 'phone' ? '' : ' through the proxy'}` : ''}.
       </Text>
+      {result.siteStoreId && !sameStoreId(result.siteStoreId, storeId) ? (
+        <Text style={styles.meta}>
+          The site’s own page asked for store {result.siteStoreId} by itself{side === 'phone' ? '; this phone asked for ' + storeId : ''}.
+        </Text>
+      ) : null}
       {result.storeMatches === false ? (
         <Text style={styles.warn}>
           Its data priced store {result.pageStoreId ?? '?'}, not {storeId}.
