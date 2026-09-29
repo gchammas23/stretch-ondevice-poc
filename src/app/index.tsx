@@ -9,7 +9,10 @@ import { dealsFrom } from '../pricing/deals';
 import { MAX_AGE_MS } from '../pricing/priceCache';
 import { whenLabel } from '../pricing/receipt';
 import { MODE_WORDS } from '../pricing/onlineCost';
+import { jobStatus } from '../cloud/jobs';
+import { jobNotice } from '../cloud/words';
 import { useApp, useAppState, useComparison, useLists, usePricingRun, useStoreChoices, useStoreName, useTrips, useWatch, useWeeklyAds } from '../state/AppProvider';
+import { useCloudJobs } from '../state/CloudProvider';
 import { hiddenFromScreenReaders } from '../ui/a11y';
 import { IconButton, Pill } from '../ui/controls';
 import { Icon } from '../ui/Icon';
@@ -20,6 +23,7 @@ export default function ListsScreen() {
   const insets = useSafeAreaInsets();
   const lists = useLists();
   const { store } = useApp();
+  const cloudOn = useAppState((s) => s.settings.cloud.on);
 
   const newList = () => {
     const id = store.createList();
@@ -65,6 +69,7 @@ export default function ListsScreen() {
         </Pressable>
       </View>
 
+      <CloudCard />
       <Savings />
       <WatchCard />
 
@@ -80,7 +85,9 @@ export default function ListsScreen() {
       <View style={styles.note}>
         <Icon name="phone" size={18} color={colors.muted} />
         <Text style={styles.noteText}>
-          Prices are read live on this phone, straight from each store’s own website, while your lists are open.
+          {cloudOn
+            ? 'Prices are read live, straight from each store’s own website: on this phone while your lists are open, and Walmart’s and Target’s in Browser Use’s cloud browsers when you ask.'
+            : 'Prices are read live on this phone, straight from each store’s own website, while your lists are open.'}
         </Text>
       </View>
       <View style={styles.links}>
@@ -95,6 +102,36 @@ export default function ListsScreen() {
         </Pressable>
       </View>
     </ScrollView>
+  );
+}
+
+/** While cloud fetch is on: its latest search, and a way to the rest. Off, there's no card. */
+function CloudCard() {
+  const on = useAppState((s) => s.settings.cloud.on);
+  const jobs = useCloudJobs();
+  if (!on) return null;
+  const running = jobs.filter((j) => jobStatus(j) === 'running');
+  const last = jobs[0];
+  const detail = running.length
+    ? `${running.length} cloud ${running.length === 1 ? 'search' : 'searches'} running: ${running.map((j) => j.terms.join(', ')).join('; ')}`
+    : last
+      ? `Last: ${last.terms.join(', ')} · ${jobNotice(last).body}`
+      : 'Walmart and Target are searched in the cloud: start one from Price check or a list.';
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={() => router.push(running.length === 1 ? `/cloud/${running[0].id}` : '/cloud')}
+      style={({ pressed }) => [styles.watch, pressed && styles.pressed]}
+    >
+      <Icon name="cloud" size={20} color={colors.blue} />
+      <View style={styles.cardText}>
+        <Text style={styles.watchTitle}>Cloud fetch is on</Text>
+        <Text style={styles.cardMeta} numberOfLines={3}>
+          {detail}
+        </Text>
+      </View>
+      <Icon name="forward" color={colors.faint} />
+    </Pressable>
   );
 }
 

@@ -30,9 +30,12 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (the Browser Use and Kroger keys live in .env: never commit it)
 .env
 .env*.local
+
+# live answers saved by scripts/cloud-live.ts, to look at before any becomes a fixture
+scripts/cloud-live-out/
 
 # typescript
 *.tsbuildinfo

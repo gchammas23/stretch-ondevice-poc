@@ -2,7 +2,7 @@
 
 A Stretch-style grocery app whose prices are read live on the phone, from each store's own website, instead of from our servers. You make a list, tap **Find a store**, and the phone searches every item at every store you compare, then shows the best basket.
 
-Built against Expo SDK 57 (React Native 0.86, Expo Router, react-native-webview 13.16, expo-camera 57, expo-location 57, expo-sharing 57, expo-battery 57, expo-print 57, expo-file-system 57, expo-asset 57, react-native-view-shot 5.1: all in Expo Go). Type-check, lint, `expo-doctor` and an iOS Metro bundle all pass, and so do 349 unit tests. The screens were checked in a browser preview with simulated prices, and the results report's page in Chromium at the PDF's size, in color and in grayscale; no PDF has been made on a phone yet. The speed timeline has been run on an iPhone twice, before and after the first fixes (see "Where the time goes"); the latest changes haven't been run yet. The battery test has run once on an iPhone, from cold, before the status bar could be typed in (see "What pricing costs the battery").
+Built against Expo SDK 57 (React Native 0.86, Expo Router, react-native-webview 13.16, expo-camera 57, expo-location 57, expo-sharing 57, expo-battery 57, expo-print 57, expo-file-system 57, expo-asset 57, react-native-view-shot 5.1: all in Expo Go). Type-check, lint, `expo-doctor` and an iOS Metro bundle all pass, and so do 417 unit tests. **Cloud fetch** (Walmart and Target through Browser Use's cloud browsers; see its section) is built and checked against a real Chromium and fake sites, but hasn't run against Browser Use itself yet: the session that built it had no API key. The screens were checked in a browser preview with simulated prices, and the results report's page in Chromium at the PDF's size, in color and in grayscale; no PDF has been made on a phone yet. The speed timeline has been run on an iPhone twice, before and after the first fixes (see "Where the time goes"); the latest changes haven't been run yet. The battery test has run once on an iPhone, from cold, before the status bar could be typed in (see "What pricing costs the battery").
 
 ## What's in the app
 
@@ -56,6 +56,8 @@ The flows follow Stretch's App Store screenshots.
   - the **Watch it scrape** and **Lighter hidden pages** switches;
   - what each retailer's WebView is doing, and how hard each store is pushed, with switches to turn replays off, to ask stores for as many results as their pages do, and to stop adapting to each store (below);
   - recent failures.
+
+- **Cloud fetch** (a switch in Diagnostics, off to start). On, Walmart and Target are searched in Browser Use's cloud browsers instead of on the phone, as background searches that end in a notification. Off, nothing about the app changes. See "Cloud fetch".
 
 Headings use Fraunces as a stand-in for Canela Deck, the commercial font on stretchgroceries.com. Body text is Geist and the handwritten line is Caveat, both as on the site. Stores show colored monograms, not the retailers' logos.
 
@@ -517,6 +519,129 @@ When the API answers that it's busy (502, 503 or 504), the app asks again once, 
 
 `EXPO_PUBLIC_` values are compiled into the app, so this is for your own testing only. Don't share a build made with them. In production the backend holds the credentials.
 
+## Cloud fetch: Walmart and Target through Browser Use
+
+A switch that moves Walmart's and Target's searches off the phone, into [Browser Use](https://browser-use.com)'s cloud browsers, as searches that run in the background. It's for comparing the two ways on the same stores, on a small prepaid credit (about $13), so every limit is low.
+
+**Off** (to start): the app works as before, and nothing below runs. The only new things on screen are the switch's panel in Diagnostics and the Cloud fetch screen it opens.
+
+**On**:
+
+- The phone stops searching Walmart and Target: lists, Find a store and Price check price the other stores as before. **Kroger stays on its official API** either way, and every other store stays on the phone.
+- Walmart and Target are searched in the cloud when you ask: **Search in the cloud** on Price check (its words) or on a list's Find a store (its first 5 items), or **New cloud search** on the Cloud fetch screen (up to 5 terms, and which stores). Kroger's API searches the same terms, so a search's results compare all three.
+- A search runs as a **background job**: keep using the app. When it's done, a **local notification** says so (expo-notifications, no server, no push), with the cheapest price at each store; tapping it opens that search's results. In the foreground, the app's own banner says it too.
+- **Two engines**, chosen on the Cloud fetch screen:
+  - **Scripted browser**: the app drives a cloud browser itself, over the DevTools protocol, the way `scripts/walmart_store_test.py` (the tested reference) does.
+  - **AI agent**: a Browser Use agent is given the task in words and answers in JSON.
+- **Which store**: the one set in Your stores (the app's own store selection). Where none is set, the Cloud fetch screen takes a store number (Walmart's, Target's, a Kroger locationId).
+- The first time it's turned on, the phone asks to show notifications.
+
+### Set it up
+
+1. Get an API key at [cloud.browser-use.com](https://cloud.browser-use.com/settings?tab=api-keys) (keys start with `bu_`).
+2. Put it in `.env` (git ignores it; `.env.example` shows the name), then restart with `npx expo start --clear` and reload the app:
+   ```
+   EXPO_PUBLIC_BROWSER_USE_API_KEY=bu_...
+   ```
+   **The key ends up in the app bundle**, like every `EXPO_PUBLIC_` value: anyone with the build can read it, and spend the credit. This is for your own testing only; don't share a build made with it. In production a backend would hold it and start the cloud work.
+3. Diagnostics → **Cloud fetch** on (allow notifications), then **Engine, credit, stores and cloud searches** for the rest. It shows the account's credit.
+
+Everything it uses is in Expo Go (local notifications are). A development build also gets the `expo-notifications` config plugin, added to `app.json`.
+
+### Guardrails
+
+- **One store per retailer per job**, and **at most 5 search terms** per job.
+- **At most 2 jobs running at once**: a third isn't started.
+- **The credit is read before every job** (and every Try again), from `GET https://api.browser-use.com/api/v2/billing/account`, and the job doesn't start **below $1**, or when the credit can't be read. The Cloud fetch screen shows it.
+- Scripted: every browser is created with a 10-minute timeout, after which Browser Use stops it whatever the app does; the app gives up on it at 9 minutes, and stops driving one that has moved 40 MB (a whole job is about 3 to 20 MB). Heavy files are blocked (below).
+- Agent: each run has its own cost cap (`maxCostUsd`: $0.75), there's one follow-up at most, and a run still going after 20 minutes is cancelled.
+- **Browsers are always stopped**: in a `finally` block as each store finishes; and again when the app opens, for every browser a saved job used that Browser Use hasn't confirmed stopped, and any kept from jobs no longer on the phone. When the app had been closed mid-job, it also stops any browser still running with the app's label (`app=stretch-poc`: one created just before the app was killed, before its id was saved); **Forget prices and history** and **Start over** do the same. An agent's browser is stopped once its session is done with, instead of idling for Browser Use's 20 minutes. With cloud fetch never used, the app asks Browser Use nothing and writes nothing.
+- Every browser's id is saved on the phone before it's used.
+
+### How the scripted engine works
+
+Playwright can't run in React Native, so `src/cloud/cdp.ts` is a small DevTools-protocol client on React Native's own WebSocket (Node's in the scripts and tests):
+
+1. `POST /api/v4/browsers` with `{"proxyCountryCode":"us","timeout":10,"metadata":{...}}` gives the browser's `id` and `cdpUrl`.
+2. The browser's WebSocket address comes from `{cdpUrl}/json/version` (a local address it reports is moved onto the `cdpUrl`'s host).
+3. It **attaches to the page the browser already has** (`Target.attachToTarget` with `flatten: true`), never a new context, which would lose Browser Use's fingerprint.
+4. Commands: `Page.navigate` and a wait for that navigation's own `DOMContentLoaded` (lifecycle events, matched by loader id); `Runtime.evaluate` (by value, promises awaited), run in a world of the app's own beside the page's scripts (made again when the page moves on by itself); `Input.dispatchMouseEvent`; `Network.getCookies`; `Network.setBlockedURLs`; and the Network events that meter the data and catch Target's requests.
+5. `PATCH /api/v4/browsers/{id}` `{"action":"stop"}` in a `finally`: closing the connection doesn't stop the browser. Then `GET /api/v4/browsers/{id}` for `proxyUsedMb`, `proxyCost` and `browserCost`, kept on the job.
+
+**Heavy files are blocked by file type only** (`*.png*`, `*.jpg*`, `*.jpeg*`, `*.gif*`, `*.webp*`, `*.avif*`, `*.svg*`, `*.woff*`, `*.ttf*`, `*.mp4*`): never by host (`i5.walmartimages.com` also serves Walmart's JavaScript; blocking it broke the store button), and never by request interception (it turns the cache off and about tripled the traffic in the tests).
+
+**Walmart**, as the reference script tested it: real page loads only (fetching Walmart's HTML from inside the page got PerimeterX's block):
+
+1. `https://www.walmart.com/`, then `https://www.walmart.com/store/{storeId}`.
+2. Up to 15 s for a `<button>` whose text says "Make this my store" (by its words: the accessible-role lookup didn't find it), pressed with a real mouse click at its center.
+3. The `assortmentStoreId` cookie must then be the store. No button, but the cookie is the store already: it's set.
+4. Each term's `/search?q=` page, read from its `__NEXT_DATA__` (`props.pageProps.initialData.searchResult.itemStacks[].items`), parsed in the page and cut down to what the phone reads (a tenth of its megabyte). Still streaming, it's read again: 3 times, 1.5 s apart.
+5. **The store each page's data says it priced** (`initialData.pageMetadata.location.storeId`) is checked against the store asked for. A page for another store is flagged, and its prices are never shown as the store's (struck through, with a warning).
+
+The reader follows a real search page read from this POC's server on 2026-09-28 (`tests/fixtures/cloud/walmart-search-milk.json`, cut down): its prices are now in `price` and `priceInfo.priceDetails.priceLines` (`CURRENT_PRICE`, `DISCOUNTED_PRICE` with a `COMPARISON`/`WAS_PRICE`, `UNIT_PRICE`), not `priceInfo.currentPrice`, and its grid has ad and tile placeholders between the products, left out. Each product says whether a store sells it or it only ships (store `0`).
+
+**PerimeterX** shows up as a `/blocked` address, a page titled "Robot or human?", or a `[role=dialog]` saying it over a page that otherwise looks normal (and, for an API it guards, HTTP 435 with its JSON). When one shows, the app stops driving the page, looks again every 10 s for up to 45 s (Browser Use's solver may clear it), and then calls the store **blocked**. It never tries the Press & Hold.
+
+**Target** was untested in a cloud browser, so it's a spike: its search page for the first term loads; the page's own redsky request (`plp_search_v2`) is caught; that request is sent again from inside the page for each term, with the store as `pricing_store_id` / `store_ids` / `scheduled_delivery_store_id`; and each answer's `price.location_id` must be that store. A page that only sent product summaries gets each term's page loaded and its own request sent again. **Result: not run live yet** (see below). From this POC's server, redsky answered PerimeterX's HTTP 435 (`tests/fixtures/cloud/target-redsky-px-435.json`), so its reader is built on a hand-made answer in the shape public scrapers document (`target-plp-search-milk.json`, which says so), to be replaced by a real one: `scripts/cloud-live.ts target` saves the page's own answer. If the spike fails, set **Target, in scripted mode** to **This phone** on the Cloud fetch screen: Target is then searched on the phone as before (and in scripted jobs, on the phone too).
+
+### How the agent engine works
+
+One run per store, in parallel (`src/cloud/agent.ts`):
+
+- `POST /api/v4/runs` with the task, the model and `maxCostUsd`. The task says: open the retailer's own page for the store and make it your store; search each term; answer with **only** JSON, `{retailer, storeId, storeConfirmed, items: [{term, name, price, unitPrice, size, itemId, url}]}`, 20 items a term at most; and if a human-verification check appears, don't try to solve it: wait, and if it stays, answer `{"blocked": true}`. (Each item also names its term, so a search of several terms can be told apart.)
+- The model is **`gpt-5.6-luna`**, one constant (`AGENT_MODEL` in `src/cloud/config.ts`): Browser Use's models page (checked 2026-09-28) recommends it for price and accuracy, at a tenth of grok-4.5's input price. The brief expected grok-4.5.
+- Polled with `GET /api/v4/runs/{id}/status` every 10 s while the app is open, and at once on every launch and return to the app; once it's over, `GET /api/v4/runs/{id}`. V4 gives the answer as text (`result`), so it's validated with zod: from a code fence or surrounding words too; invalid items dropped; prices like "$3.32" read as numbers. An answer that isn't the JSON asked for gets **one follow-up** in the run's session (a new run with its `sessionId`), saying what was wrong. Twice wrong, the store fails.
+- Browser Use's docs disagree about output schemas: the V4 schema lists `outputSchema`, and its structured-output guide says V4 doesn't accept it. It isn't used.
+- What each run cost (`totalCostUsd`) is kept. Whether that includes its browser and proxy isn't documented; the job also keeps the account's credit before and after it, when it ran alone.
+
+### In the background
+
+- Jobs run in a runner (`src/cloud/runner.ts`) that doesn't depend on the screen: it starts with the app, and saves every change on the phone (AsyncStorage, `stretch.cloud.v1`): engine, stores, terms, each store's status (queued, running, blocked, failed, done, interrupted, cancelled), its browser or run ids, results, costs and times.
+- **No OS background task is used**: they run when the OS decides, not when asked. So work goes on only while the OS keeps the app running (iOS: seconds after it leaves the screen).
+  - **Scripted**: a cloud browser survives only as long as its connection does. Back in the app, a browser that doesn't answer (its connection went while the app was away) is **interrupted**: its browser is stopped, and **Try again** runs it afresh.
+  - **Agent**: runs on in the cloud whatever the phone does. Back in the app (or on the next launch), it's polled and finished, and the notification follows.
+  - The phone's own part (Kroger's API) waits for the app to be on screen.
+- **Killed mid-job**: the next launch stops its browser and interrupts its scripted work, and polls and finishes its agent runs.
+
+### Checked, and not yet
+
+- **Unit tests**, with saved fixtures only (no live site): `tests/cloud.test.ts` (25) and `tests/cloudJobs.test.ts` (27), in `npm test`.
+- **A real Chromium against fake sites**: `npx tsx scripts/cloud-local-check.ts` (10 checks, about 2 minutes; `--slow` adds a check that never clears, 45 s). The app's DevTools client, flows and runner drive a local headless Chromium that can reach only fake Walmart, Target and redsky sites served on the same machine: the store set with a real click, its cookie checked, each page's store checked (and another store's flagged), no image or font request reaching the site, a bot check waited out (and one that stays making the store blocked), redsky caught and sent again with another store (whose price differs), a 435 as a block, pages that move on by themselves, and a whole job with its browsers stopped and costed.
+- A rehearsal of `scripts/cloud-live.ts` against a simulated Browser Use API and the same fakes, every step (5 browsers created, 5 stopped); the screens in a browser preview, on and off; an iOS bundle; `expo-doctor`.
+- **Not run against Browser Use yet**: there was no key where this was built. So `{cdpUrl}/json/version`'s shape (the brief asked to check it with curl first), Walmart and Target from a cloud browser, the agent, and every cost below are **unmeasured**. The first run is:
+  ```
+  npx tsx scripts/cloud-live.ts endpoint                                     # what cdpUrl and /json/version look like
+  npx tsx scripts/cloud-live.ts walmart --store 5260 --terms milk --product  # the scripted Walmart flow, and one product page
+  npx tsx scripts/cloud-live.ts target --store 1375 --terms milk --compare 2766   # the Target spike
+  npx tsx scripts/cloud-live.ts job --engine agent --walmart 5260 --terms milk    # an agent run, through the app's runner
+  npx tsx scripts/cloud-live.ts log                                          # every live step's cost, and the total
+  ```
+  It reads the key from `.env`, never prints it, logs each step's cost to `scripts/cloud-live-log.jsonl` (as Browser Use reported it, and as the credit moved), and **refuses to start a step once the log reaches $5**.
+
+### What a job may cost
+
+Estimates until the live log has figures:
+
+| Engine | Per store | 1 term | 5 terms |
+| --- | --- | --- | --- |
+| Scripted, Walmart | home, store page and a page a term at 2.6 MB each (measured in the Walmart tests), $5/GB proxy, $0.02/h browser | about 4¢ | about 9¢ |
+| Scripted, Target | one page, then a small answer a term (about 0.4 MB, a guess) | about 2¢ | about 2¢ |
+| Agent (either store) | tokens, browser and proxy, unknown | at most $0.75 a run (a follow-up is another run) | the same |
+| Kroger | its official API | free | free |
+
+The Walmart tests measured about 35 to 40 s per store.
+
+### Checklist (on a phone)
+
+- [ ] **Switch off: nothing changes.** Lists, Find a store and Price check search all your stores on the phone, and nothing says "cloud" but Diagnostics' panel.
+- [ ] Turn it on: iOS asks about notifications, once. The Cloud fetch screen shows the credit, and each store's number from Your stores.
+- [ ] **Scripted**: Price check "milk", then **Search in the cloud**. Leave that screen and keep using the app: a notification comes when it's done (and the banner at the top). Tap it: the results show "prices confirmed for store …" for your Walmart store, and each price is that store's (compare two in Walmart's app, set to that store). Note the cost it shows, and the time.
+- [ ] **The same with the AI agent** (Engine → AI agent).
+- [ ] **Kill the app mid-job** (a scripted one, and an agent one): open it again. In Browser Use's dashboard, no browser is left running; the scripted store says Interrupted, with Try again; the agent's job finishes by itself, and notifies.
+- [ ] Switch to another app mid-job for a minute, and come back: a scripted store that lost its browser says Interrupted; an agent one carries on.
+- [ ] Target: run `scripts/cloud-live.ts target` first. If the spike fails, set Target to This phone, and check a scripted job then searches Target on the phone.
+- [ ] Start 3 jobs quickly: the third is refused. Type 6 terms: refused.
+
 ## Pin a Walmart store for plain requests
 
 1. With Proxyman on, open walmart.com in Safari on the phone and choose the store.
@@ -537,7 +662,7 @@ npx tsx scripts/parse-capture.ts target-search-response.json autoDetect
 
 ## Tests
 
-`npm test` runs all nineteen suites (365 tests) in Node:
+`npm test` runs all twenty-one suites (417 tests) in Node:
 
 - `tests/parsers.test.ts`: parsers (sale and member prices included; Whole Foods' offer details, basis and Prime prices, and savings that are never the price), reading a product's own page, the plain-request strategy (pages that refuse the phone, and nearly empty ones), Kroger's API mapping (its chains too), and the X-ray's data, paths and hidden URL parts.
 - `tests/injected.test.ts`: the capture, extraction (product pages and fees pages' text included; block pages, the page's size and its JSON script blocks), replay, store-finder (store lists in a page's data blocks, and store cards linked as Meijer links them, included; how the ZIP reached the page, what it listed before the ZIP was typed left out, and requests sent without their headers), store-request, store-reading and suggestion scripts, run inside jsdom.
@@ -558,6 +683,8 @@ npx tsx scripts/parse-capture.ts target-search-response.json autoDetect
 - `tests/cooldowns.test.ts`: blocks and cool-downs: what's a block (pages that refuse the phone, HTTP 401, 403, 429, nearly empty pages, bot checks; not a timeout), captchas in a frame, cool-downs for a store or one way of searching it and their doubling, rests, the Careful level's words, a refused store end to end (nothing sent or counted while it cools, the log's note, Diagnostics asking on purpose), refused plain requests and replays while other ways work, quiet blocks (one search counting once), tiny pages, the connection rule (two sites or more; a chain and its parent are one site) alone and end to end, the pricing engine skipping a store with its words and trying it again at its retry time (coming back to the list keeps both), and saying "The connection dropped" for stores given up on just before it was known, the search log's notes after a restart, and the store check and phone vs. server test.
 - `tests/battery.test.ts`: what pricing costs the battery: shares of the battery and ranges in words, the gauge's step, the drop per list and per search with the range the steps leave (a drop too small to see, one run, a 5% gauge, Low Power Mode, searches that didn't run), no estimate when plugged in (at either end or between), unreadable, unsure, after leaving the app, from 100% or rising, the runs that fit in every store's hour and when there's room again, the status bar's whole percents typed at a test's start and end (what's taken, the figure from them beside the phone's own), this session's stretches of pricing, and the battery meter end to end on the pricing engine with a simulated battery: a battery test run again and again, plugged in or leaving the app mid-test, stopping, one test at a time, the status bar typed with it, and a list erased mid-run.
 - `tests/report.test.ts`: the results report: the ZIP code's area and never the code, the file's name, which searches Store health counts; the headline figures, the store check grouped by what it found with why (too few products, no store near, reasons said once for a group), the store table (compared stores first, the busiest others, stores the check alone searched left out and counted, at most 12 or as many as asked, each store's week, busiest hour and speed test), speed and data per list (cold or warm, lists by size, the week's median and average without the store check), the week's share that worked without it (and saying so), the store check's bot checks said apart, the truth check (store by store, pages it couldn't read said first, one that read nothing, none), a month's data in GB, bot checks, cool-downs, the phone vs. server test and the hourly limit, the servers' cost (rounded, every figure labeled measured, estimate or assumed; starting estimates said to be), a first launch saying what's missing; the page (one US Letter document with the script that fits it, its parts in order, ✓ and ✗ and boxed labels rather than colors, store names and rules versions escaped, only base64 taken as the font); and the last truth check kept, saved, loaded and cleared.
+- `tests/cloud.test.ts`: cloud fetch's readers, from saved answers only (`tests/fixtures/cloud`): Walmart's search page (a real one, cut down: products in the page's order, ads and tiles left out, prices from its price lines, sales, unit prices, sizes, sponsored, what only ships, the store the page is for and another store's flagged), a Walmart product page, Target's redsky answer (names decoded, sales, ranges, duplicates, whose store; its request pointed at another store and term), PerimeterX (the real block page and redsky's real 435, a dialog over a normal page, the 45 s wait), the agent's JSON (zod: fences, words around it, prices as text, invalid items, the wrong retailer or store, 20 a term), Browser Use's API (the key's header, the create and stop bodies, the cost cap, errors), the DevTools client against a simulated socket (answers, events by session, timeouts, a dropped socket, a navigation's own load, data metered), and the scripts run in the page, in jsdom.
+- `tests/cloudJobs.test.ts`: cloud jobs: the state machine (what can't happen changes nothing; costs counted once), the guardrails (terms, one store per retailer, 2 at once, the key and $1 of credit), the estimates, the switch (off: the same stores as before; on: Walmart and Target left to the cloud; Start over turns it off), each store's number (Your stores first), the Walmart flow on a simulated page (a real click, a check that stays 45 s, one that clears, data still streaming, the data allowance, no button), and the runner end to end against a simulated Browser Use: a job's browser saved before it's used and stopped in the finally, a page error, a dropped connection and Try again, the app coming back to a dead browser, Cancel, the agent's follow-up, blocked and failed runs, the next launch stopping what was left and finishing agent runs, the phone's own part, and forgetting everything.
 
 ## Verify on a device
 
@@ -658,6 +785,8 @@ Price "Sunday BBQ" at the default four stores three times, then once more with r
 - [ ] Over a VPN whose exit is in another state (or from abroad), set a ZIP far from it (77007) at 25 mi. Your stores: every store set is near that ZIP (compare its address, and Change store's distances); none is near the VPN's city. A retailer that couldn't be set says why ("listed stores near another place", "didn't say where its stores are", a bot check) and "isn't compared", and Find a store leaves it out. The live feed shows "its finder didn't take the ZIP" for finders that didn't. Try again with the VPN off, and on.
 - [ ] Close the app while Your location is finding stores, then open it: those still being set up are taken up again, without tapping Try again.
 
+- [ ] Cloud fetch: the checklist in "Cloud fetch".
+
 ## Before production
 
 - Set store cookies in the WebKit cookie store with `@react-native-cookies/cookies` (needs a development build, not Expo Go). Header cookies only ride the first request.
@@ -676,6 +805,7 @@ Price "Sunday BBQ" at the default four stores three times, then once more with r
 - Clipping presses a button on the user's account at the store: keep it to what the user taps, and check each store's terms on clipping from an app.
 - The hourly limit (120 searches at one store, per phone) is a guess at human scale: tune it once retailers' real limits are known.
 - Get a legal read on retailer terms before launch.
+- Cloud fetch: a backend holds the Browser Use key and starts the cloud work (the app's key is in its bundle), and push notifications replace local ones, since a job can't be followed while the phone has the app suspended. Per-user budgets replace the POC's $1 floor.
 
 ## Known gaps
 
@@ -739,6 +869,12 @@ Price "Sunday BBQ" at the default four stores three times, then once more with r
 - Meijer's store search is read from an archived copy (June 2026), not from the phone: whether the phone may ask it directly (Akamai guards the site), and whether Meijer's searches take a store number, are untested. Its store check gave 1 product for milk, which suggests its results need a store set too; Your stores' check line after a search will say whether the prices were for the store set.
 - The store check's searches are left out of every weekly figure (the share that worked, the median search, bot checks, each store's week and data) and reported on their own, so a store the check alone found blocked shows there, not in the week's bot checks; the report's Bot checks and blocks says how many stores the check met one at. The hourly limit still counts its visits, and the day's data all of it.
 - "Too few products" is 2 or fewer, fixed: right for the store check's milk, which any grocer has dozens of. A store that really has only 1 or 2 of what's searched would read the same.
+- Cloud fetch hasn't run against Browser Use yet (no key where it was built): the shape of `{cdpUrl}/json/version`, Walmart and Target from its cloud browsers, the agent, and every cost are unmeasured until `scripts/cloud-live.ts` runs. Target's reader is built on a hand-made answer (redsky refused this POC's server).
+- A cloud job goes on only while the OS keeps the app running: a scripted one is lost when iOS suspends the app (it's interrupted, with Try again), and an agent one is only read again when the app is back. So a notification comes while the app is open or just left, or on return; there's no push.
+- While cloud fetch is on, Walmart and Target aren't in lists' comparisons, Find a store or Price check's store list: their cloud results show on the cloud search's own screen, not in baskets. Their fees pages, weekly ads and coupons, the store check and the phone vs. server test still use the phone.
+- Browser Use's own solver is the only answer to a bot check in the cloud: the app waits 45 s and gives up. The agent is told the same.
+- The agent is trusted to say it set the store (`storeConfirmed`) and which store it answered for: nothing else checks an agent's prices are the store's.
+- The label sweep (when the app opens after being closed mid-job, and on Forget or Start over) stops any running browser with the app's label that this phone doesn't know: two phones sharing one key, or the live script running at the same time, would stop each other's.
 
 ## Code map
 
@@ -771,6 +907,12 @@ Price "Sunday BBQ" at the default four stores three times, then once more with r
   - `batteryCost.ts` (what pricing costs the battery: readings before and after, the drop per list and per search with the range the gauge's steps leave, when there's no estimate, this session's pricing, and the meter that watches the engine and runs the battery test).
   - `onlineCost.ts` (what a basket costs ordered online: fees, online prices, plans, and what each store adds for ranking, in words too), `feeBook.ts` (each store's fees page as last read, saved on the phone).
   - `ads.ts` (ad items for list items and basket lines, when an ad is read, in words), `coupons.ts` (coupons on basket lines, what they take off, totals when counted, when coupons are read, in words), `readBook.ts` (each store's last read of its ad and coupons, saved on the phone).
+- `src/cloud/`: cloud fetch (pure TypeScript but for `notify.ts`).
+  - `config.ts` (every limit and measured figure), `browserUse.ts` (Browser Use's API: browsers, agent runs, the account's credit), `cdp.ts` (the DevTools client on a WebSocket: the browser's own page, navigations, scripts in a world of its own, clicks, cookies, blocked files, requests watched).
+  - `walmart.ts` (Walmart's readers and scripted flow), `target.ts` (Target's redsky reader, its request pointed at a store, and the spike's flow), `perimeterx.ts` (the bot check's forms, and the wait), `flow.ts` (what a flow needs of a page and a job), `agent.ts` (the agent's task and the zod check of its answer).
+  - `jobs.ts` (jobs, each store's state machine, costs, guardrails), `runner.ts` (runs jobs, saves them, stops browsers, polls agents, follows the app to the background and back), `plan.ts` (what the settings send to the cloud, and each store's number), `words.ts` (what the screens and notifications say), `notify.ts` (local notifications, and opening a job from one).
 - `src/state/`: lists, settings, usuals and trips (saved with AsyncStorage), the phone's ZIP code (`deviceLocation.ts`), its battery through expo-battery (`battery.ts`), store setup near a ZIP (`storeSetup.ts`: only a store placed near it is set; stores the list can't place, placed by their own ZIP codes), what each store is searched with, and which aren't compared (`storeChoices.ts`), which store each retailer is set to, in words (`storeInfo.ts`), links for Add a store (`customStores.ts`), and the provider that wires everything together.
 - `src/lists/`: list types (with item preferences and the exact product), reading pasted lists (`parse.ts`) and recipes (`recipe.ts`), and common grocery searches (`groceryTerms.ts`).
+- `src/app/cloud/`: the Cloud fetch screen (the switch, the engine, the credit, stores, a new search, the searches so far) and a cloud search's own screen (`[id]`). `src/state/CloudProvider.tsx` gives the runner to the app. `src/ui/CloudSearchCard.tsx`: Search in the cloud, on Price check and Find a store.
 - `src/ui/`: theme, icons, shared controls and chips, the product page (`ProductDetail.tsx`) used by lists and price checks, Price check's suggestions (`Suggestions.tsx`, `useStoreSuggestions.ts`), the race and podium (`Race.tsx`), Find a store's live banner (`CompareBanner.tsx`) and store cards (`StoreCards.tsx`), How you shop with a basket's online breakdown (`ShopMode.tsx`), the speed test's waterfalls (`Waterfall.tsx`, with `useScreenTimes.ts` noting when results reach the screen), and a basket line's ad and coupon notes (`AdsCoupons.tsx`).
+- `scripts/`: `parse-capture.ts`; `walmart_store_test.py` (the Walmart tests cloud fetch follows); `cloud-live.ts` (cloud fetch, live, a step at a time, each step's cost logged to `cloud-live-log.jsonl`); `cloud-local-check.ts` with `cloud-fakes.ts` (the scripted engine against a local Chromium and fake sites).

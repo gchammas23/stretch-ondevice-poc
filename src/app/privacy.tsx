@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { krogerApiConfigured } from '../onDevice/krogerApi';
 import { MODE_NAMES } from '../pricing/onlineCost';
 import { useApp, useAppState, useAttemptLog, useHistory } from '../state/AppProvider';
+import { useCloudJobs } from '../state/CloudProvider';
 import { Pill } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { Icon, type IconName } from '../ui/Icon';
@@ -21,6 +22,7 @@ export default function PrivacyScreen() {
   const history = useHistory();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
+  const cloudJobs = useCloudJobs();
   const items = state.lists.reduce((n, l) => n + l.items.length, 0);
   const telemetry = !!process.env.EXPO_PUBLIC_TELEMETRY_URL;
   const listed = Object.values(state.settings.nearbyStores).filter((l) => l.zip === state.settings.zip).length;
@@ -69,6 +71,7 @@ export default function PrivacyScreen() {
           <Line text={`The weekly ads of ${count(adsRead, 'store')}, and your coupons at ${count(couponsRead, 'store')}, as the phone last read them from each store’s own site.`} />
           <Line text="Each store’s cookies, in the app’s own browser: some sites keep your store there, and your sign-in if you signed in to one." />
           <Line text="The data behind each price read since the app opened, for its X-ray: only until the app closes." />
+          {cloudJobs.length ? <Line text={`${count(cloudJobs.length, 'cloud search', 'cloud searches')}: their words, stores, results, the ids of their cloud browsers or agent runs, and what they cost.`} /> : null}
           <Text style={styles.note}>None of this is sent anywhere. It goes when you erase it below, or delete the app.</Text>
         </Section>
 
@@ -81,6 +84,9 @@ export default function PrivacyScreen() {
           <Line text="A visit to each of your stores’ weekly ad page, at most once a day, as a browser would. For the stores you signed in to here, a visit to your coupons page on their site; a coupon’s Clip button is pressed there only when you tap Clip." />
           <Line text={`To ${maps}: your ZIP code, to measure how far each store is; and when you tap Use my location, where the phone is, once, to get its ZIP code.`} />
           <Line text={krogerApiConfigured() ? 'To Kroger’s official API: your ZIP code, to list its stores near you, and your searches.' : 'Nothing to Kroger’s API: no keys are set.'} />
+          {state.settings.cloud.on || cloudJobs.length ? (
+            <Line text="Cloud fetch: each cloud search goes to Browser Use (its words and your stores’ numbers, and for the AI agent the task in words), whose cloud browsers visit Walmart’s and Target’s own sites through U.S. residential proxies. The stores see Browser Use’s addresses, not this phone’s. The API key is in this build of the app." />
+          ) : null}
           <Line text={state.settings.rulesUrl ? 'A download of the store rules file you set in Store health.' : 'No store rules file: the app uses its built-in rules.'} />
           <Line
             text={

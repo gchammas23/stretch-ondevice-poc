@@ -1,3 +1,4 @@
+import { cloudRetailers } from '../cloud/plan';
 import { krogerApiConfigured } from '../onDevice/krogerApi';
 import type { RetailerConfig } from '../onDevice/types';
 import type { StoreChoice } from '../pricing/pricingEngine';
@@ -62,14 +63,24 @@ const sameChoice = (a: StoreChoice, b: StoreChoice) =>
   a.config.id === b.config.id && a.storeId === b.storeId && a.storeKey === b.storeKey && a.config.strategies.join() === b.config.strategies.join();
 
 /**
- * The stores to compare (see storeChoices), as the same array for as long as they're chosen the same way from the same
- * rules: screens price a list again when its stores change, and shouldn't every time another setting changes (the
+ * The stores this phone prices lists and price checks at: the ones to compare, but those cloud fetch reads in the
+ * cloud while it's on (Walmart and Target: see cloudRetailers). Off, they're all of them, as before.
+ */
+export function phoneChoices(settings: Settings, retailers: RetailerConfig[]): StoreChoice[] {
+  const choices = storeChoices(settings, retailers);
+  const cloud = new Set<string>(cloudRetailers(settings.cloud));
+  return cloud.size ? choices.filter((c) => !cloud.has(c.config.id)) : choices;
+}
+
+/**
+ * The stores to compare (see phoneChoices), as the same array for as long as they're chosen the same way from the
+ * same rules: screens price a list again when its stores change, and shouldn't every time another setting changes (the
  * store a search saw, noted, say).
  */
 export function steadyChoices(settings: Settings, retailers: RetailerConfig[]): StoreChoice[] {
   const cached = bySettings.get(settings);
   if (cached?.retailers === retailers) return cached.choices;
-  const next = storeChoices(settings, retailers);
+  const next = phoneChoices(settings, retailers);
   const prev = lastChoices.get(retailers);
   const choices = prev && prev.length === next.length && prev.every((c, i) => sameChoice(c, next[i])) ? prev : next;
   lastChoices.set(retailers, choices);

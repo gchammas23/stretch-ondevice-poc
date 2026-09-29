@@ -13,6 +13,7 @@ import { suggestProducts, suggestSearches, type ProductSuggestion } from '../pri
 import { QUICK_RUN, useApp, useAppState, useLists, usePricingRun, useStoreChoices, useStoreName } from '../state/AppProvider';
 import { announce, useFooterHeight } from '../ui/a11y';
 import { Chip, SaleChip } from '../ui/bits';
+import { CloudSearchCard } from '../ui/CloudSearchCard';
 import { IconButton, Pill, ProductThumb, tap } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { Icon } from '../ui/Icon';
@@ -261,6 +262,9 @@ export default function PriceCheckScreen() {
             )}
           </View>
         ) : null}
+
+        {/* Cloud fetch on: Walmart and Target, left out above, are searched in the cloud from here. Off: nothing. */}
+        {query && !suggesting && mode === 'words' ? <CloudSearchCard terms={[query]} from={{ kind: 'price-check' }} /> : null}
 
         {query && !suggesting
           ? ordered.map((a) => (

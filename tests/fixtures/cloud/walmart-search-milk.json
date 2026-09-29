@@ -1,0 +1,916 @@
+{
+ "props": {
+  "pageProps": {
+   "initialData": {
+    "searchResult": {
+     "title": "Results for \"milk\"",
+     "aggregatedCount": 508,
+     "count": 67,
+     "itemStacks": [
+      {
+       "items": [
+        {
+         "__typename": "Product",
+         "id": "1WFGK2GIURG0",
+         "usItemId": "16864710228",
+         "name": "Feastables Protein Fortified Chocolate Milk, Shelf-Stable, 8 fl oz, 6 Pack",
+         "price": 8.27,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "8.27"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "17.2 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Feastables-6ct-Chocolate-Milk-8oz/16864710228?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Feastables-6ct-Chocolate-Milk-8oz_0ea5cec9-01b0-4d55-9866-f38020430d8f.7cc2c2b803146c3bb617a77c4582f9bf.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Feastables-6ct-Chocolate-Milk-8oz_0ea5cec9-01b0-4d55-9866-f38020430d8f.7cc2c2b803146c3bb617a77c4582f9bf.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "0"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "135K77PK20F3",
+         "usItemId": "20042402979",
+         "name": "Grazeful Dairy Whole Grassfed A2/A2 Milk",
+         "price": 4.76,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "4.76"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "7.4 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Pasture-Raised-a2-Whole-Milk/20042402979?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Pasture-Raised-a2-Whole-Milk_8e49a5f4-1b42-43b9-b7a5-aa09d8594cee.2c5a7a5bfb7f63fa650f4c7f83bac036.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Pasture-Raised-a2-Whole-Milk_8e49a5f4-1b42-43b9-b7a5-aa09d8594cee.2c5a7a5bfb7f63fa650f4c7f83bac036.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": "A29"
+        },
+        {
+         "__typename": "Product",
+         "id": "4OSAJOU0ZIS6",
+         "usItemId": "15556050",
+         "name": "Silk Dairy Free, Gluten Free, Original Almond Milk, Plant Based Milk, 64 fl oz Half Gallon",
+         "price": 3.74,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "3.74"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "5.8 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Silk-Dairy-Free-Gluten-Free-Original-Almond-Milk-64-fl-oz-Half-Gallon/15556050?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Silk-Dairy-Free-Gluten-Free-Original-Almond-Milk-64-fl-oz-Half-Gallon_8c5b1984-f4a8-4fb7-96c4-00aee01778d8.a46f95dd759b9be7a1985a5ebdf2077b.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Silk-Dairy-Free-Gluten-Free-Original-Almond-Milk-64-fl-oz-Half-Gallon_8c5b1984-f4a8-4fb7-96c4-00aee01778d8.a46f95dd759b9be7a1985a5ebdf2077b.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": "A29"
+        },
+        {
+         "__typename": "Product",
+         "id": "3H34WSS08ANB",
+         "usItemId": "10450114",
+         "name": "Great Value Whole Vitamin D Milk, Gallon",
+         "price": 3.32,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "3.32"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "2.6 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Great-Value-Whole-Vitamin-D-Milk-Gallon-Plastic-Jug-128-Fl-Oz/10450114?classType=REGULAR&athbdg=L1200",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Great-Value-Whole-Vitamin-D-Milk-Gallon-Plastic-Jug-128-Fl-Oz_6a7b09b4-f51d-4bea-a01c-85767f1b481a.86876244397d83ce6cdedb030abe6e4a.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/Great-Value-Whole-Vitamin-D-Milk-Gallon-Plastic-Jug-128-Fl-Oz_6a7b09b4-f51d-4bea-a01c-85767f1b481a.86876244397d83ce6cdedb030abe6e4a.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "2LR2ID60B9VQ",
+         "usItemId": "10450118",
+         "name": "Great Value Milk Whole Vitamin D, Half Gallon, , 64 fl oz",
+         "price": 1.94,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "1.94"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "3.0 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Great-Value-Milk-Whole-Vitamin-D-Half-Gallon-Plastic-Jug-64oz/10450118?classType=REGULAR&athbdg=L1102",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Great-Value-Milk-Whole-Vitamin-D-Half-Gallon-Plastic-Jug-64oz_52ec45c4-586d-42c0-a42c-93218631e277.ec8d19bdf634f97445cbf455eac874a8.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/Great-Value-Milk-Whole-Vitamin-D-Half-Gallon-Plastic-Jug-64oz_52ec45c4-586d-42c0-a42c-93218631e277.ec8d19bdf634f97445cbf455eac874a8.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "71UXRXAYVYVB",
+         "usItemId": "15556052",
+         "name": "Silk Dairy Free, Gluten Free, Unsweet Almond Milk, Plant Based Milk, 64 fl oz Half Gallon",
+         "price": 3.74,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "3.74"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "5.8 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Silk-Dairy-Free-Gluten-Free-Unsweet-Almond-Milk-64-fl-oz-Half-Gallon/15556052?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Silk-Dairy-Free-Gluten-Free-Unsweet-Almond-Milk-64-fl-oz-Half-Gallon_6c322d6d-3ea5-4fa4-8c4b-19e0cb2501d4.118cc3d8cbd4405c2303dc747f3e1a90.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Silk-Dairy-Free-Gluten-Free-Unsweet-Almond-Milk-64-fl-oz-Half-Gallon_6c322d6d-3ea5-4fa4-8c4b-19e0cb2501d4.118cc3d8cbd4405c2303dc747f3e1a90.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": "A29"
+        },
+        {
+         "__typename": "Product",
+         "id": "6LOPBWETOZLZ",
+         "usItemId": "20042452395",
+         "name": "Grazeful Dairy Reduced Fat Grassfed A2/A2 Milk",
+         "price": 4.76,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "4.76"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "7.4 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Pasture-Raised-a2-2-RF-Milk/20042452395?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Pasture-Raised-a2-2-RF-Milk_0a9ff058-c1cd-4b63-965b-e1ab7869a878.7534c32aef81255816ab633b17b595b3.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Pasture-Raised-a2-2-RF-Milk_0a9ff058-c1cd-4b63-965b-e1ab7869a878.7534c32aef81255816ab633b17b595b3.png?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": "A29"
+        },
+        {
+         "__typename": "Product",
+         "id": "2RMLH3BQ4P0X",
+         "usItemId": "174916638",
+         "name": "Crystal Creamery Lactose Free Vitamin D Milk - 0.5 Gallon",
+         "price": 4.48,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "4.48"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "7.0 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Crystal-Creamery-Lactose-Free-Vitamin-D-Milk-0-5-gal-Carton/174916638?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Crystal-Creamery-Lactose-Free-Vitamin-D-Milk-0-5-gal-Carton_87236132-c3d0-45ff-8617-b8bb10cd2908_1.611838e896e5e8febccf110d48475d7a.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Crystal-Creamery-Lactose-Free-Vitamin-D-Milk-0-5-gal-Carton_87236132-c3d0-45ff-8617-b8bb10cd2908_1.611838e896e5e8febccf110d48475d7a.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": "A29"
+        },
+        {
+         "__typename": "AdPlaceholder"
+        },
+        {
+         "__typename": "Product",
+         "id": "2VXO84IJ3UPS",
+         "usItemId": "10450115",
+         "name": "Great Value, 2% Reduced Fat Milk, Gallon",
+         "price": 3.32,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "3.32"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "2.6 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Great-Value-2-Reduced-Fat-Milk-Gallon-Refrigerated/10450115?classType=REGULAR&athbdg=L1102",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Great-Value-2-Reduced-Fat-Milk-Gallon-Refrigerated_d6d1aaf1-edaf-460f-ac20-671c5dba6b3b.f491a6b48c8a8310f82b507ae85f2550.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/Great-Value-2-Reduced-Fat-Milk-Gallon-Refrigerated_d6d1aaf1-edaf-460f-ac20-671c5dba6b3b.f491a6b48c8a8310f82b507ae85f2550.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "TileTakeOverProductPlaceholder"
+        },
+        {
+         "__typename": "Product",
+         "id": "11HX6WT25P3K",
+         "usItemId": "10450119",
+         "name": "Great Value , 2% Reduced Fat Milk, Half Gallon, 64 fl oz",
+         "price": 1.94,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "1.94"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "3.0 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Great-Value-Milk-2-Reduced-Fat-Half-Gallon-64-fl-oz-Jug/10450119?classType=REGULAR&athbdg=L1102",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Great-Value-Milk-2-Reduced-Fat-Half-Gallon-64-fl-oz-Jug_47209934-dcc5-4977-a7dc-a132f270ce82.6f7de72f096838494882cd0855f4e2d1.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/Great-Value-Milk-2-Reduced-Fat-Half-Gallon-64-fl-oz-Jug_47209934-dcc5-4977-a7dc-a132f270ce82.6f7de72f096838494882cd0855f4e2d1.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "3WAEII1PV9SJ",
+         "usItemId": "43984343",
+         "name": "fairlife Lactose Free 2% Reduced Fat Ultra Filtered Milk, 52 fl oz",
+         "price": 4.78,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "DISCOUNTED_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "4.78"
+              }
+             ]
+            },
+            {
+             "lineType": "COMPARISON",
+             "values": [
+              {
+               "key": "WAS_PRICE",
+               "value": "5.32"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "9.2 ¢/fl oz"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/fairlife-Lactose-Free-2-Reduced-Fat-Ultra-Filtered-Milk-52-fl-oz/43984343?classType=REGULAR&athbdg=L1300",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/fairlife-Lactose-Free-2-Reduced-Fat-Ultra-Filtered-Milk-52-fl-oz_a677f4b7-68cb-428b-9cc2-6499201f09a5.dff10176883e8298bd1e03002d23df61.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/fairlife-Lactose-Free-2-Reduced-Fat-Ultra-Filtered-Milk-52-fl-oz_a677f4b7-68cb-428b-9cc2-6499201f09a5.dff10176883e8298bd1e03002d23df61.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "5OKNMF5OQILL",
+         "usItemId": "15801157933",
+         "name": "SPYLT High Protein Milk, Variety Pack - 6-Flavors, 20g Protein, 60mg Caffeine, Sugar Free, 11 fl oz, 12 Cans",
+         "price": 35.99,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "DISCOUNTED_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "35.99"
+              }
+             ]
+            },
+            {
+             "lineType": "COMPARISON",
+             "values": [
+              {
+               "key": "WAS_PRICE",
+               "value": "39.99"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Spylt-High-Protein-Milk-6-Flavor-Variety-Pack-with-Caffeine-Protein-Ready-to-Drink-Sugar-Free-Lactose/15801157933?classType=REGULAR",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Spylt-High-Protein-Milk-6-Flavor-Variety-Pack-with-Caffeine-Protein-Ready-to-Drink-Sugar-Free-Lactose_501a5efd-e37e-49fa-9572-825e8035ecc4.65e958b9e74d69bf45a1fb0c8c830b8c.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Spylt-High-Protein-Milk-6-Flavor-Variety-Pack-with-Caffeine-Protein-Ready-to-Drink-Sugar-Free-Lactose_501a5efd-e37e-49fa-9572-825e8035ecc4.65e958b9e74d69bf45a1fb0c8c830b8c.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": true,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "0"
+          }
+         ],
+         "sellerName": "SPYLT",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "4ZAKBE4HQEQQ",
+         "usItemId": "447068858",
+         "name": "Binggrea Milk Drink, Melon, 6 Ct",
+         "price": 14.99,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "14.99"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Binggrea-Milk-Drink-Melon-6-Ct/447068858?classType=REGULAR&selectedSellerId=101294897",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Binggrea-Milk-Drink-Melon-6-Ct_12bdaa26-b612-41f4-938d-c09c12060401.5e7f3f6cfb628e63ca1d3f35f7136bfd.jpeg"
+         },
+         "image": "https://i5.walmartimages.com/seo/Binggrea-Milk-Drink-Melon-6-Ct_12bdaa26-b612-41f4-938d-c09c12060401.5e7f3f6cfb628e63ca1d3f35f7136bfd.jpeg",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "0"
+          }
+         ],
+         "sellerName": "DEALS BY DJC",
+         "productLocationDisplayValue": null
+        },
+        {
+         "__typename": "Product",
+         "id": "5XKAVEXWUL4Z",
+         "usItemId": "32214757",
+         "name": "Kern's Original Horchata Milk & Rice Drink, 59 Fl. Oz.",
+         "price": 3.96,
+         "priceInfo": {
+          "linePrice": "",
+          "wasPrice": "",
+          "unitPrice": "",
+          "priceDetails": {
+           "currency": "USD",
+           "priceLines": [
+            {
+             "lineType": "CURRENT_PRICE",
+             "values": [
+              {
+               "key": "PRICE",
+               "value": "3.96"
+              }
+             ]
+            },
+            {
+             "lineType": "UNIT_PRICE",
+             "values": [
+              {
+               "key": "UNIT_PRICE",
+               "value": "6.7 ¢/fl oz"
+              }
+             ]
+            },
+            {
+             "lineType": "OPTIONS_RANGE",
+             "values": [
+              {
+               "key": "LOW_PRICE",
+               "value": "3.96"
+              },
+              {
+               "key": "HIGH_PRICE",
+               "value": "7.92"
+              }
+             ]
+            }
+           ]
+          }
+         },
+         "canonicalUrl": "/ip/Kern-s-Original-Horchata-Milk-Rice-Drink-59-Fl-Oz/32214757?classType=VARIANT",
+         "imageInfo": {
+          "thumbnailUrl": "https://i5.walmartimages.com/seo/Kern-s-Original-Horchata-Milk-Rice-Drink-59-Fl-Oz_a25d70a8-bf4b-4f02-bf11-e26d24fd57d2_1.52ad70113565f4fe979d678059869de0.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF"
+         },
+         "image": "https://i5.walmartimages.com/seo/Kern-s-Original-Horchata-Milk-Rice-Drink-59-Fl-Oz_a25d70a8-bf4b-4f02-bf11-e26d24fd57d2_1.52ad70113565f4fe979d678059869de0.jpeg?odnHeight=180&odnWidth=180&odnBg=FFFFFF",
+         "availabilityStatusV2": {
+          "display": "In stock",
+          "value": "IN_STOCK"
+         },
+         "isSponsoredFlag": false,
+         "fulfillmentSummary": [
+          {
+           "fulfillment": "PICKUP",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          },
+          {
+           "fulfillment": "DELIVERY",
+           "storeId": "3081"
+          }
+         ],
+         "sellerName": "Walmart.com",
+         "productLocationDisplayValue": null
+        }
+       ]
+      }
+     ],
+     "pageMetadata": {
+      "title": "milk",
+      "location": {
+       "addressId": ""
+      }
+     }
+    },
+    "pageMetadata": {
+     "location": {
+      "pickupStore": "3081",
+      "deliveryStore": "3081",
+      "intent": "SHIPPING",
+      "postalCode": "95829",
+      "stateOrProvinceCode": "CA",
+      "city": "Sacramento",
+      "storeId": "3081",
+      "storeFrontIds": [
+       {
+        "anchorStore": true,
+        "storeId": "3081"
+       }
+      ],
+      "intentStrength": "IMPLICIT"
+     }
+    },
+    "contentLayout": {
+     "pageMetadata": {
+      "location": {
+       "pickupStore": "3081",
+       "deliveryStore": "3081",
+       "intent": "SHIPPING",
+       "postalCode": "95829",
+       "stateOrProvinceCode": "CA",
+       "city": "Sacramento",
+       "storeId": "3081",
+       "storeFrontIds": [
+        {
+         "anchorStore": true,
+         "storeId": "3081"
+        }
+       ],
+       "intentStrength": "IMPLICIT"
+      }
+     }
+    }
+   }
+  }
+ },
+ "page": "/search",
+ "query": {
+  "q": "milk"
+ }
+}

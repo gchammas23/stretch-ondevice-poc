@@ -17,6 +17,7 @@
     "expo-haptics": "~57.0.3",
     "expo-linking": "~57.0.11",
     "expo-location": "~57.0.20",
+    "expo-notifications": "~57.0.21",
     "expo-print": "~57.0.2",
     "expo-router": "~57.0.23",
     "expo-sharing": "~57.0.22",
@@ -29,7 +30,8 @@
     "react-native-screens": "~4.26.0",
     "react-native-svg": "15.15.4",
     "react-native-view-shot": "5.1.0",
-    "react-native-webview": "13.16.1"
+    "react-native-webview": "13.16.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/jsdom": "^30.0.0",
@@ -46,7 +48,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts && tsx tests/battery.test.ts && tsx tests/phoneVsServer.test.ts && tsx tests/profiles.test.ts && tsx tests/cooldowns.test.ts && tsx tests/report.test.ts"
+    "test": "tsx tests/parsers.test.ts && tsx tests/injected.test.ts && tsx tests/queue.test.ts && tsx tests/replay.test.ts && tsx tests/lanes.test.ts && tsx tests/pricing.test.ts && tsx tests/features.test.ts && tsx tests/shopping.test.ts && tsx tests/health.test.ts && tsx tests/stores.test.ts && tsx tests/kroger.test.ts && tsx tests/online.test.ts && tsx tests/speed.test.ts && tsx tests/ads.test.ts && tsx tests/battery.test.ts && tsx tests/phoneVsServer.test.ts && tsx tests/profiles.test.ts && tsx tests/cooldowns.test.ts && tsx tests/report.test.ts && tsx tests/cloud.test.ts && tsx tests/cloudJobs.test.ts"
   },
   "private": true
 }

@@ -2,6 +2,8 @@ import { router, usePathname } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { cloudRunner } from '../cloud/runner';
+import { jobNotice } from '../cloud/words';
 import { dayOf } from '../onDevice/adPage';
 import { compareStores, couponListsFor } from '../pricing/comparison';
 import { memberRun } from '../pricing/member';
@@ -24,7 +26,7 @@ interface Note {
   body: string;
   /** The body as a screen reader should say it, when it has symbols. */
   spoken?: string;
-  icon: 'sparkle' | 'arrowDown';
+  icon: 'sparkle' | 'arrowDown' | 'cloud';
 }
 
 /**
@@ -108,6 +110,17 @@ export function PricingBanner() {
     [onDrops, bundle.retailers],
   );
 
+  // A cloud search finished (see src/cloud): its notification says so too, on and off screen.
+  useEffect(
+    () =>
+      cloudRunner.onFinished((job) => {
+        if (where.current === `/cloud/${job.id}`) return;
+        const { title, body } = jobNotice(job);
+        setNote({ href: `/cloud/${job.id}`, title, body, icon: 'cloud' });
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!note) return;
     announce(`${note.title}. ${note.spoken ?? note.body}`);
@@ -136,14 +149,14 @@ export function PricingBanner() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${note.title}. ${note.spoken ?? note.body}`}
-          accessibilityHint={note.icon === 'sparkle' ? 'Opens Find a store for this list' : 'Opens the watchlist'}
+          accessibilityHint={note.icon === 'sparkle' ? 'Opens Find a store for this list' : note.icon === 'cloud' ? 'Opens the cloud search' : 'Opens the watchlist'}
           onPress={() => {
             setNote(null);
             router.push(note.href);
           }}
           style={({ pressed }) => [styles.main, pressed && styles.pressed]}
         >
-          <Icon name={note.icon} size={18} color={note.icon === 'sparkle' ? colors.blue : colors.green} />
+          <Icon name={note.icon} size={18} color={note.icon === 'arrowDown' ? colors.green : colors.blue} />
           <View style={styles.flex}>
             <Text style={styles.title} numberOfLines={lines}>
               {note.title}
