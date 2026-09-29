@@ -1,5 +1,5 @@
 {
-  "_note": "Built by hand in the shape of redsky's plp_search_v2 answer (data.search.products[] with tcin, item.product_description.title, item.enrichment, price.current_retail / reg_retail / location_id), as public scrapers of target.com document it. NOT a capture: redsky answered this POC's server with PerimeterX's HTTP 435 (target-redsky-px-435.json). Replace it with a real answer from scripts/cloud-live.ts once the spike runs.",
+  "_note": "Built by hand in the shape of redsky's plp_search_v2 answer (data.search.products[] with tcin, item.product_description.title, item.enrichment, price.current_retail / reg_retail / location_id), as public scrapers of target.com document it. NOT a capture: redsky answered the cloud machine this was built on with PerimeterX's HTTP 435 (target-redsky-px-435.json). Replace it with a real answer from scripts/cloud-live.ts once the spike runs.",
   "data": {
     "search": {
       "search_response": {

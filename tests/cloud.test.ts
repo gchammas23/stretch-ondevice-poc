@@ -12,7 +12,7 @@ import { decodeEntities, parseRedsky, redskySearchUrl, replayScript } from '../s
 import { FIND_STORE_BUTTON, parseWalmartProductPage, parseWalmartSearch, READ_SEARCH_DATA, walmartItem } from '../src/cloud/walmart';
 
 // Cloud fetch's readers, against saved answers only (tests/fixtures/cloud): a real Walmart search page's data and
-// block page and redsky's PerimeterX answer, read from this POC's server on 2026-09-28; a redsky search answer and a
+// block page and redsky's PerimeterX answer, read on 2026-09-28 from the machine this was built on; a redsky search answer and a
 // Walmart product page built by hand in their documented shapes, as their files say. No live site is visited.
 
 const fixture = (name: string) => readFileSync(join(__dirname, 'fixtures', 'cloud', name), 'utf8');

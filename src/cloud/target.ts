@@ -10,8 +10,8 @@ import { pxBlockedAnswer } from './perimeterx';
 // Pure TypeScript: Target in a cloud browser. UNTESTED there before this: the spike loads a search page on
 // target.com, captures the search request the page itself sends to Target's API (redsky: plp_search_v2), and sends it
 // again from inside the page with the user's store as pricing_store_id / store_ids, then checks the answer's
-// location_id is that store. From a server, redsky gave different prices for different stores this way; from this
-// POC's server it answered PerimeterX's HTTP 435 (tests/fixtures/cloud/target-redsky-px-435.json).
+// location_id is that store. From a server, redsky gave different prices for different stores this way; from the
+// cloud machine this was built on it answered PerimeterX's HTTP 435 (tests/fixtures/cloud/target-redsky-px-435.json).
 
 export const TARGET = 'https://www.target.com';
 /** The page's own search requests: the search itself, or the products it summarizes with their fulfillment. */
