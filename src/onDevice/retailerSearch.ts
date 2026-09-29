@@ -8,6 +8,7 @@ import { priceEvidence, redactUrl, type PriceEvidence } from './evidence';
 import { StrategyError, buildRequest, fill, isStoreNumber, searchViaFetch, storeSetRequest } from './fetchStrategy';
 import { krogerApiConfigured, krogerStoresNear, searchKrogerApi } from './krogerApi';
 import { mergeFeeReads, parseFeePage, type FeePageRead } from './feePage';
+import { createNutritionLookup, type Nutrition } from './nutrition';
 import { leanRequest, leanSaving, leanVerdict } from './pageSize';
 import { describePage } from './pageSummary';
 import { EVIDENCE_KEPT, PARSERS, readWithProfile, sourceMatches } from './parsers';
@@ -216,6 +217,11 @@ export interface RetailerSearch {
    * description, size, rating...). Only pages on the retailer's own site.
    */
   readProduct(cfg: RetailerConfig, product: Product): Promise<ProductDetails>;
+  /**
+   * The Nutrition Facts Open Food Facts has for a barcode, or null. For a product whose store page didn't give them:
+   * one request with the barcode alone, each barcode once while the app is open.
+   */
+  lookupNutrition(gtin: string): Promise<Nutrition | null>;
   /** Opens the product's page on the retailer's site for the user to look at. */
   viewProduct(cfg: RetailerConfig, url: string): Promise<void>;
   /** Loads a recipe page, hidden, and reads its ingredients from the recipe data the page publishes. */
@@ -334,6 +340,7 @@ export function createRetailerSearch(
   const unsent = new WeakSet<Error>();
   const details = new Map<string, { at: number; value: ProductDetails }>();
   const reading = new Map<string, Promise<ProductDetails>>();
+  const nutrition = createNutritionLookup((url, init) => fetch(url, init));
   const attemptListeners = new Set<(entry: AttemptEntry) => void>();
   const log = (cfg: RetailerConfig | { id: string; name: string }, what: string, ok: boolean, text: string) =>
     pool.feed.add({ at: Date.now(), retailerId: cfg.id, retailer: cfg.name, what, ok, text });
@@ -1443,6 +1450,7 @@ export function createRetailerSearch(
     epoch += 1;
     failures.length = 0;
     details.clear();
+    nutrition.clear();
     worked.clear();
     empties.clear();
     leanKnown.clear();
@@ -1458,6 +1466,7 @@ export function createRetailerSearch(
     storesNear,
     recentFailures: () => [...failures],
     readProduct,
+    lookupNutrition: nutrition.lookup,
     viewProduct,
     readRecipe,
     readFees,
