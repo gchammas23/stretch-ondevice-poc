@@ -1,5 +1,6 @@
 import { AISLE_KEY, DEPARTMENT_KEY, departmentOf, NOT_AISLE_KEY, placeOf } from './aisle';
 import { isObj, num, str, type Obj } from './json';
+import { nutritionFromData, nutritionFromSchemaOrg, type Nutrition } from './nutrition';
 import type { PagePayload, Product } from './types';
 
 // Pure functions only: no React Native imports, so the tests run them in Node.
@@ -16,6 +17,8 @@ export interface ProductDetails {
   brand?: string;
   size?: string;
   ingredients?: string;
+  /** Its Nutrition Facts, when the page publishes them. */
+  nutrition?: Nutrition;
   rating?: { value: number; count?: number };
   /** The price the product page shows, when it says. */
   price?: number;
@@ -119,6 +122,7 @@ interface Found {
   brand?: string;
   size?: string;
   ingredients?: string;
+  nutrition?: Nutrition;
   rating?: { value: number; count?: number };
   price?: number;
   inStock?: boolean;
@@ -145,6 +149,7 @@ function fromLd(node: Obj, origin: string): Found {
     highlights: [],
     brand,
     size: str(node.size) ?? (weight || undefined),
+    nutrition: nutritionFromSchemaOrg(node.nutrition),
     rating: ratingValue && ratingValue > 0 && ratingValue <= 5 ? { value: ratingValue, count: ratingCount && ratingCount > 0 ? ratingCount : undefined } : undefined,
     price: price && price > 0 ? price : undefined,
     inStock: availability ? /InStock|LimitedAvailability|OnlineOnly|InStoreOnly/i.test(availability) : undefined,
@@ -213,6 +218,7 @@ function fromData(o: Obj, origin: string): Found {
     }
   };
   visit(o, 0);
+  found.nutrition = nutritionFromData(o);
   return found;
 }
 
@@ -282,6 +288,7 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     brand: pick('brand'),
     size: pick('size'),
     ingredients: pick('ingredients')?.slice(0, 1200),
+    nutrition: pick('nutrition'),
     rating: pick('rating'),
     price: pick('price'),
     inStock: pick('inStock'),
@@ -298,6 +305,7 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     details.brand,
     details.size,
     details.ingredients,
+    details.nutrition,
     details.rating,
     details.price,
     details.inStock !== undefined,

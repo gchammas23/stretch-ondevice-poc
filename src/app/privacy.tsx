@@ -81,6 +81,7 @@ export default function PrivacyScreen() {
           <Line text="Shopping for pickup or delivery: a visit to each of your stores’ own page about its fees, about once a week, as a browser would. Nothing about you or your list goes with it." />
           <Line text="If you sign in to a store for your member prices or coupons: that happens on the store’s own page, which the app adds nothing to and reads nothing on." />
           <Line text="A visit to each of your stores’ weekly ad page, at most once a day, as a browser would. For the stores you signed in to here, a visit to your coupons page on their site; a coupon’s Clip button is pressed there only when you tap Clip." />
+          <Line text="Opening a product whose store page has no nutrition facts: its barcode, alone, to Open Food Facts (a public food database), for them. Once per product while the app is open." />
           <Line text={`To ${maps}: your ZIP code, to measure how far each store is; and when you tap Use my location, where the phone is, once, to get its ZIP code.`} />
           <Line text={krogerApiConfigured() ? 'To Kroger’s official API: your ZIP code, to list its stores near you, and your searches.' : 'Nothing to Kroger’s API: no keys are set.'} />
           <Line text={state.settings.rulesUrl ? 'A download of the store rules file you set in Store health.' : 'No store rules file: the app uses its built-in rules.'} />
