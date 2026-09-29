@@ -89,6 +89,14 @@ export interface RunnerDeps {
 }
 
 export type StartResult = { ok: true; job: CloudJob } | ({ ok: false } & RequestProblem);
+
+/** What the user wrote about comparisons, for the PDFs: a run's findings, by its id, and the report of every run's. */
+export interface ComparisonNotes {
+  runs: Record<string, string>;
+  report: string;
+}
+/** Notes past this long are cut: a PDF's findings, not a document. */
+const NOTES_MAX = 4000;
 export type CompareStartResult = { ok: true; comparison: Comparison } | ({ ok: false } & CompareProblem);
 
 const KEY = 'stretch.cloud.v1';
@@ -127,6 +135,7 @@ export class CloudRunner {
   private jobs: CloudJob[] = [];
   /** Browsers of jobs no longer on the phone, not yet known to be stopped. */
   private orphans: string[] = [];
+  private notes: ComparisonNotes = { runs: {}, report: '' };
   private listeners = new Set<() => void>();
   private finishedListeners = new Set<(job: CloudJob) => void>();
   private comparedListeners = new Set<(comparison: Comparison) => void>();
@@ -191,6 +200,16 @@ export class CloudRunner {
   getJobs = (): CloudJob[] => this.jobs;
   getJob = (id: string): CloudJob | undefined => this.jobs.find((j) => j.id === id);
 
+  /** What the user wrote about a comparison (by its id), or, with none, about every run: for the PDF's findings. */
+  getNotes = (id?: string): string => (id ? (this.notes.runs[id] ?? '') : this.notes.report);
+
+  setNotes(id: string | undefined, text: string): void {
+    const clipped = text.slice(0, NOTES_MAX);
+    if (this.getNotes(id) === clipped) return;
+    this.notes = id ? { ...this.notes, runs: { ...this.notes.runs, [id]: clipped } } : { ...this.notes, report: clipped };
+    this.changed();
+  }
+
   /** The app is on screen (true) or not. Coming back checks the cloud browsers and polls the agent runs at once. */
   setActive(active: boolean): void {
     if (active === this.active) return;
@@ -223,6 +242,7 @@ export class CloudRunner {
     }
     this.jobs = readJobs(raw);
     this.orphans = readOrphans(raw);
+    this.notes = readNotes(raw);
     const at = this.d.now();
     let cutOff = false;
     for (const job of this.jobs) {
@@ -317,6 +337,8 @@ export class CloudRunner {
   removeComparison(id: string): void {
     const sides = this.jobs.filter((j) => j.compare?.id === id);
     if (sides.some((j) => jobStatus(j) === 'running')) return;
+    const { [id]: _gone, ...runs } = this.notes.runs;
+    this.notes = { ...this.notes, runs };
     for (const job of sides) this.remove(job.id);
   }
 
@@ -355,10 +377,11 @@ export class CloudRunner {
   async clear(): Promise<void> {
     await this.ready;
     // Never used: nothing to erase, and nothing is written.
-    if (!this.jobs.length && !this.orphans.length) return;
+    if (!this.jobs.length && !this.orphans.length && !this.notes.report && !Object.keys(this.notes.runs).length) return;
     for (const job of this.jobs) if (jobStatus(job) === 'running') await this.cancel(job.id);
     this.orphans = [...new Set([...this.orphans, ...unstoppedBrowsers(this.jobs).map((b) => b.browserId)])];
     this.jobs = [];
+    this.notes = { runs: {}, report: '' };
     this.changed();
     await this.saveNow();
     void this.sweep(true);
@@ -368,7 +391,11 @@ export class CloudRunner {
   flush(): Promise<void> {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
-    return this.storage?.setItem(KEY, JSON.stringify({ v: 1, jobs: this.jobs, orphans: this.orphans })).catch(() => {}) ?? Promise.resolve();
+    // A run's findings go with it: those of comparisons no longer on the phone aren't kept.
+    const kept = new Set(this.jobs.map((j) => j.compare?.id).filter(Boolean));
+    const runs = Object.fromEntries(Object.entries(this.notes.runs).filter(([id, text]) => kept.has(id) && text));
+    const notes = this.notes.report || Object.keys(runs).length ? { notes: { report: this.notes.report, runs } } : {};
+    return this.storage?.setItem(KEY, JSON.stringify({ v: 1, jobs: this.jobs, orphans: this.orphans, ...notes })).catch(() => {}) ?? Promise.resolve();
   }
 
   /**
@@ -879,6 +906,19 @@ function trim(jobs: CloudJob[], orphans: string[]): CloudJob[] {
 function phoneBlockReason(reason: string): string {
   if (/^http_\d{3}$/.test(reason)) return reason;
   return reason === 'blocked' ? 'refused' : 'phone_check';
+}
+
+function readNotes(raw: string | null): ComparisonNotes {
+  try {
+    const saved: unknown = raw ? JSON.parse(raw) : null;
+    const notes = typeof saved === 'object' && saved !== null ? (saved as { notes?: unknown }).notes : undefined;
+    if (typeof notes !== 'object' || notes === null) return { runs: {}, report: '' };
+    const { runs, report } = notes as { runs?: unknown; report?: unknown };
+    const kept = typeof runs === 'object' && runs !== null ? Object.entries(runs).filter((e): e is [string, string] => typeof e[1] === 'string') : [];
+    return { runs: Object.fromEntries(kept), report: typeof report === 'string' ? report : '' };
+  } catch {
+    return { runs: {}, report: '' };
+  }
 }
 
 function readOrphans(raw: string | null): string[] {

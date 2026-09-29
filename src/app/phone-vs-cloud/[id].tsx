@@ -1,10 +1,11 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   compareProblemWords,
   comparisonNotice,
+  comparisonProblems,
   comparisonStatus,
   comparisonSummary,
   comparisonText,
@@ -13,8 +14,10 @@ import {
   gapWords,
   matchTerm,
   pricesWords,
+  problemKindWords,
   SIDE_NAMES,
   sideFigures,
+  sideReasonWords,
   sideRun,
   sidesOf,
   sideStatusWords,
@@ -25,15 +28,17 @@ import {
   type TermMatch,
 } from '../../cloud/compare';
 import type { CompareSide } from '../../cloud/jobs';
-import { costWords, reasonWords, RETAILER_NAMES } from '../../cloud/words';
+import { costWords, RETAILER_NAMES } from '../../cloud/words';
 import { whenLabel } from '../../pricing/receipt';
 import { useCloudRunner, useComparison } from '../../state/CloudProvider';
 import { announce } from '../../ui/a11y';
 import { Pill, tap } from '../../ui/controls';
+import { FindingsBox } from '../../ui/FindingsBox';
 import { Icon, type IconName } from '../../ui/Icon';
 import { RetailerBadge } from '../../ui/RetailerBadge';
 import { ScreenHeader } from '../../ui/ScreenHeader';
 import { colors, fonts, money, radius, shadow } from '../../ui/theme';
+import { useComparisonPdf } from '../../ui/useComparisonPdf';
 import { useNow } from '../../ui/useNow';
 
 /** How many differing prices show before "All N". */
@@ -50,6 +55,7 @@ export default function ComparisonScreen() {
   const runner = useCloudRunner();
   const now = useNow(5_000);
   const { fontScale } = useWindowDimensions();
+  const pdf = useComparisonPdf();
   const status = comparison ? comparisonStatus(comparison) : 'done';
 
   // Screen readers hear the result when the comparison ends.
@@ -77,16 +83,34 @@ export default function ComparisonScreen() {
     if (!got.ok) Alert.alert('Not started', compareProblemWords(got));
     else router.replace(`/phone-vs-cloud/${got.comparison.id}`);
   };
-  const share = () => {
+  const shareText = () => {
     const heading = `Phone vs. cloud, ${new Date(c.createdAt).toLocaleString('en-US')}`;
     void Share.share({ message: comparisonText(c, heading) }).catch(() => {});
+  };
+  const sharePdf = () => {
+    tap();
+    void pdf.share('run', [c]);
   };
 
   return (
     <View style={styles.screen}>
       <ScreenHeader title="Phone vs. cloud" subtitle={`“${c.terms.join('”, “')}” · ${whenLabel(c.createdAt, now)}`} />
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
-        <Hero comparison={c} status={status} onCancel={() => void runner.cancelComparison(c.id)} onAgain={() => void again()} onShare={share} />
+        <Hero
+          comparison={c}
+          status={status}
+          onCancel={() => void runner.cancelComparison(c.id)}
+          onAgain={() => void again()}
+          onPdf={sharePdf}
+          onText={shareText}
+          making={pdf.busy}
+          problem={pdf.problem}
+        />
+        <View style={styles.card}>
+          <FindingsBox id={c.id} label="Your findings" placeholder="What you noticed, for the PDF: which side was right, faster, cheaper…" />
+          <Text style={styles.small}>They go at the top of this run’s PDF, and in every run’s report.</Text>
+        </View>
+        <ProblemsCard comparison={c} />
         {c.retailers.map((r) => (
           <StoreCard key={r.retailerId} comparison={c} retailerId={r.retailerId} storeId={r.storeId} stacked={fontScale > 1.3} />
         ))}
@@ -107,7 +131,25 @@ export default function ComparisonScreen() {
 }
 
 /** The result: stores with prices on each side, what each took, the same products' prices, and what to do next. */
-function Hero({ comparison: c, status, onCancel, onAgain, onShare }: { comparison: Comparison; status: string; onCancel: () => void; onAgain: () => void; onShare: () => void }) {
+function Hero({
+  comparison: c,
+  status,
+  onCancel,
+  onAgain,
+  onPdf,
+  onText,
+  making,
+  problem,
+}: {
+  comparison: Comparison;
+  status: string;
+  onCancel: () => void;
+  onAgain: () => void;
+  onPdf: () => void;
+  onText: () => void;
+  making: boolean;
+  problem: string | null;
+}) {
   const summary = comparisonSummary(c);
   const running = status === 'running';
   return (
@@ -150,9 +192,50 @@ function Hero({ comparison: c, status, onCancel, onAgain, onShare }: { compariso
       ) : null}
       <View style={styles.rowWrap}>
         {running ? <Pill label="Cancel" small variant="outline" onPress={onCancel} /> : null}
+        {!running ? (
+          <Pill label={making ? 'Making the PDF…' : 'Share PDF'} accessibilityLabel="Share PDF of this comparison" icon="share" small variant="orange" busy={making} onPress={onPdf} />
+        ) : null}
         {!running ? <Pill label="Run it again" icon="refresh" small variant="dark" onPress={onAgain} /> : null}
-        {!running ? <Pill label="Share" accessibilityLabel="Share the comparison" icon="share" small variant="outline" onPress={onShare} /> : null}
+        {!running ? <Pill label="Share as text" small variant="outline" onPress={onText} /> : null}
       </View>
+      {problem ? (
+        <Text style={styles.bad} selectable accessibilityLiveRegion="polite">
+          {problem}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/** Everything that went wrong, side by side and store by store: why in plain words, and the exact error. */
+function ProblemsCard({ comparison: c }: { comparison: Comparison }) {
+  const problems = comparisonProblems(c);
+  if (!problems.length) return null;
+  return (
+    <View style={styles.card}>
+      <Text style={styles.title} accessibilityRole="header">
+        What went wrong
+      </Text>
+      {problems.map((p, i) => {
+        const where = [RETAILER_NAMES[p.retailerId], SIDE_NAMES[p.side], p.term ? `“${p.term}”` : ''].filter(Boolean).join(' · ');
+        const minor = p.kind === 'other_store' || p.kind === 'unconfirmed' || p.kind === 'cancelled';
+        return (
+          <View key={`${p.side}-${p.retailerId}-${p.term ?? ''}-${i}`} style={[styles.problem, minor && styles.problemMinor]}>
+            <Text style={styles.problemWhere}>
+              {where} <Text style={[styles.problemKind, minor && styles.problemKindMinor]}>{problemKindWords(p.kind).toUpperCase()}</Text>
+            </Text>
+            <Text style={styles.body}>{p.words.charAt(0).toUpperCase() + p.words.slice(1)}.</Text>
+            {p.detail ? (
+              <Text style={styles.code} selectable>
+                {p.detail}
+              </Text>
+            ) : null}
+          </View>
+        );
+      })}
+      {problems.some((p) => p.detail) ? (
+        <Text style={styles.small}>The exact errors are as the cloud browser, Browser Use or this phone’s search gave them. They’re in the PDF too.</Text>
+      ) : null}
     </View>
   );
 }
@@ -260,7 +343,7 @@ function TermBlock({ comparison: c, retailerId, term }: { comparison: Comparison
   return (
     <View style={styles.term}>
       <Text style={styles.termTitle}>“{term}”</Text>
-      <TermSide label={SIDE_NAMES.phone} result={phoneTerm} storeId={phone?.storeId ?? ''} running={phone?.status === 'running' || phone?.status === 'queued'} />
+      <TermSide side="phone" result={phoneTerm} storeId={phone?.storeId ?? ''} running={phone?.status === 'running' || phone?.status === 'queued'} />
       {matches.map(({ side, m }) => (
         <CloudTerm key={side} side={side} m={m} storeId={phone?.storeId ?? ''} running={isRunning(sideRun(c, side, retailerId)?.status)} />
       ))}
@@ -271,9 +354,10 @@ function TermBlock({ comparison: c, retailerId, term }: { comparison: Comparison
 const isRunning = (status: string | undefined) => status === 'running' || status === 'queued';
 
 /** A side's search, when it didn't bring products, or brought another store's. */
-function TermSide({ label, result, storeId, running }: { label: string; result: TermMatch['phone']; storeId: string; running: boolean }) {
+function TermSide({ side, result, storeId, running }: { side: CompareSide; result: TermMatch['phone']; storeId: string; running: boolean }) {
+  const label = SIDE_NAMES[side];
   if (!result) return running ? <Text style={styles.meta}>{label}: searching…</Text> : <Text style={styles.meta}>{label}: not searched.</Text>;
-  if (result.status !== 'done') return <Text style={styles.warn}>{`${label}: ${reasonWords(result.reason) || result.status}.`}</Text>;
+  if (result.status !== 'done') return <Text style={styles.warn}>{`${label}: ${sideReasonWords(side, result.reason) || result.status}.`}</Text>;
   const how = result.how === 'replay' ? ', a request sent again' : result.how === 'page' ? ', a page load' : result.how === 'api' ? ', its API' : '';
   return (
     <>
@@ -294,12 +378,11 @@ function TermSide({ label, result, storeId, running }: { label: string; result: 
 /** A cloud side's search against this phone's: products on both, the same price or not, and those that differ. */
 function CloudTerm({ side, m, storeId, running }: { side: Exclude<CompareSide, 'phone'>; m: TermMatch; storeId: string; running: boolean }) {
   const [all, setAll] = useState(false);
-  const label = SIDE_NAMES[side];
-  if (!m.cloud || m.cloud.status !== 'done') return <TermSide label={label} result={m.cloud} storeId={storeId} running={running} />;
+  if (!m.cloud || m.cloud.status !== 'done') return <TermSide side={side} result={m.cloud} storeId={storeId} running={running} />;
   const gaps = all ? m.differ : m.differ.slice(0, GAPS_SHOWN);
   return (
     <View style={styles.cloudTerm}>
-      <TermSide label={label} result={m.cloud} storeId={storeId} running={running} />
+      <TermSide side={side} result={m.cloud} storeId={storeId} running={running} />
       {m.phone?.status === 'done' ? (
         <Text style={[styles.meta, styles.strong, { color: m.both && m.same === m.both ? colors.green : m.both ? colors.amber : colors.muted }]}>
           {m.both ? `${m.both} on both, ${m.same} the same price` : 'No product on both'}
@@ -350,6 +433,22 @@ const styles = StyleSheet.create({
   strong: { fontFamily: fonts.semibold },
   small: { flexShrink: 1, fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.muted },
   warn: { flexShrink: 1, fontFamily: fonts.medium, fontSize: 13, lineHeight: 18, color: colors.amber },
+  bad: { flexShrink: 1, fontFamily: fonts.medium, fontSize: 13, lineHeight: 18, color: colors.red },
+  problem: { gap: 3, borderLeftWidth: 3, borderLeftColor: colors.red, paddingLeft: 10 },
+  problemMinor: { borderLeftColor: colors.amber },
+  problemWhere: { fontFamily: fonts.semibold, fontSize: 14, color: colors.ink },
+  problemKind: { fontFamily: fonts.semibold, fontSize: 11, letterSpacing: 0.6, color: colors.red },
+  problemKindMinor: { color: colors.amber },
+  code: {
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.ink,
+    backgroundColor: colors.chip,
+    borderRadius: radius.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
   link: { fontFamily: fonts.semibold, fontSize: 14, color: colors.orangeText },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },

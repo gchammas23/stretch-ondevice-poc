@@ -342,6 +342,226 @@ export function comparisonSummary(c: Comparison): ComparisonSummary {
   return { sides, prices };
 }
 
+// --- What went wrong ------------------------------------------------------------------------------------------
+
+/** Something that went wrong, or needs saying, at one side of one store: why in plain words, and the exact error. */
+export interface Problem {
+  side: CompareSide;
+  retailerId: CompareRetailerId;
+  /** The search it happened in; none when it's the store's whole run. */
+  term?: string;
+  kind: 'blocked' | 'failed' | 'interrupted' | 'cancelled' | 'other_store' | 'unconfirmed';
+  /** Why, in plain words. */
+  words: string;
+  /** The exact error, as the cloud browser, Browser Use's API or this phone's search gave it. */
+  detail?: string;
+}
+
+/** Reasons that mean something else for this phone's own searches than for a cloud browser. */
+const PHONE_REASONS: Record<string, string> = {
+  app_slept: 'the app left the screen mid-search, which stops this phone’s searches',
+  app_closed: 'the app closed while it searched',
+};
+
+/** Why a side's store or search ended, in words: as the phone's own searches have it, or the cloud's. */
+export const sideReasonWords = (side: CompareSide, reason: string | undefined): string => (side === 'phone' && reason && PHONE_REASONS[reason]) || reasonWords(reason);
+
+const KIND_WORDS: Record<Problem['kind'], string> = {
+  blocked: 'Blocked',
+  failed: 'Failed',
+  interrupted: 'Cut off',
+  cancelled: 'Cancelled',
+  other_store: 'Another store’s prices',
+  unconfirmed: 'Store not confirmed',
+};
+export const problemKindWords = (kind: Problem['kind']): string => KIND_WORDS[kind];
+
+/** Why a store's prices weren't confirmed for it, when no search said another store's. */
+function unconfirmedWords(run: RetailerRun): string {
+  if (run.via === 'agent' && !run.storeSet) return 'the agent didn’t say it set the store';
+  if (run.via === 'browser' && !run.storeSet) return 'the store wasn’t set on the site';
+  return 'the store’s data didn’t say which store its prices are for';
+}
+
+/**
+ * Everything that went wrong in a comparison, store by store and side by side: a store's run that ended blocked,
+ * failed, cut off or cancelled; each search that did; a search whose prices were another store's; and a store whose
+ * prices weren't confirmed for it. A store's end that only repeats one of its searches' is left out.
+ */
+export function comparisonProblems(c: Comparison): Problem[] {
+  const out: Problem[] = [];
+  for (const { retailerId } of c.retailers) {
+    for (const side of sidesOf(c)) {
+      const run = sideRun(c, side, retailerId);
+      if (!run) continue;
+      const ended = run.status === 'blocked' || run.status === 'failed' || run.status === 'interrupted' || run.status === 'cancelled';
+      const repeats = !run.detail && run.results.some((t) => t.status !== 'done' && t.reason === run.reason);
+      if (ended && !repeats) {
+        out.push({ side, retailerId, kind: run.status as Problem['kind'], words: sideReasonWords(side, run.reason) || KIND_WORDS[run.status as Problem['kind']].toLowerCase(), ...(run.detail ? { detail: run.detail } : {}) });
+      }
+      for (const t of run.results) {
+        if (t.status !== 'done') out.push({ side, retailerId, term: t.term, kind: t.status, words: sideReasonWords(side, t.reason) || t.status, ...(t.detail ? { detail: t.detail } : {}) });
+        else if (t.storeMatches === false) {
+          out.push({ side, retailerId, term: t.term, kind: 'other_store', words: `its data priced store ${t.pageStoreId ?? '?'}, not ${run.storeId}: those prices aren’t the store’s` });
+        }
+      }
+      if (run.status === 'done' && !storeConfirmed(run) && !run.results.some((t) => t.storeMatches === false)) {
+        out.push({ side, retailerId, kind: 'unconfirmed', words: unconfirmedWords(run) });
+      }
+    }
+  }
+  return out;
+}
+
+/** "Target, cloud browser, “milk”: Blocked. A “Robot or human?” check …" */
+export function problemLine(p: Problem): string {
+  const where = [RETAILER_NAMES[p.retailerId], SIDE_WORDS[p.side].replace(/^the /, ''), p.term ? `“${p.term}”` : ''].filter(Boolean).join(', ');
+  const why = p.words.charAt(0).toUpperCase() + p.words.slice(1);
+  return `${where}: ${KIND_WORDS[p.kind]}. ${why}.`;
+}
+
+// --- Every product, side by side ---------------------------------------------------------------------------------
+
+/** One side's price for a product, and whether it differs from this phone's. */
+export interface ProductCell {
+  price: number | null;
+  was?: number;
+  unitPrice?: string;
+  sponsored?: boolean;
+  differs?: boolean;
+}
+
+/** A product any side listed, with each side's price. */
+export interface ProductRow {
+  key: string;
+  name: string;
+  size?: string;
+  cells: Partial<Record<CompareSide, ProductCell>>;
+}
+
+/** One search at one store: each side's result, and every product any side kept (up to 20 a side), lined up. */
+export interface TermProducts {
+  term: string;
+  results: Partial<Record<CompareSide, TermResult>>;
+  rows: ProductRow[];
+}
+
+/**
+ * Every product the sides listed for a term at a store, matched by the retailer's item number: this phone's in its
+ * order, then those only the cloud browser listed, then those only the agent did. A cloud side's price that isn't
+ * this phone's is marked.
+ */
+export function termProducts(c: Comparison, retailerId: CompareRetailerId, term: string): TermProducts {
+  const sides = sidesOf(c);
+  const results: Partial<Record<CompareSide, TermResult>> = {};
+  for (const side of sides) {
+    const r = sideRun(c, side, retailerId)?.results.find((x) => x.term.toLowerCase() === term.toLowerCase());
+    if (r) results[side] = r;
+  }
+  const rows = new Map<string, ProductRow>();
+  for (const side of sides) {
+    const r = results[side];
+    if (r?.status !== 'done') continue;
+    for (const item of r.items) {
+      const key = itemKey(item.itemId);
+      let row = rows.get(key);
+      if (!row) {
+        row = { key, name: item.name, ...(item.size ? { size: item.size } : {}), cells: {} };
+        rows.set(key, row);
+      }
+      if (row.cells[side]) continue;
+      row.cells[side] = {
+        price: item.price,
+        ...(item.wasPrice !== undefined ? { was: item.wasPrice } : {}),
+        ...(item.unitPrice ? { unitPrice: item.unitPrice } : {}),
+        ...(item.sponsored ? { sponsored: true } : {}),
+      };
+    }
+  }
+  for (const row of rows.values()) {
+    const phone = row.cells.phone;
+    if (!phone) continue;
+    for (const side of ['scripted', 'agent'] as const) {
+      const cell = row.cells[side];
+      if (cell && !samePrice(phone.price, cell.price)) cell.differs = true;
+    }
+  }
+  return { term, results, rows: [...rows.values()] };
+}
+
+// --- Across runs -------------------------------------------------------------------------------------------------
+
+/** One side over every run given: stores and prices, what went wrong, time, data and cost. */
+export interface SideTotals {
+  side: CompareSide;
+  runs: number;
+  stores: number;
+  withPrices: number;
+  confirmed: number;
+  blocked: number;
+  failed: number;
+  /** Interrupted or cancelled. */
+  cutOff: number;
+  /** A cloud side's products listed by this phone too, and how many had its price. */
+  both?: number;
+  same?: number;
+  /** A run's time (its slowest store's, since stores run at once): the median over the runs. */
+  runMs?: number;
+  /** The cloud browser's setting up, the median over its stores. */
+  setupMs?: number;
+  /** A search's time, the median over every search. */
+  searchMs?: number;
+  phoneBytes?: number;
+  cloudMb?: number;
+  usd: number;
+}
+
+export function sideTotals(list: Comparison[]): SideTotals[] {
+  return SIDES.filter((side) => list.some((c) => c.sides[side])).map((side) => {
+    const figures: SideFigures[] = [];
+    const runTimes: number[] = [];
+    const searches: number[] = [];
+    let both = 0;
+    let same = 0;
+    let runs = 0;
+    for (const c of list) {
+      if (!c.sides[side]) continue;
+      runs++;
+      const mine = c.retailers.map((r) => sideRun(c, side, r.retailerId)).filter((r): r is RetailerRun => !!r);
+      const f = mine.map((run) => sideFigures(side, run));
+      figures.push(...f);
+      const totals = f.map((x) => x.totalMs).filter((ms): ms is number => ms !== undefined);
+      if (totals.length) runTimes.push(Math.max(...totals));
+      for (const run of mine) for (const t of run.results) if (t.status === 'done' && t.ms !== undefined) searches.push(t.ms);
+      const prices = side === 'phone' ? undefined : comparisonSummary(c).prices.find((p) => p.side === side);
+      both += prices?.both ?? 0;
+      same += prices?.same ?? 0;
+    }
+    const runMs = median(runTimes);
+    const setupMs = median(figures.map((f) => f.setupMs).filter((ms): ms is number => ms !== undefined));
+    const searchMs = median(searches);
+    const phoneBytes = sum(figures.map((f) => f.phoneBytes));
+    const cloudMb = sum(figures.map((f) => f.cloudMb));
+    return {
+      side,
+      runs,
+      stores: figures.length,
+      withPrices: figures.filter((f) => f.status === 'done' && f.searched > 0).length,
+      confirmed: figures.filter((f) => f.status === 'done' && f.confirmed).length,
+      blocked: figures.filter((f) => f.status === 'blocked').length,
+      failed: figures.filter((f) => f.status === 'failed').length,
+      cutOff: figures.filter((f) => f.status === 'interrupted' || f.status === 'cancelled').length,
+      ...(side !== 'phone' ? { both, same } : {}),
+      ...(runMs !== undefined ? { runMs } : {}),
+      ...(setupMs !== undefined ? { setupMs } : {}),
+      ...(searchMs !== undefined ? { searchMs } : {}),
+      ...(phoneBytes !== undefined ? { phoneBytes } : {}),
+      ...(cloudMb !== undefined ? { cloudMb } : {}),
+      usd: Math.round(figures.reduce((n, f) => n + f.usd, 0) * 1e6) / 1e6,
+    };
+  });
+}
+
 // --- In words ---------------------------------------------------------------------------------------------------
 
 /** "12 s", "2 min 5 s". */
@@ -372,7 +592,7 @@ export function sideStatusWords(f: SideFigures, storeId: string): string {
     interrupted: 'Interrupted',
     cancelled: 'Cancelled',
   };
-  const why = reasonWords(f.reason);
+  const why = sideReasonWords(f.side, f.reason);
   return why && f.status !== 'running' && f.status !== 'queued' ? `${words[f.status]}: ${why}` : words[f.status];
 }
 
@@ -459,8 +679,8 @@ export function comparisonText(c: Comparison, heading: string): string {
         if (!m.phone && !m.cloud) continue;
         const who = SIDE_WORDS[side];
         if (m.phone?.status !== 'done' || m.cloud?.status !== 'done') {
-          const why = (x: TermResult | undefined) => (!x ? 'not searched' : reasonWords(x.reason) || x.status);
-          const parts = [m.phone?.status !== 'done' ? `this phone: ${why(m.phone)}` : '', m.cloud?.status !== 'done' ? `${who}: ${why(m.cloud)}` : ''].filter(Boolean);
+          const why = (s: CompareSide, x: TermResult | undefined) => (!x ? 'not searched' : sideReasonWords(s, x.reason) || x.status);
+          const parts = [m.phone?.status !== 'done' ? `this phone: ${why('phone', m.phone)}` : '', m.cloud?.status !== 'done' ? `${who}: ${why(side, m.cloud)}` : ''].filter(Boolean);
           lines.push(`  “${term}”, this phone and ${who}: nothing to compare (${parts.join('; ')}).`);
           continue;
         }
