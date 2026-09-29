@@ -12,6 +12,7 @@ import {
   ScrollView,
   Share,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   useWindowDimensions,
@@ -20,17 +21,31 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listText, parseListText } from '../../../lists/parse';
 import { listQueries, type GroceryList, type ListItem, type TripRecord } from '../../../lists/types';
+import { aisleSections, placeLabel, spotFor, type Spot } from '../../../pricing/aisles';
 import { MODE_WORDS } from '../../../pricing/onlineCost';
 import { addAgain } from '../../../state/appStore';
-import { useApp, useAppState, useComparison, useList, usePricingRun, useSharePlan, useStoreChoices, useStoreName } from '../../../state/AppProvider';
+import {
+  useAisles,
+  useApp,
+  useAppState,
+  useComparison,
+  useList,
+  usePricingRun,
+  useSettings,
+  useSharePlan,
+  useStoreChoices,
+  useStoreName,
+} from '../../../state/AppProvider';
+import { knownStore } from '../../../state/storeInfo';
 import { announce, hiddenFromScreenReaders, useFooterHeight } from '../../../ui/a11y';
-import { Checkbox, IconButton, Pill, ProductThumb, ProgressRing, tap, ZigzagEdge } from '../../../ui/controls';
+import { Checkbox, IconButton, Pill, ProductThumb, ProgressRing, tap, TEXT_BUTTON_SLOP, ZigzagEdge } from '../../../ui/controls';
 import { Icon } from '../../../ui/Icon';
 import { brandColor } from '../../../ui/RetailerBadge';
 import { goBack } from '../../../ui/ScreenHeader';
 import { colors, fonts, money, radius, shadow } from '../../../ui/theme';
 
-type Row = { kind: 'item'; item: ListItem } | { kind: 'section'; key: string; title: string; color?: string };
+/** A list's rows: its items, and headings (a split trip's stores, and aisles when sorted by aisle, `sub` under a store). */
+type Row = { kind: 'item'; item: ListItem } | { kind: 'section'; key: string; title: string; color?: string; sub?: boolean };
 
 /** After the list opens or changes, how long to wait before pricing it: typing a few items starts one run, not several. */
 const PRICE_AFTER_MS = 900;
@@ -89,6 +104,33 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
   useFocusEffect(priceInBackground);
   const nameOf = useStoreName();
   const checked = list.items.filter((i) => i.checked).length;
+
+  // Shopping in store: where each item is at the store it's bought at, as the store's data has it or as the user noted
+  // it. A retailer whose latest search was for another store than the one set gives no aisles of its own (see spotFor).
+  const aisles = useAisles();
+  const settings = useSettings();
+  const inStore = !!trip && !trip.mode;
+  const spots = new Map<string, Spot>();
+  if (trip && inStore) {
+    const storeData = new Map(
+      trip.retailerIds.map((rid) => [rid, !knownStore(rid, settings, choices.find((c) => c.config.id === rid)?.storeKey).conflict]),
+    );
+    for (const item of list.items) {
+      const line = trip.lines[item.id];
+      const spot = line?.product && line.retailerId ? spotFor(aisles, line.retailerId, line.product, item.name, storeData.get(line.retailerId)) : undefined;
+      if (spot) spots.set(item.id, spot);
+    }
+  }
+  const foundCount = trip ? list.items.filter((i) => trip.lines[i.id]?.product).length : 0;
+  const byAisle = inStore && settings.sortByAisle && spots.size > 0;
+  /** A store's items, by where they are when sorted by aisle: a heading for each aisle or area, in the walk's order. */
+  const itemRows = (items: ListItem[], prefix: string, sub: boolean): Row[] =>
+    byAisle
+      ? aisleSections(items, (i) => ({ spot: spots.get(i.id), found: !!trip?.lines[i.id]?.product })).flatMap((section): Row[] => [
+          { kind: 'section', key: `${prefix}${section.key}`, title: section.title, sub },
+          ...section.rows.map((item): Row => ({ kind: 'item', item })),
+        ])
+      : items.map((item): Row => ({ kind: 'item', item }));
 
   const saveTitle = () => {
     store.renameList(list.id, title);
@@ -195,13 +237,15 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
       const items = list.items.filter((i) => trip.lines[i.id]?.retailerId === rid);
       if (!items.length) continue;
       rows.push({ kind: 'section', key: rid, title: `At ${nameOf(rid)}`, color: brandColor(rid) });
-      items.forEach((item) => rows.push({ kind: 'item', item }));
+      rows.push(...itemRows(items, `${rid}:`, true));
     }
     const rest = list.items.filter((i) => !trip.retailerIds.includes(trip.lines[i.id]?.retailerId ?? ''));
     if (rest.length) {
       rows.push({ kind: 'section', key: 'none', title: 'Not found at either store' });
       rest.forEach((item) => rows.push({ kind: 'item', item }));
     }
+  } else if (trip) {
+    rows.push(...itemRows(list.items, '', false));
   } else {
     list.items.forEach((item) => rows.push({ kind: 'item', item }));
   }
@@ -245,6 +289,27 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
             {trip || checked ? `${checked} of ${list.items.length} items` : `${list.items.length} ${list.items.length === 1 ? 'item' : 'items'}`}
           </Text>
         </View>
+        {inStore && spots.size ? (
+          <View style={styles.metaRow}>
+            <Icon name="pin" size={20} color={colors.muted} />
+            <View style={styles.aisleHead} {...hiddenFromScreenReaders}>
+              <Text style={styles.metaText}>Sort by aisle</Text>
+              <Text style={styles.aisleCount}>
+                Aisles known for {spots.size} of {foundCount} {foundCount === 1 ? 'item' : 'items'}
+              </Text>
+            </View>
+            <Switch
+              value={settings.sortByAisle}
+              onValueChange={(on) => {
+                tap();
+                store.setSortByAisle(on);
+              }}
+              trackColor={{ true: colors.orange, false: colors.faint }}
+              thumbColor="#FFFFFF"
+              accessibilityLabel={`Sort by aisle. Aisles known for ${spots.size} of ${foundCount} ${foundCount === 1 ? 'item' : 'items'}`}
+            />
+          </View>
+        ) : null}
       </View>
       <ZigzagEdge />
     </View>
@@ -258,14 +323,14 @@ function ListView({ list, startRenaming }: { list: GroceryList; startRenaming: b
         ListHeaderComponent={header}
         renderItem={({ item: row }) =>
           row.kind === 'section' ? (
-            <View style={styles.section}>
+            <View style={[styles.section, row.sub && styles.subSection]}>
               {row.color ? <View style={[styles.dot, { backgroundColor: row.color }]} /> : null}
-              <Text style={styles.sectionText} accessibilityRole="header">
+              <Text style={[styles.sectionText, row.sub && styles.subSectionText]} accessibilityRole="header">
                 {row.title}
               </Text>
             </View>
           ) : trip ? (
-            <TripRow list={list} item={row.item} />
+            <TripRow list={list} item={row.item} spot={spots.get(row.item.id)} inStore={inStore} />
           ) : (
             <ItemRow list={list} item={row.item} onLongPress={() => confirmRemove(row.item)} />
           )
@@ -435,42 +500,69 @@ function ItemRow({ list, item, onLongPress }: { list: GroceryList; item: ListIte
   );
 }
 
-function TripRow({ list, item }: { list: GroceryList; item: ListItem }) {
+/**
+ * An item on a trip: the product it's bought as, its quantity and price. Shopping in store, where it is under it (its
+ * aisle or area, with "your note" when the user noted it), or "Where was it?" to note that for next time.
+ */
+function TripRow({ list, item, spot, inStore }: { list: GroceryList; item: ListItem; spot?: Spot; inStore: boolean }) {
   const { store } = useApp();
   const line = list.trip?.lines[item.id];
   const product = line?.product ?? null;
+  const noteable = inStore && !!product && !!line?.retailerId;
   return (
     <View style={styles.row}>
       <Checkbox checked={item.checked} label={product?.name ?? item.name} onPress={() => store.toggleChecked(list.id, item.id)} />
-      <Pressable
-        disabled={!product || !line?.retailerId}
-        accessibilityRole="button"
-        accessibilityHint="Opens the product"
-        onPress={() =>
-          router.push({ pathname: '/list/[id]/product', params: { id: list.id, store: line!.retailerId, item: item.id, product: product!.id } })
-        }
-        style={({ pressed }) => [styles.tripPress, pressed && styles.pressed]}
-      >
-        <View style={styles.tripText}>
-          <Text style={[styles.itemName, item.checked && styles.checked]} numberOfLines={2}>
-            {product?.name ?? item.name}
-          </Text>
-          <Text style={styles.tripMeta}>
-            {item.qty} {item.qty === 1 ? 'unit' : 'units'}
-            {'  ·  '}
-            {product?.price != null ? money(product.price * item.qty) : 'Not found here'}
-          </Text>
-        </View>
-        <View>
-          <ProductThumb product={product} size={48} />
-          {/* Said already: "2 units". */}
-          <View style={styles.qtyBadge} {...hiddenFromScreenReaders}>
-            <Text style={styles.qtyBadgeText} maxFontSizeMultiplier={1.3}>
-              {item.qty}
+      <View style={styles.tripMain}>
+        <Pressable
+          disabled={!product || !line?.retailerId}
+          accessibilityRole="button"
+          accessibilityHint="Opens the product"
+          onPress={() =>
+            router.push({ pathname: '/list/[id]/product', params: { id: list.id, store: line!.retailerId, item: item.id, product: product!.id } })
+          }
+          style={({ pressed }) => [styles.tripPress, pressed && styles.pressed]}
+        >
+          <View style={styles.tripText}>
+            <Text style={[styles.itemName, item.checked && styles.checked]} numberOfLines={2}>
+              {product?.name ?? item.name}
+            </Text>
+            <Text style={styles.tripMeta}>
+              {item.qty} {item.qty === 1 ? 'unit' : 'units'}
+              {'  ·  '}
+              {product?.price != null ? money(product.price * item.qty) : 'Not found here'}
             </Text>
           </View>
-        </View>
-      </Pressable>
+          <View>
+            <ProductThumb product={product} size={48} />
+            {/* Said already: "2 units". */}
+            <View style={styles.qtyBadge} {...hiddenFromScreenReaders}>
+              <Text style={styles.qtyBadgeText} maxFontSizeMultiplier={1.3}>
+                {item.qty}
+              </Text>
+            </View>
+          </View>
+        </Pressable>
+        {noteable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={spot ? `${placeLabel(spot)}${spot.from === 'you' ? ', as you noted' : ''}` : `Where was ${item.name}?`}
+            accessibilityHint={spot ? 'Notes where you found it instead' : 'Notes where you found it, for next time'}
+            hitSlop={TEXT_BUTTON_SLOP}
+            onPress={() => router.push({ pathname: '/list/[id]/aisle/[itemId]', params: { id: list.id, itemId: item.id } })}
+            style={({ pressed }) => [styles.place, pressed && styles.pressed]}
+          >
+            <Icon name="pin" size={15} color={spot ? colors.muted : colors.orangeText} />
+            {spot ? (
+              <Text style={[styles.placeText, item.checked && styles.checkedPlace]}>
+                {placeLabel(spot)}
+                {spot.from === 'you' ? <Text style={styles.placeMine}>{'  ·  your note'}</Text> : null}
+              </Text>
+            ) : (
+              <Text style={styles.placeAsk}>Where was it?</Text>
+            )}
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -533,6 +625,11 @@ const styles = StyleSheet.create({
   dot: { width: 12, height: 12, borderRadius: 6 },
   section: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 22, paddingTop: 22, paddingBottom: 6 },
   sectionText: { fontFamily: fonts.semibold, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: colors.muted },
+  // An aisle under a split trip's store.
+  subSection: { paddingLeft: 42, paddingTop: 14, paddingBottom: 2 },
+  subSectionText: { textTransform: 'none', letterSpacing: 0, fontSize: 14 },
+  aisleHead: { flex: 1, gap: 1 },
+  aisleCount: { fontFamily: fonts.body, fontSize: 13, color: '#5F5750' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -549,7 +646,13 @@ const styles = StyleSheet.create({
   checked: { color: colors.muted, textDecorationLine: 'line-through' },
   qty: { fontFamily: fonts.medium, fontSize: 15, color: colors.muted },
   tripText: { flex: 1, gap: 4 },
-  tripPress: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  tripMain: { flex: 1, gap: 8 },
+  tripPress: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  place: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start' },
+  placeText: { fontFamily: fonts.medium, fontSize: 14, color: colors.ink },
+  checkedPlace: { color: colors.muted },
+  placeMine: { fontFamily: fonts.body, color: colors.muted },
+  placeAsk: { fontFamily: fonts.medium, fontSize: 14, color: colors.orangeText },
   pressed: { opacity: 0.75 },
   again: { gap: 8, paddingTop: 4, paddingBottom: 8 },
   againLabel: { fontFamily: fonts.semibold, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: colors.muted, marginLeft: 22 },

@@ -1,3 +1,4 @@
+import { AISLE_KEY, DEPARTMENT_KEY, departmentOf, NOT_AISLE_KEY, placeOf } from './aisle';
 import { isObj, num, str, type Obj } from './json';
 import type { PagePayload, Product } from './types';
 
@@ -21,6 +22,9 @@ export interface ProductDetails {
   inStock?: boolean;
   /** Barcode (GTIN or UPC), when given. */
   gtin?: string;
+  /** Its aisle, and its department, in the store the page is for, when the page's own data says (see aisle.ts). */
+  aisle?: string;
+  department?: string;
   /** Where the details were found, in words. */
   sources: string[];
   /** How many kinds of detail were found. */
@@ -119,6 +123,10 @@ interface Found {
   price?: number;
   inStock?: boolean;
   gtin?: string;
+  aisle?: string;
+  /** The area a place names instead of an aisle ("Dairy"), which comes before a department field's. */
+  area?: string;
+  department?: string;
 }
 
 function fromLd(node: Obj, origin: string): Found {
@@ -169,6 +177,17 @@ function fromData(o: Obj, origin: string): Found {
   const found: Found = { images: [], highlights: [] };
   const visit = (v: Obj, depth: number) => {
     for (const [k, child] of Object.entries(v)) {
+      // Where it is in the store: a place under a key that says so (a category called an aisle doesn't read as one).
+      if (!found.aisle && AISLE_KEY.test(k) && !NOT_AISLE_KEY.test(k)) {
+        const place = placeOf(child, k);
+        found.area ??= place?.department;
+        found.aisle = place?.aisle;
+        if (found.aisle) continue;
+      }
+      if (!found.department && DEPARTMENT_KEY.test(k)) {
+        found.department = departmentOf(child);
+        if (found.department) continue;
+      }
       if (typeof child === 'string') {
         const text = child.trim();
         if (!found.description && /^(long_?)?description(_?html)?$|^product_?description$|^downstream_?description$|^marketing_?description$/i.test(k) && text.length >= 30) {
@@ -225,12 +244,22 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     ...(payload.nextDataText ? [payload.nextDataText] : []),
     ...(payload.sources ?? []).filter((s) => s.label !== 'ld+json' && s.label !== 'meta').map((s) => s.text),
   ];
+  // The first of the page's data that has the product describes it. Where it is in the store can come in another (a
+  // store's fulfillment for its product page can be a request of its own), so the rest are looked through for that.
+  let own: Found | undefined;
   for (const text of data) {
     const obj = productObject(parse(text), product.id);
-    if (obj) {
-      parts.push({ from: 'the page’s own data', found: fromData(obj, origin) });
-      break;
+    if (!obj) continue;
+    const found = fromData(obj, origin);
+    if (!own) {
+      own = found;
+      parts.push({ from: 'the page’s own data', found });
+    } else {
+      own.aisle ??= found.aisle;
+      own.area ??= found.area;
+      own.department ??= found.department;
     }
+    if (own.aisle) break;
   }
 
   const meta = (payload.sources ?? []).find((s) => s.label === 'meta');
@@ -257,6 +286,8 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     price: pick('price'),
     inStock: pick('inStock'),
     gtin: pick('gtin'),
+    aisle: pick('aisle'),
+    department: pick('area') ?? pick('department'),
     sources: parts.filter((p) => Object.values(p.found).some((v) => (Array.isArray(v) ? v.length : v !== undefined))).map((p) => p.from),
     count: 0,
   };
@@ -271,6 +302,7 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     details.price,
     details.inStock !== undefined,
     details.gtin,
+    details.aisle ?? details.department,
   ].filter(Boolean).length;
   return details;
 }

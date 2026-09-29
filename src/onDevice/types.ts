@@ -166,6 +166,9 @@ export interface ProfileFields {
   stock?: string[][];
   gtin?: string[][];
   sponsored?: string[][];
+  /** Where it is in the store: its aisle, or the area it's in (see aisle.ts). */
+  place?: string[][];
+  department?: string[][];
 }
 
 /** Where the general reader found a list, and how its products read: what a profile is learned from. */
@@ -299,6 +302,13 @@ export interface Product {
   sponsored?: boolean;
   /** Its barcode (GTIN, UPC or EAN digits), when the store gives one. */
   gtin?: string;
+  /**
+   * Its aisle in the store the search was for, as the store numbers it ("12", "A12", "G24"), when the store's data says
+   * (see aisle.ts). A category some stores call an aisle ("Milk") isn't one.
+   */
+  aisle?: string;
+  /** The store's department for it ("Dairy", "Frozen"), when its data says: roughly where it is, without an aisle. */
+  department?: string;
 }
 
 /** How the page asked for a JSON response, so the same request can be sent again for another query. */

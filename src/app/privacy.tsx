@@ -4,7 +4,7 @@ import { Alert, Platform, ScrollView, StyleSheet, Text, View } from 'react-nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { krogerApiConfigured } from '../onDevice/krogerApi';
 import { MODE_NAMES } from '../pricing/onlineCost';
-import { useApp, useAppState, useAttemptLog, useHistory } from '../state/AppProvider';
+import { useAisles, useApp, useAppState, useAttemptLog, useHistory } from '../state/AppProvider';
 import { Pill } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { Icon, type IconName } from '../ui/Icon';
@@ -19,6 +19,7 @@ export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
   const { cache, fees, ads, coupons, forgetPrices: forget, startOver } = useApp();
   const history = useHistory();
+  const aisles = useAisles();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
   const items = state.lists.reduce((n, l) => n + l.items.length, 0);
@@ -31,7 +32,7 @@ export default function PrivacyScreen() {
   const maps = Platform.OS === 'ios' ? 'Apple’s map service' : 'the phone’s map service';
 
   const forgetPrices = () =>
-    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads and coupons read from store pages, the store health log and the last price truth check are erased. Lists stay.', [
+    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads, coupons and aisles read from store pages, the store health log and the last price truth check are erased. Lists, and the aisles you noted, stay.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Forget',
@@ -63,6 +64,7 @@ export default function PrivacyScreen() {
           <Line text={`The stores ${count(listed, 'retailer')} listed near your ZIP code, and where that ZIP code is on the map (its center, not where you are).`} />
           <Line text={`${count(cache.size, 'saved search', 'saved searches')}, the price history of ${count(history.size, 'product')}, and a log of ${count(log.entries().length, 'store search', 'store searches')} for Store health.`} />
           <Line text="How the last price truth check went (how many prices matched, at each store), for the results report." />
+          <Line text={`Where you noted finding ${count(aisles.notes, 'product')} in your stores, and the aisles ${count(aisles.pages, 'product page')} gave, for Shop here.`} />
           <Line
             text={`How you shop (${MODE_NAMES[state.settings.shopMode].toLowerCase()}), ${count(plans, 'online plan')} you said you have, and what ${count(feesRead, 'store’s fees page', 'stores’ fees pages')} said when the phone last read ${feesRead === 1 ? 'it' : 'them'}.`}
           />

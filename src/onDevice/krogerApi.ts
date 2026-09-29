@@ -1,3 +1,4 @@
+import { departmentOf, placeOf } from './aisle';
 import { isBarcode, krogerProductId } from './barcode';
 import { StrategyError } from './fetchStrategy';
 import { get, isObj, num, str } from './json';
@@ -266,6 +267,11 @@ export function krogerProducts(json: unknown, storeId: string, retailerId = 'kro
     const imageUrl = str((sizes.find((s) => s.size === 'medium') ?? sizes[0])?.url);
     const page = str(p.productPageURI);
     const upc = str(p.upc) ?? (/^\d{12,14}$/.test(id) ? id : undefined);
+    // Where it is in the store asked for (filter.locationId, which Kroger needs to give it): the first of its places
+    // with an aisle ("AISLE 13"), else the department its place names ("DAIRY", whose number, 100, is a code, not an
+    // aisle), else its first category, which is the website's rather than the store's.
+    const place = placeOf(p.aisleLocations, 'aisleLocations');
+    const department = place?.department ?? departmentOf(p.categories);
 
     products.push({
       retailer: retailerId,
@@ -278,6 +284,8 @@ export function krogerProducts(json: unknown, storeId: string, retailerId = 'kro
       url: page ? `https://${host}${page.split('?')[0]}` : undefined,
       inStock: stock ? stock !== 'TEMPORARILY_OUT_OF_STOCK' : undefined,
       gtin: upc,
+      ...(place?.aisle ? { aisle: place.aisle } : {}),
+      ...(department ? { department } : {}),
     });
   }
   return products;
