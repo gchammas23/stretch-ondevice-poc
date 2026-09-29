@@ -1,3 +1,4 @@
+import { AISLE_KEY, DEPARTMENT_KEY, departmentOf, NOT_AISLE_KEY, placeOf, type Place } from './aisle';
 import { get, isObj, moneyFromText, num, parseMoney, str, type Obj } from './json';
 import { mentionsQuery } from './relevance';
 import type {
@@ -218,6 +219,10 @@ function walmartProduct(o: Obj, retailer: string, storeId: string): Product | nu
   const availability = str(get(o, 'availabilityStatusV2', 'value')) ?? str(o.availabilityStatus);
   const price = num(get(o, 'priceInfo', 'currentPrice', 'price')) ?? num(o.price) ?? parseMoney(priceText) ?? null;
   const was = num(get(o, 'priceInfo', 'wasPrice', 'price')) ?? parseMoney(str(get(o, 'priceInfo', 'wasPrice', 'priceString')));
+  // Where it is in the store, for the store set: productLocation [{ displayValue: "D34" }], null for items only shipped
+  // (as others' scrapers show it; not yet seen in a capture from the phone), read the general way.
+  const place = findPlace(o);
+  const department = place?.value.department ? undefined : findDepartment(o);
 
   return {
     retailer,
@@ -233,6 +238,7 @@ function walmartProduct(o: Obj, retailer: string, storeId: string): Product | nu
     inStock: availability ? availability === 'IN_STOCK' : undefined,
     sponsored: o.isSponsoredFlag === true ? true : undefined,
     gtin: findGtin(o),
+    ...whereFields(place?.value, department?.value),
   };
 }
 
@@ -275,7 +281,7 @@ export const walmartNextData: Parser = (payload, { retailer, storeId }) => {
 
 // ---------------------------------------------------------------------------
 // Generic: for retailers scraped with a pageScript that returns
-// [{ id, name, price?, wasPrice?, priceText?, unitPriceText?, imageUrl?, url?, inStock? }].
+// [{ id, name, price?, wasPrice?, priceText?, unitPriceText?, imageUrl?, url?, inStock?, aisle?, department? }].
 
 export const pageScriptProducts: Parser = (payload, { retailer, storeId }) => {
   const list = payload.pageResult;
@@ -291,6 +297,8 @@ export const pageScriptProducts: Parser = (payload, { retailer, storeId }) => {
     const priceText = str(raw.priceText);
     const price = num(raw.price) ?? parseMoney(priceText) ?? null;
     if (products.length < EVIDENCE_KEPT) evidence[id] = rawProduct(raw, [num(raw.price) !== undefined ? 'price' : 'priceText']);
+    // The script's aisle is where the product is: its words, when they aren't an aisle, are the area it's in.
+    const place = placeOf(raw.aisle, 'location');
     products.push({
       retailer,
       storeId,
@@ -304,6 +312,7 @@ export const pageScriptProducts: Parser = (payload, { retailer, storeId }) => {
       url: str(raw.url),
       inStock: typeof raw.inStock === 'boolean' ? raw.inStock : undefined,
       gtin: findGtin(raw),
+      ...whereFields(place, departmentOf(raw.department)),
     });
   }
   return { payloadFound: true, products, source: 'page script', origin: { kind: 'other' }, evidence };
@@ -523,14 +532,64 @@ function findStock(o: Obj): Found<boolean> | undefined {
   return undefined;
 }
 
+/** Keys worth looking inside for where a product is in the store: its fulfillment, its store's stock, its location. */
+const AISLE_NEST = /fulfil|inventory|availab|store_?options?|in_?store|location/i;
+
+/**
+ * Where the product is in the store: a place under a key that says so (see aisle.ts), on the product or a few levels
+ * into it, where a store keeps it with the product's fulfillment for the store searched. One with an aisle wins over one
+ * that only names an area. A category that a store calls an aisle doesn't read as either.
+ */
+function findPlace(o: Obj, depth = 0): Found<Place> | undefined {
+  let area: Found<Place> | undefined;
+  for (const [k, v] of Object.entries(o)) {
+    if (!AISLE_KEY.test(k) || NOT_AISLE_KEY.test(k)) continue;
+    const value = placeOf(v, k);
+    if (value?.aisle) return { value, path: [k] };
+    if (value) area ??= { value, path: [k] };
+  }
+  if (depth >= 3) return area;
+  for (const [k, v] of Object.entries(o)) {
+    if (!NEST.test(k) && !AISLE_NEST.test(k)) continue;
+    const child = Array.isArray(v) ? v[0] : v;
+    const hit = isObj(child) ? findPlace(child, depth + 1) : undefined;
+    if (hit?.value.aisle) return { value: hit.value, path: [k, ...hit.path] };
+    if (hit) area ??= { value: hit.value, path: [k, ...hit.path] };
+  }
+  return area;
+}
+
+/** The store's department for the product, under a key that says so, on the product or a level or two in. */
+function findDepartment(o: Obj, depth = 0): Found<string> | undefined {
+  for (const [k, v] of Object.entries(o)) {
+    if (!DEPARTMENT_KEY.test(k)) continue;
+    const value = departmentOf(v);
+    if (value) return { value, path: [k] };
+  }
+  if (depth >= 2) return undefined;
+  for (const [k, v] of Object.entries(o)) {
+    if (!NEST.test(k)) continue;
+    const child = Array.isArray(v) ? v[0] : v;
+    const hit = isObj(child) ? findDepartment(child, depth + 1) : undefined;
+    if (hit) return { value: hit.value, path: [k, ...hit.path] };
+  }
+  return undefined;
+}
+
 function originOf(href: string | undefined): string {
   return (href && /^https?:\/\/[^/?#]+/i.exec(href)?.[0]) || '';
 }
 
 const linkOf = (link: string | undefined, origin: string): string | undefined => (link ? (link.startsWith('/') && origin ? origin + link : link) : undefined);
 
+/** A product's aisle and department, to spread into it: the area its place names comes before a department field's. */
+const whereFields = (place: Place | undefined, department: string | undefined): Pick<Product, 'aisle' | 'department'> => {
+  const area = place?.department ?? department;
+  return { ...(place?.aisle ? { aisle: place.aisle } : {}), ...(area ? { department: area } : {}) };
+};
+
 type FieldKey = Exclude<keyof ProfileFields, 'memberLabel'>;
-const FIELD_KEYS: FieldKey[] = ['id', 'name', 'price', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored'];
+const FIELD_KEYS: FieldKey[] = ['id', 'name', 'price', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored', 'place', 'department'];
 /** The ways of finding one field a profile keeps, at most. */
 const FIELD_WAYS = 3;
 
@@ -572,6 +631,9 @@ function toProduct(o: Obj, ctx: ReadContext): ProductRead | null {
   const image = findImage(o);
   const stock = findStock(o);
   const gtin = findGtinAt(o);
+  const place = findPlace(o);
+  // A department field only counts where the place names no area: a place's area is where the product is.
+  const department = place?.value.department ? undefined : findDepartment(o);
   const memberLabel = deal ? memberLabelOf(deal.path) : undefined;
   const product: Product = {
     retailer: ctx.retailer,
@@ -588,6 +650,7 @@ function toProduct(o: Obj, ctx: ReadContext): ProductRead | null {
     inStock: stock?.value,
     sponsored: sponsoredKey ? true : undefined,
     gtin: gtin?.value,
+    ...whereFields(place?.value, department?.value),
   };
   const fields: ProductRead['fields'] = { name: name.path, price: best.path };
   if (id) fields.id = id.path;
@@ -599,6 +662,8 @@ function toProduct(o: Obj, ctx: ReadContext): ProductRead | null {
   if (stock) fields.stock = stock.path;
   if (gtin) fields.gtin = gtin.path;
   if (sponsoredKey) fields.sponsored = [sponsoredKey];
+  if (place) fields.place = place.path;
+  if (department) fields.department = department.path;
   return { o, product, pricePath: best.path, fields, ...(memberLabel ? { memberLabel } : {}) };
 }
 
@@ -901,6 +966,9 @@ function byProfile(o: Obj, f: ProfileFields, ctx: ReadContext): ProductRead | nu
   const unit = firstOf(o, f.unit, (v) => (typeof v === 'string' && /[$¢]/.test(v) ? v : undefined));
   const link = firstOf(o, f.link, (v) => (typeof v === 'string' && v ? v : undefined));
   const stock = firstOf(o, f.stock, stockValue);
+  // A profile learned before places were read has no ways to them: those are found the general way.
+  const place = f.place ? firstOf(o, f.place, placeOf) : findPlace(o);
+  const department = place?.value.department ? undefined : f.department ? firstOf(o, f.department, departmentOf) : findDepartment(o);
   const product: Product = {
     retailer: ctx.retailer,
     storeId: ctx.storeId,
@@ -916,6 +984,7 @@ function byProfile(o: Obj, f: ProfileFields, ctx: ReadContext): ProductRead | nu
     inStock: stock?.value,
     sponsored: firstOf(o, f.sponsored, (v) => (v === true ? true : undefined))?.value,
     gtin: firstOf(o, f.gtin, gtinValue)?.value,
+    ...whereFields(place?.value, department?.value),
   };
   return { o, product, pricePath: price.path, fields: {} };
 }

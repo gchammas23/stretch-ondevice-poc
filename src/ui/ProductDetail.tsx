@@ -4,23 +4,26 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, useW
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ListItem } from '../lists/types';
 import { queryKey } from '../lists/types';
+import type { Nutrition } from '../onDevice/nutrition';
 import type { ProductDetails } from '../onDevice/productPage';
 import { onRetailerSite } from '../onDevice/retailerSearch';
 import { storeLine } from '../onDevice/storeIdentity';
 import { bytesText, reasonWords } from '../onDevice/scrapeFeed';
 import type { Product } from '../onDevice/types';
+import { placeLabel, spotFor, type Spot } from '../pricing/aisles';
 import { exactFrom } from '../pricing/exact';
 import type { SearchResult } from '../pricing/pricingEngine';
 import { readerWords } from '../onDevice/profiles';
 import { changeText, hostOf, receiptFor, sourceWords, whenLabel } from '../pricing/receipt';
 import { compareSizes, type SizeNote } from '../pricing/sizes';
-import { storeNote } from '../state/storeInfo';
-import { useApp, useHistory, useRetailer, useSettings, useStoreChoices, useStoreName, useUsuals, useWatch } from '../state/AppProvider';
+import { knownStore, storeNote } from '../state/storeInfo';
+import { useAisles, useApp, useHistory, useRetailer, useSettings, useStoreChoices, useStoreName, useUsuals, useWatch } from '../state/AppProvider';
 import { announce, hiddenFromScreenReaders } from './a11y';
 import { Chip, SaleChip, Sparkline } from './bits';
 import { Pill, ProductThumb, tap } from './controls';
 import { deviceWord } from './device';
 import { Icon } from './Icon';
+import { NutritionLabel } from './NutritionLabel';
 import { RetailerBadge } from './RetailerBadge';
 import { ScreenHeader } from './ScreenHeader';
 import { colors, fonts, money, radius, shadow } from './theme';
@@ -58,6 +61,7 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
   const usuals = useUsuals();
   const watch = useWatch();
   const history = useHistory();
+  const aisles = useAisles();
   const now = useNow(30_000);
   const { width, fontScale } = useWindowDimensions();
   const [live, setLive] = useState<Live>(() => (cfg && product.url ? { state: 'reading' } : { state: 'none' }));
@@ -96,6 +100,27 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
   const exact = item?.item.exact;
   const isExact = !!exact && exact.retailerId === retailerId && exact.productId === product.id;
   const gtin = product.gtin ?? details?.gtin;
+  // Where it is in the store: the user's note, else the store's data, unless its latest search was for another store.
+  const place = spotFor(aisles, retailerId, product, item?.item.name ?? '', !knownStore(retailerId, settings, storeKey).conflict);
+
+  // Nutrition Facts: the store's page first; when it has none, Open Food Facts by the barcode, once the page is read.
+  const [byBarcode, setByBarcode] = useState<{ gtin: string; value: Nutrition | null } | null>(null);
+  const pageNutrition = details?.nutrition;
+  const pageRead = live.state !== 'reading';
+  useEffect(() => {
+    if (!pageRead || pageNutrition || !gtin) return;
+    let alive = true;
+    void search.lookupNutrition(gtin).then((value) => {
+      if (!alive) return;
+      setByBarcode({ gtin, value });
+      if (value) announce('Found its nutrition facts on Open Food Facts');
+    });
+    return () => {
+      alive = false;
+    };
+  }, [pageRead, pageNutrition, gtin, search]);
+  const offNutrition = byBarcode?.gtin === gtin ? byBarcode?.value : null;
+  const nutrition = pageNutrition ?? offNutrition ?? undefined;
 
   const sizes = compareSizes([{ retailerId, product }, ...elsewhere]);
   const mine: SizeNote | undefined = sizes[retailerId];
@@ -200,6 +225,16 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
             Watching since {money(watched.addedPrice)}. Stretch tells you when this phone reads a lower price
             {watched.drop ? `: it dropped from ${money(watched.drop.from)} to ${money(watched.drop.to)} ${whenLabel(watched.drop.at, now)}` : ''}.
           </Text>
+        ) : null}
+
+        {place ? (
+          <Section icon="pin" title="Where it is in the store">
+            <Text style={styles.body}>
+              {placeLabel(place)}
+              {place.aisle && place.department ? `, ${place.department}` : ''}
+            </Text>
+            <Text style={styles.small}>{placeSource(place, name)}</Text>
+          </Section>
         ) : null}
 
         {item ? (
@@ -381,9 +416,29 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
           )}
           {gtin ? <Text style={styles.small}>Barcode {gtin}</Text> : null}
         </Section>
+
+        {nutrition ? (
+          <Section icon="heartPulse" title="Nutrition facts">
+            <NutritionLabel nutrition={nutrition} />
+            <Text style={styles.small}>
+              {pageNutrition
+                ? `From ${name}’s page for this product.`
+                : `${live.state === 'done' ? `${name}’s page didn’t list them` : `They couldn’t be read from ${name}’s page`}, so they’re from Open Food Facts, a public database, by the barcode. It’s filled in by volunteers, and may not match this exact package.`}
+              {nutrition.per100 ? ` It has no serving size for this product, so the amounts are per 100 ${nutrition.per100}.` : ''}
+              {nutrition.dvWorkedOut ? ` ${pageNutrition ? 'Some' : 'The'} % Daily Values were worked out on this phone from the FDA’s daily values.` : ''}
+            </Text>
+          </Section>
+        ) : null}
       </ScrollView>
     </View>
   );
+}
+
+/** Where a product's place in the store comes from, in a sentence. */
+function placeSource(place: Spot, name: string): string {
+  if (place.from === 'you') return 'As you noted it, shopping here.';
+  if (place.from === 'page') return `As its page on ${name}’s site has it, for the store the site is set to.`;
+  return `As ${name}’s search results have it, for the store its prices are for.`;
 }
 
 function Photos({ images, width, product }: { images: string[]; width: number; product: Product }) {

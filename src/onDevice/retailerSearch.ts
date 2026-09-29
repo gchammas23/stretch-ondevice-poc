@@ -8,6 +8,7 @@ import { priceEvidence, redactUrl, type PriceEvidence } from './evidence';
 import { StrategyError, buildRequest, fill, isStoreNumber, searchViaFetch, storeSetRequest } from './fetchStrategy';
 import { krogerApiConfigured, krogerStoresNear, searchKrogerApi } from './krogerApi';
 import { mergeFeeReads, parseFeePage, type FeePageRead } from './feePage';
+import { createNutritionLookup, type Nutrition } from './nutrition';
 import { leanRequest, leanSaving, leanVerdict } from './pageSize';
 import { describePage } from './pageSummary';
 import { EVIDENCE_KEPT, PARSERS, readWithProfile, sourceMatches } from './parsers';
@@ -216,6 +217,11 @@ export interface RetailerSearch {
    * description, size, rating...). Only pages on the retailer's own site.
    */
   readProduct(cfg: RetailerConfig, product: Product): Promise<ProductDetails>;
+  /**
+   * The Nutrition Facts Open Food Facts has for a barcode, or null. For a product whose store page didn't give them:
+   * one request with the barcode alone, each barcode once while the app is open.
+   */
+  lookupNutrition(gtin: string): Promise<Nutrition | null>;
   /** Opens the product's page on the retailer's site for the user to look at. */
   viewProduct(cfg: RetailerConfig, url: string): Promise<void>;
   /** Loads a recipe page, hidden, and reads its ingredients from the recipe data the page publishes. */
@@ -302,6 +308,8 @@ async function storesFromJson(url: string, zip: string, timeoutMs: number, origi
 export interface SearchHooks {
   /** A search for `query` gave products at the store before (in the phone's saved prices, say). */
   worked?: (retailerId: string, query: string) => boolean;
+  /** A product's own page was read (for the product page, the price truth check or presenter mode): what it said. */
+  readPage?: (retailerId: string, product: Product, details: ProductDetails) => void;
 }
 
 /** A page this small (its elements, and its words) with no product data is nearly empty: see 'tiny_page'. */
@@ -334,6 +342,7 @@ export function createRetailerSearch(
   const unsent = new WeakSet<Error>();
   const details = new Map<string, { at: number; value: ProductDetails }>();
   const reading = new Map<string, Promise<ProductDetails>>();
+  const nutrition = createNutritionLookup((url, init) => fetch(url, init));
   const attemptListeners = new Set<(entry: AttemptEntry) => void>();
   const log = (cfg: RetailerConfig | { id: string; name: string }, what: string, ok: boolean, text: string) =>
     pool.feed.add({ at: Date.now(), retailerId: cfg.id, retailer: cfg.name, what, ok, text });
@@ -1164,6 +1173,7 @@ export function createRetailerSearch(
     const pending = reading.get(url);
     if (pending) return pending;
 
+    const mine = epoch;
     const read = (async () => {
       // One page load at a time at each store: a page load of the store's own searches goes first.
       const storeLane = pool.lane(cfg.id, cfg.name);
@@ -1180,6 +1190,8 @@ export function createRetailerSearch(
         });
         const value = parseProductPage(payload, product);
         details.set(url, { at: Date.now(), value });
+        // What the page said is kept (where the product is in the store), unless everything was forgotten meanwhile.
+        if (mine === epoch) hooks.readPage?.(cfg.id, product, value);
         record({ retailerId: cfg.id, kind: 'product', strategy: 'webview', ok: value.count > 0, ms: Date.now() - t0, bytes: payload.bytes });
         const data = payload.bytes ? ` · ${bytesText(payload.bytes)}` : '';
         log(cfg, 'product page', value.count > 0, `${value.count} ${value.count === 1 ? 'detail' : 'details'} · ${seconds(Date.now() - t0)}${data}`);
@@ -1443,6 +1455,7 @@ export function createRetailerSearch(
     epoch += 1;
     failures.length = 0;
     details.clear();
+    nutrition.clear();
     worked.clear();
     empties.clear();
     leanKnown.clear();
@@ -1458,6 +1471,7 @@ export function createRetailerSearch(
     storesNear,
     recentFailures: () => [...failures],
     readProduct,
+    lookupNutrition: nutrition.lookup,
     viewProduct,
     readRecipe,
     readFees,

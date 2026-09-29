@@ -4,7 +4,7 @@ import { Alert, Platform, ScrollView, StyleSheet, Text, View } from 'react-nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { krogerApiConfigured } from '../onDevice/krogerApi';
 import { MODE_NAMES } from '../pricing/onlineCost';
-import { useApp, useAppState, useAttemptLog, useHistory } from '../state/AppProvider';
+import { useAisles, useApp, useAppState, useAttemptLog, useHistory } from '../state/AppProvider';
 import { useCloudJobs } from '../state/CloudProvider';
 import { Pill } from '../ui/controls';
 import { deviceWord } from '../ui/device';
@@ -20,6 +20,7 @@ export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
   const { cache, fees, ads, coupons, forgetPrices: forget, startOver } = useApp();
   const history = useHistory();
+  const aisles = useAisles();
   const log = useAttemptLog();
   const state = useAppState((s) => s);
   const cloudJobs = useCloudJobs();
@@ -33,7 +34,7 @@ export default function PrivacyScreen() {
   const maps = Platform.OS === 'ios' ? 'Apple’s map service' : 'the phone’s map service';
 
   const forgetPrices = () =>
-    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads and coupons read from store pages, the store health log and the last price truth check are erased. Lists stay.', [
+    Alert.alert('Forget prices and history?', 'Saved prices, price history, the fees, weekly ads, coupons and aisles read from store pages, the store health log and the last price truth check are erased. Lists, and the aisles you noted, stay.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Forget',
@@ -65,6 +66,7 @@ export default function PrivacyScreen() {
           <Line text={`The stores ${count(listed, 'retailer')} listed near your ZIP code, and where that ZIP code is on the map (its center, not where you are).`} />
           <Line text={`${count(cache.size, 'saved search', 'saved searches')}, the price history of ${count(history.size, 'product')}, and a log of ${count(log.entries().length, 'store search', 'store searches')} for Store health.`} />
           <Line text="How the last price truth check went (how many prices matched, at each store), for the results report." />
+          <Line text={`Where you noted finding ${count(aisles.notes, 'product')} in your stores, and the aisles ${count(aisles.pages, 'product page')} gave, for Shop here.`} />
           <Line
             text={`How you shop (${MODE_NAMES[state.settings.shopMode].toLowerCase()}), ${count(plans, 'online plan')} you said you have, and what ${count(feesRead, 'store’s fees page', 'stores’ fees pages')} said when the phone last read ${feesRead === 1 ? 'it' : 'them'}.`}
           />
@@ -82,6 +84,7 @@ export default function PrivacyScreen() {
           <Line text="Shopping for pickup or delivery: a visit to each of your stores’ own page about its fees, about once a week, as a browser would. Nothing about you or your list goes with it." />
           <Line text="If you sign in to a store for your member prices or coupons: that happens on the store’s own page, which the app adds nothing to and reads nothing on." />
           <Line text="A visit to each of your stores’ weekly ad page, at most once a day, as a browser would. For the stores you signed in to here, a visit to your coupons page on their site; a coupon’s Clip button is pressed there only when you tap Clip." />
+          <Line text="Opening a product whose store page has no nutrition facts: its barcode, alone, to Open Food Facts (a public food database), for them. Once per product while the app is open." />
           <Line text={`To ${maps}: your ZIP code, to measure how far each store is; and when you tap Use my location, where the phone is, once, to get its ZIP code.`} />
           <Line text={krogerApiConfigured() ? 'To Kroger’s official API: your ZIP code, to list its stores near you, and your searches.' : 'Nothing to Kroger’s API: no keys are set.'} />
           {state.settings.cloud.on || cloudJobs.length ? (
