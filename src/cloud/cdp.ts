@@ -67,13 +67,19 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object
 
 /** One WebSocket to the browser: numbered commands and their answers, and the events in between. */
 export class CdpConnection {
+  /** Characters sent and received over the WebSocket: about the bytes this phone moves to drive the browser. */
+  wireBytes = 0;
   private seq = 0;
   private pending = new Map<number, Pending>();
   private listeners = new Set<(event: CdpEvent) => void>();
   private closed: string | null = null;
 
   private constructor(private readonly socket: SocketLike) {
-    socket.onmessage = (ev) => this.receive(typeof ev.data === 'string' ? ev.data : String(ev.data));
+    socket.onmessage = (ev) => {
+      const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+      this.wireBytes += raw.length;
+      this.receive(raw);
+    };
     socket.onclose = () => this.fail('the socket closed');
     socket.onerror = () => this.fail('the socket failed');
   }
@@ -123,7 +129,9 @@ export class CdpConnection {
       }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (v: Record<string, unknown>) => void, reject, timer });
       try {
-        this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+        const message = JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) });
+        this.wireBytes += message.length;
+        this.socket.send(message);
       } catch (e) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -274,6 +282,11 @@ export class PageSession {
 
   send<T extends Record<string, unknown> = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
     return this.conn.send<T>(method, params, this.sessionId, timeoutMs);
+  }
+
+  /** About the data this phone moved driving the browser: the DevTools connection's messages, both ways. */
+  get wireBytes(): number {
+    return this.conn.wireBytes;
   }
 
   /** This page's events of one kind. */

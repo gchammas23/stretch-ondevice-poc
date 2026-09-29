@@ -7,16 +7,17 @@
 //   npx tsx scripts/cloud-local-check.ts          (about 40 s)
 //   npx tsx scripts/cloud-local-check.ts --slow   (adds a bot check that never clears: 45 s more)
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrowserUseApi } from '../src/cloud/browserUse';
+import { comparisonSummary, matchTerm, sideFigures, type Comparison } from '../src/cloud/compare';
 import { connectToPage, type PageSession } from '../src/cloud/cdp';
 import type { FlowContext } from '../src/cloud/flow';
 import type { TermResult } from '../src/cloud/jobs';
 import { CloudRunner, type LivePage } from '../src/cloud/runner';
 import { targetFlow } from '../src/cloud/target';
-import { walmartFlow } from '../src/cloud/walmart';
+import { parseWalmartSearch, walmartFlow } from '../src/cloud/walmart';
 import { hits, startChrome, startSites, waitForChrome } from './cloud-fakes';
 
 const SLOW = process.argv.includes('--slow');
@@ -225,6 +226,47 @@ const t = async (name: string, fn: () => Promise<void>) => {
       assert.equal(calls.filter((c) => c.startsWith('PATCH /v4/browsers/')).length, 2, 'both browsers stopped');
       assert.ok(after.retailers.slice(0, 2).every((r) => Object.values(r.browsers).every((b) => b.stopped && b.proxyMb === 5.2)));
       assert.ok(JSON.parse(store.get('stretch.cloud.v1')!).jobs[0].retailers[0].browsers['b-9331'] !== undefined, 'saved on the phone');
+    });
+
+    await t('phone vs. cloud: a comparison end to end (this phone simulated, Walmart in a "cloud" browser): timed, metered, matched, told once', async () => {
+      const calls: string[] = [];
+      const api = new BrowserUseApi('test-key', async (url, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${url.replace(/^https:\/\/api\.browser-use\.com\/api/, '')}`);
+        const json = (body: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+        if (url.includes('/billing/account')) return json({ totalCreditsBalanceUsd: 12.5 });
+        if (init?.method === 'POST' && url.endsWith('/browsers')) return json({ id: 'b-compare', status: 'active', cdpUrl: 'http://127.0.0.1:9331' });
+        if (url.includes('/browsers?')) return json({ items: [] });
+        if (/\/browsers\/b-/.test(url)) return json({ id: 'b-compare', status: 'stopped', proxyUsedMb: '5.2', proxyCost: '0.026', browserCost: '0.0007' });
+        return { ok: false, status: 404, text: async () => '{"detail":"not found"}' };
+      });
+      // This phone's side, simulated: the same products the fake site lists, the first at 20¢ more.
+      const fixture = readFileSync(join(__dirname, '..', 'tests', 'fixtures', 'cloud', 'walmart-search-milk.json'), 'utf8');
+      const phoneItems = parseWalmartSearch(fixture, '3081').items.map((i, n) => (n === 0 && i.price !== null ? { ...i, price: Math.round((i.price + 0.2) * 100) / 100 } : i));
+      const runner = new CloudRunner({
+        api,
+        connect: async (cdpUrl) => (await connectToPage(cdpUrl, { fetchJson })) as LivePage,
+        deviceSearch: async () => ({ items: phoneItems, found: phoneItems.length, storeId: '5260', ms: 5000, bytes: 1_200_000, how: 'page' }),
+        costDelayMs: 0,
+      });
+      const saved = new Map<string, string>();
+      await runner.hydrate({ getItem: async (k) => saved.get(k) ?? null, setItem: async (k, v) => void saved.set(k, v) });
+      const told = new Promise<Comparison>((resolve) => runner.onCompared(resolve));
+      const got = await runner.startComparison({ terms: ['milk'], retailers: [{ retailerId: 'walmart', storeId: '5260' }], agent: false });
+      assert.equal(got.ok, true);
+      const c = await told;
+      const cloud = c.sides.scripted!.retailers[0];
+      assert.equal(cloud.status, 'done');
+      const search = cloud.results[0];
+      assert.ok(search.ms! > 0 && search.bytes! > 0, 'the cloud browser’s search timed and metered');
+      assert.ok(cloud.wireBytes! > 10_000, 'the DevTools link’s traffic counted');
+      const figures = sideFigures('scripted', cloud);
+      assert.ok(figures.setupMs! > 0 && figures.setupMs! < figures.totalMs!, 'setting up is told apart from the search');
+      const m = matchTerm('milk', c.sides.phone!.retailers[0], cloud);
+      assert.deepEqual([m.both, m.same, m.differ.length], [phoneItems.length, phoneItems.length - 1, 1]);
+      for (let i = 0; i < 50 && !calls.includes('PATCH /v4/browsers/b-compare'); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.ok(calls.includes('PATCH /v4/browsers/b-compare'), 'its browser stopped');
+      const summary = comparisonSummary(c);
+      console.log(`   setup ${Math.round(figures.setupMs! / 100) / 10} s, search ${Math.round(search.ms! / 100) / 10} s, ${Math.round(search.bytes! / 1000)} kB page, ${Math.round(cloud.wireBytes! / 1000)} kB DevTools; same price ${summary.prices[0].same} of ${summary.prices[0].both}`);
     });
 
     console.log(`\n${passed} local cloud checks passed (Chromium, fake sites; no live site, no credit).`);

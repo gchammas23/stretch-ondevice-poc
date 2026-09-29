@@ -20,11 +20,19 @@ const walmartText = fixture('walmart-search-milk.json');
 const targetJson = JSON.parse(fixture('target-plp-search-milk.json'));
 
 let passed = 0;
+let finished = false;
 const t = async (name: string, fn: () => unknown) => {
   await fn();
   passed++;
   console.log('ok -', name);
 };
+// A test left waiting on a promise that never settles lets Node exit quietly, as if all was well: that's a failure.
+process.on('exit', () => {
+  if (!finished) {
+    console.error(`Stopped after ${passed} tests: one was left waiting.`);
+    process.exitCode = 1;
+  }
+});
 
 /** A clock that only moves when slept on. */
 function clock() {
@@ -433,6 +441,7 @@ function fakeSocket() {
     assert.equal(pxBlockedAnswer(blocked.status, blocked.text), true);
   });
 
+  finished = true;
   console.log(`\n${passed} cloud reader tests passed`);
 })().catch((e) => {
   console.error(e);

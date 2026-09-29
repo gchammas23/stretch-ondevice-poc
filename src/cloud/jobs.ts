@@ -53,7 +53,12 @@ export interface TermResult {
   reason?: string;
   /** What exactly went wrong, as the search said it. */
   detail?: string;
+  /** Data this search moved, as metered: the cloud browser's page (its proxy's traffic), or this phone's own search. */
   bytes?: number;
+  /** How long this search took: from the end of the one before (or of setting the store) to its products. */
+  ms?: number;
+  /** This phone's search: a page load, a request sent again from a loaded page, a plain request, or an official API. */
+  how?: 'page' | 'replay' | 'request' | 'api';
   at: number;
 }
 
@@ -92,6 +97,8 @@ export interface RetailerRun {
   results: TermResult[];
   /** Data the scripted browser's page moved, as the app metered it. */
   bytes?: number;
+  /** Data between this phone and the cloud browser (the DevTools connection), about. */
+  wireBytes?: number;
   /** A bot check showed up along the way, cleared or not. */
   checkSeen?: boolean;
   startedAt?: number;
@@ -115,7 +122,12 @@ export interface CloudJob {
   ranAlone?: boolean;
   /** When the user was told it had finished. */
   notifiedAt?: number;
+  /** One side of a Phone vs. cloud comparison (see compare.ts): the comparison's id, and which side this job is. */
+  compare?: { id: string; side: CompareSide };
 }
+
+/** Phone vs. cloud: this phone's own search, the scripted cloud browser, or the Browser Use agent. */
+export type CompareSide = 'phone' | 'scripted' | 'agent';
 
 export type RunEvent =
   | { type: 'start'; at: number }
@@ -125,7 +137,7 @@ export type RunEvent =
   | { type: 'runCost'; runId: string; usd: number }
   | { type: 'storeSet'; how: NonNullable<RetailerRun['storeSet']> }
   | { type: 'term'; result: TermResult }
-  | { type: 'bytes'; bytes: number }
+  | { type: 'bytes'; bytes: number; wireBytes?: number }
   | { type: 'checkSeen' }
   | { type: 'finish'; status: 'done' | 'blocked' | 'failed'; reason?: string; detail?: string; at: number }
   | { type: 'interrupt'; reason: string; detail?: string; at: number }
@@ -169,7 +181,7 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
     case 'term':
       return { ...run, results: [...run.results.filter((r) => r.term !== event.result.term), event.result] };
     case 'bytes':
-      return { ...run, bytes: event.bytes };
+      return { ...run, bytes: event.bytes, ...(event.wireBytes !== undefined ? { wireBytes: event.wireBytes } : {}) };
     case 'checkSeen':
       return { ...run, checkSeen: true };
     case 'finish':
@@ -193,6 +205,7 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
         sessionId: undefined,
         checkSeen: undefined,
         bytes: undefined,
+        wireBytes: undefined,
         finishedAt: undefined,
       };
   }
@@ -228,6 +241,9 @@ export function jobStatus(job: CloudJob): JobStatus {
 }
 
 export const runningJobs = (jobs: CloudJob[]): CloudJob[] => jobs.filter((j) => jobStatus(j) === 'running');
+
+/** Jobs running that use the cloud: what the running-jobs guardrail counts (this phone's own searches cost nothing). */
+export const runningCloudJobs = (jobs: CloudJob[]): CloudJob[] => runningJobs(jobs).filter((j) => needsCloud(j));
 
 /** A retailer's cost so far, in dollars: its browsers' proxy and hosting charges, and its agent runs. */
 export function retailerCost(run: RetailerRun): { usd: number; proxyMb: number } {
@@ -313,8 +329,8 @@ export const needsCloud = (req: Pick<JobRequest, 'retailers'>): boolean => req.r
 
 /**
  * The guardrails, checked before a job starts: 1 to MAX_TERMS terms; one store per retailer, each with its store
- * number; fewer than MAX_RUNNING_JOBS jobs running; and, for a job that uses the cloud, a key and at least
- * MIN_BALANCE_USD of credit, just read from the account (unknown credit refuses too).
+ * number; fewer than MAX_RUNNING_JOBS jobs using the cloud running; and, for a job that uses the cloud, a key and at
+ * least MIN_BALANCE_USD of credit, just read from the account (unknown credit refuses too).
  */
 export function checkRequest(
   req: JobRequest,
@@ -329,9 +345,9 @@ export function checkRequest(
     seen.add(r.retailerId);
     if (!r.storeId.trim()) return { ok: false, problem: 'no_store', retailerId: r.retailerId };
   }
-  const running = runningJobs(ctx.jobs).length;
-  if (running >= MAX_RUNNING_JOBS) return { ok: false, problem: 'too_many_jobs', running };
   if (needsCloud(req)) {
+    const running = runningCloudJobs(ctx.jobs).length;
+    if (running >= MAX_RUNNING_JOBS) return { ok: false, problem: 'too_many_jobs', running };
     if (!ctx.hasKey) return { ok: false, problem: 'no_key' };
     if (ctx.balanceUsd === undefined) return { ok: false, problem: 'balance_unknown', ...(ctx.balanceError ? { detail: ctx.balanceError } : {}) };
     if (ctx.balanceUsd < MIN_BALANCE_USD) return { ok: false, problem: 'low_balance', balanceUsd: ctx.balanceUsd };
@@ -381,6 +397,7 @@ function isJob(v: unknown): v is CloudJob {
     Array.isArray(j.terms) &&
     typeof j.createdAt === 'number' &&
     Array.isArray(j.retailers) &&
+    (j.compare === undefined || (typeof j.compare === 'object' && j.compare !== null && typeof j.compare.id === 'string' && ['phone', 'scripted', 'agent'].includes(j.compare.side))) &&
     j.retailers.every(
       (r) =>
         typeof r === 'object' &&

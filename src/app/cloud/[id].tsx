@@ -1,7 +1,8 @@
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SIDE_WORDS } from '../../cloud/compare';
 import { jobCost, jobStatus, retailerCost, storeConfirmed, type CloudItem, type CloudJob, type RetailerRun, type TermResult } from '../../cloud/jobs';
 import { costWords, problemWords, reasonWords, RETAILER_NAMES, retailerLine } from '../../cloud/words';
 import { whenLabel } from '../../pricing/receipt';
@@ -36,6 +37,8 @@ export default function CloudJobScreen() {
   }
   const status = jobStatus(job);
   const cost = jobCost(job);
+  // A comparison's side is run again with the whole comparison, so the sides stay comparable.
+  const compare = job.compare;
   const retry = async (only?: RetailerRun['retailerId'][]) => {
     tap();
     const got = await runner.retry(job.id, only);
@@ -46,7 +49,7 @@ export default function CloudJobScreen() {
     <View style={styles.screen}>
       <ScreenHeader
         title={job.terms.join(', ')}
-        subtitle={`${job.engine === 'agent' ? 'AI agent' : 'Scripted browser'} · started ${whenLabel(job.createdAt, now)}${
+        subtitle={`${compare ? `Phone vs. cloud, ${SIDE_WORDS[compare.side].replace(/^the /, '')}’s side` : job.engine === 'agent' ? 'AI agent' : 'Scripted browser'} · started ${whenLabel(job.createdAt, now)}${
           status === 'running' ? ' · running' : job.finishedAt ? ` · took ${Math.round((job.finishedAt - job.createdAt) / 1000)} s` : ''
         }`}
       />
@@ -71,21 +74,22 @@ export default function CloudJobScreen() {
               : ''}
           </Text>
           <View style={styles.actions}>
-            {status === 'running' ? <Pill label="Cancel" small variant="outline" onPress={() => void runner.cancel(job.id)} /> : null}
-            {job.retailers.some((r) => ['blocked', 'failed', 'interrupted', 'cancelled'].includes(r.status)) ? (
+            {status === 'running' && !compare ? <Pill label="Cancel" small variant="outline" onPress={() => void runner.cancel(job.id)} /> : null}
+            {!compare && job.retailers.some((r) => ['blocked', 'failed', 'interrupted', 'cancelled'].includes(r.status)) ? (
               <Pill label="Try the rest again" icon="refresh" small variant="dark" onPress={() => void retry()} />
             ) : null}
+            {compare ? <Pill label="Open the comparison" icon="forward" small variant="outline" onPress={() => router.push(`/phone-vs-cloud/${compare.id}`)} /> : null}
           </View>
         </View>
         {job.retailers.map((r) => (
-          <RetailerCard key={r.retailerId} job={job} run={r} now={now} onRetry={() => void retry([r.retailerId])} />
+          <RetailerCard key={r.retailerId} job={job} run={r} now={now} onRetry={compare ? undefined : () => void retry([r.retailerId])} />
         ))}
       </ScrollView>
     </View>
   );
 }
 
-function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: RetailerRun; now: number; onRetry: () => void }) {
+function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: RetailerRun; now: number; onRetry?: () => void }) {
   const name = RETAILER_NAMES[run.retailerId];
   const cost = retailerCost(run);
   const confirmed = storeConfirmed(run);
@@ -140,7 +144,7 @@ function RetailerCard({ job, run, now, onRetry }: { job: CloudJob; run: Retailer
           </Text>
         ) : null;
       })}
-      {['blocked', 'failed', 'interrupted', 'cancelled'].includes(run.status) ? (
+      {onRetry && ['blocked', 'failed', 'interrupted', 'cancelled'].includes(run.status) ? (
         <Pill label={`Try ${name} again`} icon="refresh" small variant="outline" onPress={onRetry} style={styles.alignStart} />
       ) : null}
     </View>
