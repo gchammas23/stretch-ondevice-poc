@@ -267,6 +267,19 @@ export function parseProductPage(payload: PagePayload, product: Product): Produc
     }
     if (own.aisle) break;
   }
+  // A store can keep the label beside the product rather than in it (Walmart: data.idml.nutritionFacts, next to
+  // data.product), so a page about this product is looked through for one, leaving other products' labels alone.
+  if (!parts.some((p) => p.found.nutrition)) {
+    for (const text of data) {
+      const root = parse(text);
+      if (!productObject(root, product.id)) continue;
+      const nutrition = nutritionFromData(root, product.id);
+      if (!nutrition) continue;
+      if (own) own.nutrition = nutrition;
+      else parts.push({ from: 'the page’s own data', found: { images: [], highlights: [], nutrition } });
+      break;
+    }
+  }
 
   const meta = (payload.sources ?? []).find((s) => s.label === 'meta');
   if (meta) parts.push({ from: 'the page’s share tags', found: fromMeta(meta.text, origin) });

@@ -230,12 +230,14 @@ function flatText(v: unknown, depth = 0): string | undefined {
  * plain fields (`totalFat: '8 g'`). Only inside a field whose name says nutrition, so a description that mentions
  * calcium isn't taken for a label.
  */
-export function nutritionFromData(root: unknown): Nutrition | undefined {
+export function nutritionFromData(root: unknown, productId?: string): Nutrition | undefined {
   const subtrees: unknown[] = [];
   const find = (v: unknown, depth: number) => {
     if (depth > 14 || subtrees.length >= 4) return;
     if (Array.isArray(v)) v.slice(0, 50).forEach((x) => find(x, depth + 1));
     else if (isObj(v)) {
+      // Looking through a whole page's data: another product (a related item, a carousel) keeps its own label.
+      if (productId && otherProduct(v, productId)) return;
       for (const [k, child] of Object.entries(v)) {
         if (/nutri/i.test(k) && (isObj(child) || Array.isArray(child))) subtrees.push(child);
         else find(child, depth + 1);
@@ -290,6 +292,12 @@ export function nutritionFromData(root: unknown): Nutrition | undefined {
   return undefined;
 }
 
+// Keys that name a product, where it's a product: a page's own "id" can name anything, so it isn't one.
+const PRODUCT_ID_KEYS = ['usItemId', 'tcin', 'productId', 'product_id', 'itemId', 'item_id', 'sku', 'skuId', 'sku_id', 'upc', 'gtin', 'gtin13'];
+
+const otherProduct = (o: Obj, productId: string): boolean =>
+  PRODUCT_ID_KEYS.some((k) => (typeof o[k] === 'string' || typeof o[k] === 'number') && String(o[k]) !== productId);
+
 /** Open Food Facts' answer for a barcode: per serving where it has servings, else per 100 g (or ml). */
 export function nutritionFromOpenFoodFacts(json: unknown): Nutrition | undefined {
   if (!isObj(json) || json.status !== 1 || !isObj(json.product) || !isObj(json.product.nutriments)) return undefined;
@@ -313,9 +321,27 @@ export function nutritionFromOpenFoodFacts(json: unknown): Nutrition | undefined
   return finish(d, per100);
 }
 
-/** The barcode as Open Food Facts files it: 8 or 13 digits (a UPC-A is an EAN-13 with a leading zero), or null. */
+/** The GTIN check digit for the digits before it. */
+function checkDigit(body: string): string {
+  let sum = 0;
+  for (let i = 0; i < body.length; i++) sum += Number(body[body.length - 1 - i]) * (i % 2 === 0 ? 3 : 1);
+  return String((10 - (sum % 10)) % 10);
+}
+
+const validGtin = (d: string) => d.length >= 8 && checkDigit(d.slice(0, -1)) === d.slice(-1);
+
+/**
+ * The barcode as Open Food Facts files it: 8 or 13 digits (a UPC-A is an EAN-13 with a leading zero), or null. A
+ * barcode written without its check digit, as Kroger writes its UPCs ("0001111041700"), gets it back.
+ */
 export function openFoodFactsCode(gtin: string): string | null {
   let d = gtin.replace(/\D/g, '');
+  if (d.length < 8 || d.length > 14) return null;
+  if (!validGtin(d)) {
+    const body = d.replace(/^0+/, '');
+    if (body.length < 6 || body.length > 12) return null;
+    d = body.padStart(12, '0') + checkDigit(body.padStart(12, '0'));
+  }
   if (d.length === 14 && d.startsWith('0')) d = d.slice(1);
   if (d.length === 12) d = `0${d}`;
   return d.length === 8 || d.length === 13 ? d : null;
