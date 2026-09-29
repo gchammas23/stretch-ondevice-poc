@@ -159,6 +159,10 @@ const offMilk = {
     assert.equal(openFoodFactsCode('3017620422003'), '3017620422003');
     assert.equal(openFoodFactsCode('96385074'), '96385074');
     assert.equal(openFoodFactsCode('12345'), null);
+    // Kroger writes UPCs without the check digit; both were checked against Open Food Facts on 2026-09-29.
+    assert.equal(openFoodFactsCode('0001111041700'), '0011110417008', 'Kroger 2% milk');
+    assert.equal(openFoodFactsCode('0004900002891'), '0049000028911', 'Diet Coke, as Kroger writes it');
+    assert.equal(openFoodFactsCode('049000028911'), '0049000028911', 'a whole UPC-A is left as it is');
   });
 
   await t('Open Food Facts lookup: once per barcode, misses kept, failures not, cleared by erase', async () => {
@@ -231,6 +235,29 @@ const offMilk = {
     const other = { item: { usItemId: '10450114', name: 'Milk' }, related: [{ usItemId: '999', nutritionFacts: { calories: 400, totalFat: '20g' } }] };
     const none = parseProductPage({ href: 'https://www.walmart.com/ip/10450114', sources: [{ label: 'response x', text: JSON.stringify(other) }] }, product);
     assert.equal(none.nutrition, undefined);
+  });
+
+  await t('product page: Walmart keeps the label beside the product (data.idml), not in it', () => {
+    const product = { retailer: 'walmart', storeId: '', id: '10450114', name: 'Great Value Whole Milk, 1 Gallon', price: 3.48 };
+    const label = (calories: string) => ({
+      calorieInfo: { mainNutrient: { name: 'Calories', amount: calories } },
+      keyNutrients: { values: [{ mainNutrient: { name: 'Total Fat', amount: '8 g', dvp: '10 %' } }] },
+    });
+    const next = { props: { pageProps: { initialData: { data: {
+      // A related item's label comes first in the data, and isn't this one's.
+      contentLayout: { modules: [{ configs: { products: [{ usItemId: '555', nutritionFacts: label('400') }] } }] },
+      product: { usItemId: '10450114', name: 'Great Value Whole Milk, 1 Gallon', brand: 'Great Value' },
+      idml: { nutritionFacts: label('150') },
+    } } } } };
+    const d = parseProductPage({ href: 'https://www.walmart.com/ip/10450114', nextDataText: JSON.stringify(next), sources: [] }, product);
+    assert.equal(d.nutrition?.calories, 150);
+    assert.deepEqual(d.nutrition?.nutrients.totalFat, { value: 8, unit: 'g', dv: 10 });
+    assert.equal(d.brand, 'Great Value', 'the product’s own details are still read');
+    assert.deepEqual(d.sources, ['the page’s own data']);
+
+    // A page whose data isn't about this product lends it no label.
+    const elsewhere = { data: { product: { usItemId: '777' }, idml: { nutritionFacts: label('150') } } };
+    assert.equal(parseProductPage({ href: 'https://www.walmart.com/ip/777', nextDataText: JSON.stringify(elsewhere), sources: [] }, product).nutrition, undefined);
   });
 
   console.log(`\n${passed} passed`);
