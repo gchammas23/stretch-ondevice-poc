@@ -182,6 +182,39 @@ const pdfInput = (list: Comparison[], extra: Partial<PdfInput> = {}): PdfInput =
     assert.ok(!comparisonPdfHtml(pdfInput([c], { displayFont: 'x") } body { color: red' })).includes('@font-face'));
   });
 
+  await t('the PDF as a server would have it: the cloud browser’s times estimated beside those measured, the results as this phone’s data, the test’s own link left out', () => {
+    const one: CompareRequest = { terms: ['milk'], retailers: [{ retailerId: 'target', storeId: '1072' }], agent: false };
+    const milk = [
+      { itemId: '1', name: 'Milk 1', price: 3.49 },
+      { itemId: '2', name: 'Milk 2', price: 3.29 },
+    ];
+    const phone = side('s1', one, 'phone', { target: { status: 'done', results: [done('milk', milk, { storeMatches: true, pageStoreId: '1072', ms: 5000, bytes: 900_000, at: 6000 })], started: 1000, ended: 6000 } });
+    let cloud: CloudJob = { ...newJob(comparisonJobs(one).find((x) => x.side === 'scripted')!.request, 's1-scripted', 1000), compare: { id: 's1', side: 'scripted' } };
+    cloud = applyToJob(cloud, 'target', { type: 'start', at: 1000 });
+    cloud = applyToJob(cloud, 'target', { type: 'storeSet', how: 'request', linkMs: 4000 });
+    const read = [milk[0], { ...milk[1], price: 2.99, pricedAt: '1086' }];
+    cloud = applyToJob(cloud, 'target', { type: 'term', result: done('milk', read, { storeMatches: true, pageStoreId: '1072', ms: 12_000, linkMs: 5000, at: 31_000 }) });
+    cloud = applyToJob(cloud, 'target', { type: 'bytes', bytes: 2_000_000, wireBytes: 9_000_000, linkMs: 9000, rttMs: 150, commands: 30 });
+    cloud = applyToJob(cloud, 'target', { type: 'finish', status: 'done', at: 31_000 });
+    const c = comparisonOf([phone, cloud], 's1')!;
+    const html = comparisonPdfHtml(pdfInput([c]));
+    for (const part of [
+      // 30 s from this phone, 9 s of it the link's: about 21 s on a server. Setting up 18 s (4 s the link's); the search 12 s (5 s).
+      '21 s <span class="tag">Server estimate</span><br><span class="small">30 s measured from this phone</span>',
+      '14 s <span class="tag">Server estimate</span><br><span class="small">18 s measured from this phone</span>',
+      '7 s <span class="tag">Server estimate</span><br><span class="small">12 s measured from this phone</span>',
+      '<td class="label">Left out: driving it from this phone</td><td class=""><span class="dash">–</span></td><td class="">9.0 MB, 9 s</td>',
+      ' of results</td>',
+      '<td class="">In each request</td>',
+      '<td class="elsewhere">$2.99<br><span class="small">store 1086’s price</span></td>',
+      'Some prices another store’s',
+      '1 more on both was priced for another store, and not compared.',
+      'about 7 s on a server',
+    ]) {
+      assert.ok(html.includes(part), `missing: ${part}`);
+    }
+  });
+
   await t('every run’s PDF: the report’s findings, the totals, a table of the runs, then each run on a page of its own; its file’s name', () => {
     const c = troubled();
     const one: CompareRequest = { terms: ['bread'], retailers: [{ retailerId: 'walmart', storeId: '5260' }], agent: false };

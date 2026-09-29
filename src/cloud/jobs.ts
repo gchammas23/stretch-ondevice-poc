@@ -38,6 +38,11 @@ export interface CloudItem {
    * is the page's to say (TermResult.storeMatches).
    */
   atStore?: boolean;
+  /**
+   * Target: the store its price is for, when that isn't the store asked for. Target prices each product for a store,
+   * and one the store asked for doesn't carry comes priced at another: not the store's price, so not compared.
+   */
+  pricedAt?: string;
 }
 
 export interface TermResult {
@@ -57,6 +62,11 @@ export interface TermResult {
   bytes?: number;
   /** How long this search took: from the end of the one before (or of setting the store) to its products. */
   ms?: number;
+  /**
+   * Of `ms`, what driving the cloud browser from this phone added: its trips over the phone's connection, which a
+   * server next to the browser wouldn't make (see PageSession in cdp.ts).
+   */
+  linkMs?: number;
   /** This phone's search: a page load, a request sent again from a loaded page, a plain request, or an official API. */
   how?: 'page' | 'replay' | 'request' | 'api';
   at: number;
@@ -90,15 +100,28 @@ export interface RetailerRun {
   /** Each agent run's cost, as Browser Use reported it (by run id). */
   runs: Record<string, number>;
   /**
-   * How the store was set: pressed on its page, found already set, asked for by number in each request (Target's
-   * pricing_store_id), or as the agent said.
+   * How the store was set: pressed on its page, found already set, kept from an earlier run in the browser's saved
+   * profile, asked for by number in each request (Target's pricing_store_id), or as the agent said.
    */
-  storeSet?: 'button' | 'already' | 'request' | 'agent';
+  storeSet?: 'button' | 'already' | 'kept' | 'request' | 'agent';
+  /**
+   * Scripted: the browser started from the retailer and store's saved profile (Browser Use keeps its cookies between
+   * browsers): made for this run ('new'), or kept from an earlier one ('saved'). None: it started empty.
+   */
+  profile?: 'new' | 'saved';
   results: TermResult[];
   /** Data the scripted browser's page moved, as the app metered it. */
   bytes?: number;
   /** Data between this phone and the cloud browser (the DevTools connection), about. */
   wireBytes?: number;
+  /**
+   * Scripted: what driving the browser from this phone added to the time, in ms (see TermResult.linkMs): in all, and
+   * before the store was set. The link's fastest round trip, and the commands sent (each a trip).
+   */
+  linkMs?: number;
+  setupLinkMs?: number;
+  rttMs?: number;
+  commands?: number;
   /** A bot check showed up along the way, cleared or not. */
   checkSeen?: boolean;
   startedAt?: number;
@@ -131,13 +154,13 @@ export type CompareSide = 'phone' | 'scripted' | 'agent';
 
 export type RunEvent =
   | { type: 'start'; at: number }
-  | { type: 'browser'; id: string }
+  | { type: 'browser'; id: string; profile?: RetailerRun['profile'] }
   | { type: 'browserStopped'; id: string; use?: Omit<BrowserUse, 'stopped'> }
   | { type: 'agentRun'; runId: string; sessionId: string; followUp?: boolean }
   | { type: 'runCost'; runId: string; usd: number }
-  | { type: 'storeSet'; how: NonNullable<RetailerRun['storeSet']> }
+  | { type: 'storeSet'; how: NonNullable<RetailerRun['storeSet']>; linkMs?: number }
   | { type: 'term'; result: TermResult }
-  | { type: 'bytes'; bytes: number; wireBytes?: number }
+  | { type: 'bytes'; bytes: number; wireBytes?: number; linkMs?: number; rttMs?: number; commands?: number }
   | { type: 'checkSeen' }
   | { type: 'finish'; status: 'done' | 'blocked' | 'failed'; reason?: string; detail?: string; at: number }
   | { type: 'interrupt'; reason: string; detail?: string; at: number }
@@ -169,7 +192,7 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
     case 'start':
       return { ...run, status: 'running', startedAt: event.at, attempts: run.attempts + 1, reason: undefined, detail: undefined, finishedAt: undefined };
     case 'browser':
-      return { ...run, browserId: event.id, browsers: { ...run.browsers, [event.id]: { ...run.browsers[event.id] } } };
+      return { ...run, browserId: event.id, browsers: { ...run.browsers, [event.id]: { ...run.browsers[event.id] } }, ...(event.profile ? { profile: event.profile } : {}) };
     case 'browserStopped':
       return { ...run, browsers: { ...run.browsers, [event.id]: { ...run.browsers[event.id], ...event.use, stopped: true } } };
     case 'agentRun':
@@ -177,11 +200,18 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
     case 'runCost':
       return { ...run, runs: { ...run.runs, [event.runId]: event.usd } };
     case 'storeSet':
-      return { ...run, storeSet: event.how };
+      return { ...run, storeSet: event.how, ...(event.linkMs !== undefined ? { setupLinkMs: event.linkMs } : {}) };
     case 'term':
       return { ...run, results: [...run.results.filter((r) => r.term !== event.result.term), event.result] };
     case 'bytes':
-      return { ...run, bytes: event.bytes, ...(event.wireBytes !== undefined ? { wireBytes: event.wireBytes } : {}) };
+      return {
+        ...run,
+        bytes: event.bytes,
+        ...(event.wireBytes !== undefined ? { wireBytes: event.wireBytes } : {}),
+        ...(event.linkMs !== undefined ? { linkMs: event.linkMs } : {}),
+        ...(event.rttMs !== undefined ? { rttMs: event.rttMs } : {}),
+        ...(event.commands !== undefined ? { commands: event.commands } : {}),
+      };
     case 'checkSeen':
       return { ...run, checkSeen: true };
     case 'finish':
@@ -204,8 +234,13 @@ export function transition(run: RetailerRun, event: RunEvent): RetailerRun {
         followUpId: undefined,
         sessionId: undefined,
         checkSeen: undefined,
+        profile: undefined,
         bytes: undefined,
         wireBytes: undefined,
+        linkMs: undefined,
+        setupLinkMs: undefined,
+        rttMs: undefined,
+        commands: undefined,
         finishedAt: undefined,
       };
   }

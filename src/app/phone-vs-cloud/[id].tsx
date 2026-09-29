@@ -12,6 +12,7 @@ import {
   dataWords,
   durationWords,
   gapWords,
+  linkWords,
   matchTerm,
   pricesWords,
   problemKindWords,
@@ -22,6 +23,7 @@ import {
   sidesOf,
   sideStatusWords,
   sideSummaryWords,
+  testLinkWords,
   type CompareRetailerId,
   type Comparison,
   type SideFigures,
@@ -180,6 +182,13 @@ function Hero({
           {sideSummaryWords(s)}
         </Text>
       ))}
+      {summary.sides.map((s) =>
+        testLinkWords(s) ? (
+          <Text key={`${s.side}-link`} style={styles.small}>
+            {testLinkWords(s)}
+          </Text>
+        ) : null,
+      )}
       {summary.prices.map((p) => (
         <Text key={p.side} style={[styles.body, styles.strong]}>
           {pricesWords(p)}
@@ -218,7 +227,7 @@ function ProblemsCard({ comparison: c }: { comparison: Comparison }) {
       </Text>
       {problems.map((p, i) => {
         const where = [RETAILER_NAMES[p.retailerId], SIDE_NAMES[p.side], p.term ? `“${p.term}”` : ''].filter(Boolean).join(' · ');
-        const minor = p.kind === 'other_store' || p.kind === 'unconfirmed' || p.kind === 'cancelled';
+        const minor = p.kind === 'other_store' || p.kind === 'mixed_store' || p.kind === 'unconfirmed' || p.kind === 'cancelled';
         return (
           <View key={`${p.side}-${p.retailerId}-${p.term ?? ''}-${i}`} style={[styles.problem, minor && styles.problemMinor]}>
             <Text style={styles.problemWhere}>
@@ -307,16 +316,29 @@ function SideValue({ figures: f, storeId }: { figures: SideFigures; storeId: str
     );
   }
   const look = LOOK[f.status === 'done' ? (f.confirmed && !f.otherStore ? 'done' : 'unconfirmed') : f.status];
+  const setup = f.setupMs !== undefined && f.setupMs >= 1000;
+  const parts = (setupMs: number | undefined, searchMs: number | undefined) =>
+    [setup && setupMs !== undefined ? `${durationWords(setupMs)} to set up` : '', searchMs !== undefined ? `${durationWords(searchMs)} a search` : ''].filter(Boolean).join(', ');
+  const measured = parts(f.setupMs, f.searchMs);
+  const estimated = parts(f.serverSetupMs, f.serverSearchMs);
+  // The cloud browser's time as a server would have it comes first, marked as the estimate it is; then as measured.
+  const time =
+    f.serverMs !== undefined && f.totalMs !== undefined
+      ? [
+          `About ${durationWords(f.serverMs)} on a server (estimate)${estimated ? `: ${estimated}` : ''}`,
+          `Measured from this phone: ${durationWords(f.totalMs)}${measured ? ` (${measured})` : ''}`,
+        ]
+      : [f.totalMs !== undefined ? `${durationWords(f.totalMs)} in all` : '', setup ? `${durationWords(f.setupMs!)} to set up` : '', f.searchMs !== undefined ? `${durationWords(f.searchMs)} a search` : ''];
   const lines = [
     f.searched || f.products ? `${f.products} ${f.products === 1 ? 'product' : 'products'}, ${f.searched} ${f.searched === 1 ? 'search' : 'searches'}` : '',
-    f.totalMs !== undefined ? `${durationWords(f.totalMs)} in all` : '',
-    f.setupMs !== undefined && f.setupMs >= 1000 ? `${durationWords(f.setupMs)} to set up` : '',
-    f.searchMs !== undefined ? `${durationWords(f.searchMs)} a search` : '',
+    ...time,
+    f.storeSet === 'kept' ? 'Store kept from its last run' : '',
     f.side === 'phone' ? (f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} of this phone’s data` : '') : f.cloudMb ? `${f.cloudMb.toFixed(1)} MB through the proxy` : '',
-    f.side === 'scripted' && f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} on this phone` : '',
+    f.side !== 'phone' && f.phoneBytes !== undefined ? `${dataWords(f.phoneBytes)} of results to this phone` : '',
     f.side === 'phone' ? 'Free' : f.usd > 0 ? costWords(f.usd) : 'Cost not reported yet',
     f.checkSeen ? 'Bot check seen' : '',
   ].filter(Boolean);
+  const link = linkWords(f);
   return (
     <>
       <View style={styles.verdict}>
@@ -330,6 +352,7 @@ function SideValue({ figures: f, storeId }: { figures: SideFigures; storeId: str
           {line}
         </Text>
       ))}
+      {link ? <Text style={styles.faint}>Not counted: {link}.</Text> : null}
     </>
   );
 }
@@ -359,12 +382,13 @@ function TermSide({ side, result, storeId, running }: { side: CompareSide; resul
   if (!result) return running ? <Text style={styles.meta}>{label}: searching…</Text> : <Text style={styles.meta}>{label}: not searched.</Text>;
   if (result.status !== 'done') return <Text style={styles.warn}>{`${label}: ${sideReasonWords(side, result.reason) || result.status}.`}</Text>;
   const how = result.how === 'replay' ? ', a request sent again' : result.how === 'page' ? ', a page load' : result.how === 'api' ? ', its API' : '';
+  const server = side === 'scripted' && result.ms !== undefined && result.linkMs !== undefined ? ` (about ${durationWords(Math.max(0, result.ms - result.linkMs))} on a server)` : '';
   return (
     <>
       <Text style={styles.meta}>
         {label}: {result.found ?? result.items.length} products
-        {result.ms !== undefined ? ` in ${durationWords(result.ms)}${how}` : ''}
-        {result.bytes !== undefined ? `, ${dataWords(result.bytes)}` : ''}.
+        {result.ms !== undefined ? ` in ${durationWords(result.ms)}${server}${how}` : ''}
+        {result.bytes !== undefined ? `, ${dataWords(result.bytes)}${side === 'phone' ? '' : ' through the proxy'}` : ''}.
       </Text>
       {result.storeMatches === false ? (
         <Text style={styles.warn}>
@@ -387,6 +411,11 @@ function CloudTerm({ side, m, storeId, running }: { side: Exclude<CompareSide, '
         <Text style={[styles.meta, styles.strong, { color: m.both && m.same === m.both ? colors.green : m.both ? colors.amber : colors.muted }]}>
           {m.both ? `${m.both} on both, ${m.same} the same price` : 'No product on both'}
           {m.onlyPhone || m.onlyCloud ? ` · ${m.onlyPhone} only on this phone, ${m.onlyCloud} only in the cloud` : ''}
+        </Text>
+      ) : null}
+      {m.phone?.status === 'done' && m.elsewhere ? (
+        <Text style={styles.warn}>
+          {m.elsewhere} more on both {m.elsewhere === 1 ? 'was' : 'were'} priced for another store, and not compared.
         </Text>
       ) : null}
       {gaps.length ? (
@@ -471,4 +500,5 @@ const styles = StyleSheet.create({
   gapPrices: { flexDirection: 'row', gap: 10 },
   gapPrice: { minWidth: 52, textAlign: 'right', fontFamily: fonts.semibold, fontSize: 13, color: colors.ink, fontVariant: ['tabular-nums'] },
   gapHead: { minWidth: 52, textAlign: 'right' },
+  faint: { flexShrink: 1, fontFamily: fonts.body, fontSize: 11, lineHeight: 15, color: colors.faint },
 });

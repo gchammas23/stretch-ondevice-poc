@@ -12,7 +12,7 @@ const root = join(__dirname, '..');
 const walmartFixture = JSON.parse(readFileSync(join(root, 'tests/fixtures/cloud/walmart-search-milk.json'), 'utf8'));
 const targetFixture = JSON.parse(readFileSync(join(root, 'tests/fixtures/cloud/target-plp-search-milk.json'), 'utf8'));
 /** What the fake sites were asked for: heavy files (which blocking should keep away), store saves, redsky answers. */
-export const hits = { image: 0, font: 0, setStore: 0, redsky: 0, product: 0 };
+export const hits = { image: 0, font: 0, setStore: 0, redsky: 0, product: 0, home: 0, storePage: 0 };
 
 export function chromePath(): string {
   if (process.env.CHROME) return process.env.CHROME;
@@ -123,13 +123,19 @@ export function startSites(dir: string) {
     if (host === 'www.walmart.com') {
       // A first visit gets the store Walmart picks for the connection; a store set later stays.
       if (url.pathname === '/') {
+        hits.home++;
         const first = !cookieOf(req.headers.cookie, 'assortmentStoreId');
         return send(200, html('Walmart.com', 'Home'), first ? { 'set-cookie': 'assortmentStoreId=3081; Path=/; Secure' } : {});
       }
       // A page that moves on by itself, as a redirect would.
       if (url.pathname === '/redirect-me') return send(200, html('Moving', '<script>setTimeout(() => { location.href = "/landed"; }, 200)</script>'));
       if (url.pathname === '/landed') return send(200, html('Landed', 'Landed'));
-      if (url.pathname.startsWith('/store/')) return send(200, storePage(url.pathname.split('/')[2], cookieOf(req.headers.cookie, 'assortmentStoreId')));
+      // A page the site takes a second to answer, as a busy one would.
+      if (url.pathname === '/slow') return void setTimeout(() => send(200, html('Slow', 'Slow')), 1000);
+      if (url.pathname.startsWith('/store/')) {
+        hits.storePage++;
+        return send(200, storePage(url.pathname.split('/')[2], cookieOf(req.headers.cookie, 'assortmentStoreId')));
+      }
       if (url.pathname === '/api/set-store') {
         hits.setStore++;
         return send(200, '{}', { 'content-type': 'application/json', 'set-cookie': `assortmentStoreId=${url.searchParams.get('id')}; Path=/; Secure` });

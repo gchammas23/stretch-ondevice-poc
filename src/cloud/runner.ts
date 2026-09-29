@@ -45,6 +45,10 @@ export interface LivePage extends FlowPage {
   close(): void;
   /** About the data this phone moved driving the browser (see PageSession.wireBytes). */
   readonly wireBytes?: number;
+  /** What driving it from this phone added to the time, its link's fastest trip, and the commands sent (see PageSession). */
+  readonly linkMs?: number;
+  readonly rttMs?: number;
+  readonly commands?: number;
 }
 
 /** A term searched on this phone: its products, the store its search said it priced, and what the search took. */
@@ -119,6 +123,17 @@ interface Live {
 }
 
 const liveKey = (jobId: string, retailerId: CloudRetailerId) => `${jobId}|${retailerId}`;
+/** A saved browser profile's key: one per retailer and store. */
+const profileKey = (retailerId: CloudRetailerId, storeId: string) => `${retailerId}:${storeId}`;
+
+/** A page's figures for the job: the data it moved, and what driving it from this phone took (see PageSession). */
+const pageFigures = (page: LivePage): Omit<Extract<RunEvent, { type: 'bytes' }>, 'type'> => ({
+  bytes: page.bytes,
+  ...(page.wireBytes !== undefined ? { wireBytes: page.wireBytes } : {}),
+  ...(page.linkMs !== undefined ? { linkMs: Math.round(page.linkMs) } : {}),
+  ...(page.rttMs !== undefined ? { rttMs: page.rttMs } : {}),
+  ...(page.commands !== undefined ? { commands: page.commands } : {}),
+});
 
 /** A Browser Use error as a reason code: no credit, a spending cap, too many browsers, or anything else it refused. */
 function apiReason(e: BrowserUseError): string {
@@ -136,6 +151,9 @@ export class CloudRunner {
   /** Browsers of jobs no longer on the phone, not yet known to be stopped. */
   private orphans: string[] = [];
   private notes: ComparisonNotes = { runs: {}, report: '' };
+  /** Browser Use profiles the scripted browsers start from, by retailer and store (see profileFor). */
+  private profiles: Record<string, string> = {};
+  private makingProfiles = new Map<string, Promise<string | undefined>>();
   private listeners = new Set<() => void>();
   private finishedListeners = new Set<(job: CloudJob) => void>();
   private comparedListeners = new Set<(comparison: Comparison) => void>();
@@ -243,6 +261,7 @@ export class CloudRunner {
     this.jobs = readJobs(raw);
     this.orphans = readOrphans(raw);
     this.notes = readNotes(raw);
+    this.profiles = readProfiles(raw);
     const at = this.d.now();
     let cutOff = false;
     for (const job of this.jobs) {
@@ -377,11 +396,15 @@ export class CloudRunner {
   async clear(): Promise<void> {
     await this.ready;
     // Never used: nothing to erase, and nothing is written.
-    if (!this.jobs.length && !this.orphans.length && !this.notes.report && !Object.keys(this.notes.runs).length) return;
+    if (!this.jobs.length && !this.orphans.length && !this.notes.report && !Object.keys(this.notes.runs).length && !Object.keys(this.profiles).length) return;
     for (const job of this.jobs) if (jobStatus(job) === 'running') await this.cancel(job.id);
     this.orphans = [...new Set([...this.orphans, ...unstoppedBrowsers(this.jobs).map((b) => b.browserId)])];
     this.jobs = [];
     this.notes = { runs: {}, report: '' };
+    // The stores' saved profiles go too, in Browser Use as well: they hold the retailers' cookies.
+    const profiles = Object.values(this.profiles);
+    this.profiles = {};
+    if (this.deps && this.d.api.configured) for (const id of profiles) await this.d.api.deleteProfile(id).catch(() => {});
     this.changed();
     await this.saveNow();
     void this.sweep(true);
@@ -395,7 +418,8 @@ export class CloudRunner {
     const kept = new Set(this.jobs.map((j) => j.compare?.id).filter(Boolean));
     const runs = Object.fromEntries(Object.entries(this.notes.runs).filter(([id, text]) => kept.has(id) && text));
     const notes = this.notes.report || Object.keys(runs).length ? { notes: { report: this.notes.report, runs } } : {};
-    return this.storage?.setItem(KEY, JSON.stringify({ v: 1, jobs: this.jobs, orphans: this.orphans, ...notes })).catch(() => {}) ?? Promise.resolve();
+    const profiles = Object.keys(this.profiles).length ? { profiles: this.profiles } : {};
+    return this.storage?.setItem(KEY, JSON.stringify({ v: 1, jobs: this.jobs, orphans: this.orphans, ...notes, ...profiles })).catch(() => {}) ?? Promise.resolve();
   }
 
   /**
@@ -546,13 +570,18 @@ export class CloudRunner {
 
   private flowContext(jobId: string, retailerId: CloudRetailerId, live: Live): FlowContext {
     const d = this.d;
-    // Each search's time and data: since the search before it ended, or since the store was set.
-    let mark = { at: d.now(), bytes: live.page?.bytes ?? 0 };
-    const since = (): { ms: number; bytes: number } => {
-      const at = d.now();
-      const bytes = live.page?.bytes ?? 0;
-      const took = { ms: at - mark.at, bytes: Math.max(0, bytes - mark.bytes) };
-      mark = { at, bytes };
+    // Each search's time, data, and what the link to the browser added: since the search before it ended, or since
+    // the store was set.
+    const read = () => ({ at: d.now(), bytes: live.page?.bytes ?? 0, linkMs: live.page?.linkMs });
+    let mark = read();
+    const since = (): Pick<TermResult, 'ms' | 'bytes' | 'linkMs'> => {
+      const now = read();
+      const took = {
+        ms: now.at - mark.at,
+        bytes: Math.max(0, now.bytes - mark.bytes),
+        ...(now.linkMs !== undefined ? { linkMs: Math.max(0, Math.round(now.linkMs - (mark.linkMs ?? 0))) } : {}),
+      };
+      mark = now;
       return took;
     };
     return {
@@ -562,7 +591,9 @@ export class CloudRunner {
       onTerm: (result) => this.apply(jobId, retailerId, { type: 'term', result: { ...since(), ...result } }),
       onStoreSet: (how) => {
         since();
-        this.apply(jobId, retailerId, { type: 'storeSet', how });
+        // The link's time until the store was set, in all: setting it may have taken more than one go.
+        const linkMs = live.page?.linkMs;
+        this.apply(jobId, retailerId, { type: 'storeSet', how, ...(linkMs !== undefined ? { linkMs: Math.round(linkMs) } : {}) });
       },
       onCheck: () => this.apply(jobId, retailerId, { type: 'checkSeen' }),
       maxMb: MAX_MB_PER_BROWSER,
@@ -596,15 +627,26 @@ export class CloudRunner {
     try {
       this.creating++;
       let cdpUrl: string | undefined;
+      let profile: RetailerRun['profile'];
       try {
-        const browser = await d.api.createBrowser({ job: jobId, retailer: retailerId });
+        const saved = await this.profileFor(retailerId, storeId);
+        let browser;
+        try {
+          browser = await d.api.createBrowser({ job: jobId, retailer: retailerId }, undefined, saved?.id);
+          profile = saved?.how;
+        } catch (e) {
+          // Its profile is gone (deleted in Browser Use's dashboard, say): forgotten, and this browser starts empty.
+          if (!(saved && e instanceof BrowserUseError && e.status === 404)) throw e;
+          this.forgetProfile(retailerId, storeId, saved.id);
+          browser = await d.api.createBrowser({ job: jobId, retailer: retailerId });
+        }
         browserId = browser.id;
         cdpUrl = browser.cdpUrl;
       } finally {
         this.creating--;
       }
       live.browserId = browserId;
-      this.apply(jobId, retailerId, { type: 'browser', id: browserId });
+      this.apply(jobId, retailerId, { type: 'browser', id: browserId, ...(profile ? { profile } : {}) });
       // Its id is on the phone before anything else happens, so it's stopped even if the app dies now.
       await this.saveNow();
       if (live.stopped) throw new FlowStopped();
@@ -617,11 +659,11 @@ export class CloudRunner {
       const terms = this.job(jobId)?.terms ?? [];
       const flow = retailerId === 'walmart' ? walmartFlow : targetFlow;
       const outcome = await flow(live.page, storeId, terms, this.flowContext(jobId, retailerId, live));
-      this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes, wireBytes: live.page.wireBytes });
+      this.apply(jobId, retailerId, { type: 'bytes', ...pageFigures(live.page) });
       this.endFlow(jobId, retailerId, outcome);
     } catch (e) {
       const at = d.now();
-      if (live.page) this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes, wireBytes: live.page.wireBytes });
+      if (live.page) this.apply(jobId, retailerId, { type: 'bytes', ...pageFigures(live.page) });
       if (live.why === 'too_slow') this.apply(jobId, retailerId, { type: 'finish', status: 'failed', reason: 'too_slow', at });
       else if (live.stopped) {
         // Cancelled or interrupted: whoever stopped it said so.
@@ -637,6 +679,41 @@ export class CloudRunner {
       this.live.delete(key);
       if (browserId) await this.stopBrowser(jobId, retailerId, browserId, d.costDelayMs);
     }
+  }
+
+  /**
+   * The retailer and store's browser profile, where Browser Use keeps a browser's cookies (the store Walmart was set to,
+   * among them) for the next browser to start from, as a server's own browser would keep them. Made the first time
+   * and saved on the phone; none when Browser Use won't make one (its limit on profiles, say), and the browser starts
+   * empty, as before.
+   */
+  private profileFor(retailerId: CloudRetailerId, storeId: string): Promise<{ id: string; how: 'new' | 'saved' } | undefined> {
+    const key = profileKey(retailerId, storeId);
+    const saved = this.profiles[key];
+    if (saved) return Promise.resolve({ id: saved, how: 'saved' });
+    // Two browsers for the same store at once share the one profile made.
+    let making = this.makingProfiles.get(key);
+    if (!making) {
+      making = this.d.api
+        .createProfile(`${BROWSER_LABEL.app} ${retailerId} ${storeId}`)
+        .then(({ id }) => {
+          this.profiles = { ...this.profiles, [key]: id };
+          this.changed();
+          return id;
+        })
+        .catch(() => undefined)
+        .finally(() => this.makingProfiles.delete(key));
+      this.makingProfiles.set(key, making);
+    }
+    return making.then((id) => (id ? { id, how: 'new' as const } : undefined));
+  }
+
+  private forgetProfile(retailerId: CloudRetailerId, storeId: string, id: string): void {
+    const key = profileKey(retailerId, storeId);
+    if (this.profiles[key] !== id) return;
+    const { [key]: _gone, ...rest } = this.profiles;
+    this.profiles = rest;
+    this.changed();
   }
 
   /** Stops a browser, then reads what it cost. One the API can't stop now is tried again later (see sweep). */
@@ -918,6 +995,17 @@ function readNotes(raw: string | null): ComparisonNotes {
     return { runs: Object.fromEntries(kept), report: typeof report === 'string' ? report : '' };
   } catch {
     return { runs: {}, report: '' };
+  }
+}
+
+function readProfiles(raw: string | null): Record<string, string> {
+  try {
+    const saved: unknown = raw ? JSON.parse(raw) : null;
+    const profiles = typeof saved === 'object' && saved !== null ? (saved as { profiles?: unknown }).profiles : undefined;
+    if (typeof profiles !== 'object' || profiles === null || Array.isArray(profiles)) return {};
+    return Object.fromEntries(Object.entries(profiles).filter((e): e is [string, string] => typeof e[1] === 'string' && !!e[1]));
+  } catch {
+    return {};
   }
 }
 

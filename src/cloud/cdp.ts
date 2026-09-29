@@ -259,20 +259,35 @@ export interface Cookie {
 /**
  * The browser's page, attached with its own session (flattened: its commands carry the session's id). Meters the data
  * its requests move, and keeps the requests whose address `watch` accepts.
+ *
+ * It also times what driving the browser from this phone adds, for an estimate of a server's time: a server next to
+ * the browser would drive it the same way without the trips over this phone's connection. Each command costs one trip
+ * there and back, counted as no more than the link's fastest round trip (rttMs, measured as the page is prepared), so
+ * a script's own running time stays in; a page load costs what it took beyond the browser's own clock for it (from its
+ * document's request to the event waited for), which takes out the phone's wait for the page's events as well.
  */
 export class PageSession {
   /** Bytes the page's requests moved over the network (encodedDataLength), blocked files excluded. */
   bytes = 0;
   readonly requests: SeenRequest[] = [];
+  /** The link's fastest round trip, in ms: the quickest of a few pings to the browser as the page was prepared. */
+  rttMs: number | undefined;
+  /** What this phone's link to the browser added to the time, in ms, as far as the app can tell (see above). */
+  linkMs = 0;
+  /** Commands sent to the page, page loads included: each a trip over the link. */
+  commands = 0;
   private watch: ((url: string) => boolean) | null = null;
   private world: { contextId: number; loaderId?: string } | null = null;
   private frameId: string | null = null;
   private loaderId: string | undefined;
+  /** When the link time counted so far ends: trips at the same time count once. */
+  private countedTo = 0;
   private off: () => void;
 
   constructor(
     readonly conn: CdpConnection,
     readonly sessionId: string,
+    private readonly clock: () => number = Date.now,
   ) {
     this.off = conn.onEvent((e) => {
       if (e.sessionId !== sessionId) return;
@@ -281,7 +296,40 @@ export class PageSession {
   }
 
   send<T extends Record<string, unknown> = Record<string, unknown>>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
-    return this.conn.send<T>(method, params, this.sessionId, timeoutMs);
+    const began = this.clock();
+    this.commands++;
+    return this.conn.send<T>(method, params, this.sessionId, timeoutMs).finally(() => this.addLink(began, this.clock(), this.rttMs));
+  }
+
+  /**
+   * Counts the end of the time from `began` to `ended`, up to `most` ms of it, as the link's: once, however many trips
+   * were under way then. With no `most` (the link not timed yet), nothing is counted.
+   */
+  private addLink(began: number, ended: number, most: number | undefined): void {
+    if (most === undefined) return;
+    const from = Math.max(began, ended - Math.max(0, most), this.countedTo);
+    if (ended > from) this.linkMs += ended - from;
+    this.countedTo = Math.max(this.countedTo, ended);
+  }
+
+  /**
+   * The link's round trip: the quickest of `pings` requests the browser answers at once (Browser.getVersion, which its
+   * own process answers, whatever the page is doing). The pings are the test's own, so their time counts as the link's.
+   */
+  private async timeLink(pings = 3): Promise<void> {
+    let fastest = Infinity;
+    for (let i = 0; i < pings; i++) {
+      const began = this.clock();
+      try {
+        await this.conn.send('Browser.getVersion', {}, undefined, 10_000);
+      } catch {
+        break;
+      }
+      const ended = this.clock();
+      fastest = Math.min(fastest, ended - began);
+      this.addLink(began, ended, Infinity);
+    }
+    if (Number.isFinite(fastest)) this.rttMs = fastest;
   }
 
   /** About the data this phone moved driving the browser: the DevTools connection's messages, both ways. */
@@ -296,8 +344,12 @@ export class PageSession {
     });
   }
 
-  /** Page and network events on, and heavy files blocked by pattern (never by host, never by interception). */
+  /**
+   * The link timed first; then page and network events on, and heavy files blocked by pattern (never by host, never by
+   * interception). Blocking needs the network events on: without them the browser takes the patterns and blocks nothing.
+   */
   async prepare(blocked: string[]): Promise<{ blocking: boolean }> {
+    await this.timeLink();
     await this.send('Page.enable');
     await this.send('Page.setLifecycleEventsEnabled', { enabled: true });
     await this.send('Network.enable');
@@ -323,24 +375,37 @@ export class PageSession {
   /**
    * Goes to `url` as a real navigation and waits for its DOMContentLoaded (or load), for this navigation and not an
    * earlier one. Rejects on a network error; an HTTP error page counts as loaded (a block page is one).
+   *
+   * The browser stamps its document's request and its lifecycle events with its own clock: the load took the time
+   * between them there, and whatever more it took here was the link's (see the class). Without both stamps, the load
+   * counts one trip, as a command does.
    */
   async navigate(url: string, until: 'DOMContentLoaded' | 'load' = 'DOMContentLoaded', timeoutMs = NAV_TIMEOUT_MS): Promise<void> {
-    const seen: { loaderId?: string; frameId?: string; name?: string }[] = [];
+    const seen: { loaderId?: string; frameId?: string; name?: string; at?: number }[] = [];
+    /** When each document's request was sent, by the browser's clock (seconds), by its loader. */
+    const requested = new Map<string, number>();
     let wake: (() => void) | null = null;
     const off = this.on('Page.lifecycleEvent', (p) => {
-      seen.push({ loaderId: p.loaderId as string, frameId: p.frameId as string, name: p.name as string });
+      seen.push({ loaderId: p.loaderId as string, frameId: p.frameId as string, name: p.name as string, at: typeof p.timestamp === 'number' ? p.timestamp : undefined });
       wake?.();
     });
+    const offRequests = this.on('Network.requestWillBeSent', (p) => {
+      // A redirect sends its document's request again, with the same loader: the first is when the load began.
+      if (p.type === 'Document' && typeof p.loaderId === 'string' && typeof p.timestamp === 'number' && !requested.has(p.loaderId)) requested.set(p.loaderId, p.timestamp);
+    });
+    const began = this.clock();
+    let browserMs: number | undefined;
+    this.commands++;
     try {
-      const res = await this.send<{ frameId?: string; loaderId?: string; errorText?: string }>('Page.navigate', { url }, timeoutMs);
+      const res = await this.conn.send<{ frameId?: string; loaderId?: string; errorText?: string }>('Page.navigate', { url }, this.sessionId, timeoutMs);
       if (res.errorText) throw new CdpError('Page.navigate', res.errorText);
       const frame = res.frameId ?? this.frameId;
       this.frameId = frame ?? this.frameId;
       this.loaderId = res.loaderId;
       this.world = null;
       const deadline = Date.now() + timeoutMs;
-      const done = () => seen.some((e) => e.name === until && (!res.loaderId || e.loaderId === res.loaderId) && (!frame || e.frameId === frame));
-      while (!done()) {
+      const loaded = () => seen.find((e) => e.name === until && (!res.loaderId || e.loaderId === res.loaderId) && (!frame || e.frameId === frame));
+      while (!loaded()) {
         if (!this.conn.open) throw new CdpClosed('while the page loaded');
         if (Date.now() > deadline) throw new CdpTimeout(`loading ${url.split('?')[0]}`, timeoutMs);
         await new Promise<void>((resolve) => {
@@ -348,9 +413,15 @@ export class PageSession {
           setTimeout(resolve, 250);
         });
       }
+      const start = res.loaderId ? requested.get(res.loaderId) : undefined;
+      const end = loaded()?.at;
+      if (start !== undefined && end !== undefined && end >= start) browserMs = (end - start) * 1000;
     } finally {
       wake = null;
       off();
+      offRequests();
+      const ended = this.clock();
+      this.addLink(began, ended, browserMs !== undefined ? ended - began - browserMs : this.rttMs);
     }
   }
 

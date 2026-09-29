@@ -209,6 +209,41 @@ export function saleFrom(price: number | null | undefined, was: number | undefin
 // Field paths below match Walmart's markup as publicly documented;
 // confirm them against a real capture with scripts/parse-capture.ts.
 
+type WalmartPriceLine = { lineType?: string; values?: { key?: string; value?: string }[] };
+
+/** A value from a Walmart product's price lines (its newer price data): ("CURRENT_PRICE", "PRICE") → "3.32". */
+export function walmartPriceLine(o: Obj, types: string[], key: string): string | undefined {
+  const lines = get(o, 'priceInfo', 'priceDetails', 'priceLines');
+  if (!Array.isArray(lines)) return undefined;
+  for (const type of types) {
+    const line = (lines as WalmartPriceLine[]).find((l) => l?.lineType === type);
+    const value = line?.values?.find((v) => v?.key === key)?.value;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** "3.32" or "$3.32" as a number. */
+const lineNumber = (text: string | undefined): number | undefined => {
+  if (!text) return undefined;
+  const n = Number(text.replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : parseMoney(text);
+};
+
+/**
+ * A Walmart product's price as its card shows it, and where in its data: its current price (the older data), else its
+ * current-price line (the newer), and only then its bare `price`, which needn't be the one shown. The phone and the
+ * cloud browser (cloud/walmart.ts) both read it this way, so a price they differ on differs in Walmart's data.
+ */
+export function walmartPrice(o: Obj): { price: number; path: string[] } | undefined {
+  const current = num(get(o, 'priceInfo', 'currentPrice', 'price'));
+  if (current !== undefined) return { price: current, path: ['priceInfo', 'currentPrice', 'price'] };
+  const line = lineNumber(walmartPriceLine(o, ['CURRENT_PRICE', 'DISCOUNTED_PRICE'], 'PRICE'));
+  if (line !== undefined) return { price: line, path: ['priceInfo', 'priceDetails', 'priceLines', 'values', 'value'] };
+  const bare = num(o.price);
+  return bare !== undefined ? { price: bare, path: ['price'] } : undefined;
+}
+
 function walmartProduct(o: Obj, retailer: string, storeId: string): Product | null {
   const id = str(o.usItemId);
   const name = str(o.name);
@@ -217,7 +252,7 @@ function walmartProduct(o: Obj, retailer: string, storeId: string): Product | nu
   const priceText = str(get(o, 'priceInfo', 'currentPrice', 'priceString')) ?? str(get(o, 'priceInfo', 'linePrice'));
   const canonical = str(o.canonicalUrl);
   const availability = str(get(o, 'availabilityStatusV2', 'value')) ?? str(o.availabilityStatus);
-  const price = num(get(o, 'priceInfo', 'currentPrice', 'price')) ?? num(o.price) ?? parseMoney(priceText) ?? null;
+  const price = walmartPrice(o)?.price ?? parseMoney(priceText) ?? null;
   const was = num(get(o, 'priceInfo', 'wasPrice', 'price')) ?? parseMoney(str(get(o, 'priceInfo', 'wasPrice', 'priceString')));
   // Where it is in the store, for the store set: productLocation [{ displayValue: "D34" }], null for items only shipped
   // (as others' scrapers show it; not yet seen in a capture from the phone), read the general way.
@@ -256,8 +291,7 @@ export const walmartNextData: Parser = (payload, { retailer, storeId }) => {
       seen.add(p.id);
       products.push(p);
       if (products.length <= EVIDENCE_KEPT) {
-        const path = num(get(o, 'priceInfo', 'currentPrice', 'price')) !== undefined ? ['priceInfo', 'currentPrice', 'price'] : ['price'];
-        evidence[p.id] = rawProduct(o, path);
+        evidence[p.id] = rawProduct(o, walmartPrice(o)?.path ?? ['price']);
       }
     }
     return true;
