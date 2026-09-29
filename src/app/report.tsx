@@ -1,5 +1,3 @@
-import { Fraunces_600SemiBold } from '@expo-google-fonts/fraunces/600SemiBold';
-import { Asset } from 'expo-asset';
 import { File, Paths } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -20,27 +18,11 @@ import { deviceWord } from '../ui/device';
 import { Icon } from '../ui/Icon';
 import { ScreenHeader } from '../ui/ScreenHeader';
 import { colors, fonts, radius, shadow } from '../ui/theme';
+import { deleteQuietly, displayFont, SYSTEM } from '../ui/pdf';
 import { useNow } from '../ui/useNow';
 
 /** When the page still runs past one at its smallest type, the table keeps this many stores. */
 const FEWER_ROWS = 6;
-/** Reading the font for the headings can't hold the PDF up longer than this: the phone's own serif stands in. */
-const FONT_WAIT_MS = 3000;
-
-/** "iOS 26.0", for the report's first line. */
-const SYSTEM = Platform.OS === 'ios' ? `iOS ${Platform.Version}` : Platform.OS === 'android' ? `Android (API ${Platform.Version})` : undefined;
-
-/** Fraunces SemiBold as base64, read once from the app's own font file, for the PDF's headings. */
-let fraunces: Promise<string | undefined> | null = null;
-function displayFont(): Promise<string | undefined> {
-  fraunces ??= Asset.loadAsync(Fraunces_600SemiBold)
-    .then(([asset]) => (asset?.localUri ? new File(asset.localUri).base64() : undefined))
-    .catch(() => {
-      fraunces = null;
-      return undefined;
-    });
-  return Promise.race([fraunces, new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), FONT_WAIT_MS))]);
-}
 
 /**
  * The results report: one page of what this phone measured, to share with people who weren't there. The screen shows
@@ -195,14 +177,6 @@ export default function ReportScreen() {
       </View>
     </View>
   );
-}
-
-function deleteQuietly(file: File): void {
-  try {
-    if (file.exists) file.delete();
-  } catch {
-    // The cache is the system's to clear, if it comes to that.
-  }
 }
 
 /** A headline figure, as at the top of the page. */

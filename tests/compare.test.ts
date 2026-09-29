@@ -52,8 +52,8 @@ const t = async (name: string, fn: () => unknown) => {
   console.log('ok -', name);
 };
 // A test left waiting on a promise that never settles lets Node exit quietly, as if all was well: that's a failure.
-process.on('exit', () => {
-  if (!finished) {
+process.on('exit', (code) => {
+  if (!finished && code === 0) {
     console.error(`Stopped after ${passed} tests: one was left waiting.`);
     process.exitCode = 1;
   }

@@ -6,6 +6,7 @@ import {
   COMPARE_RETAILERS,
   compareProblemWords,
   comparisonEstimate,
+  comparisonProblems,
   comparisonStatus,
   comparisonSummary,
   SIDE_NAMES,
@@ -21,10 +22,12 @@ import { useApp, useAppState, useSettings } from '../../state/AppProvider';
 import { useAskForNotificationsOnce, useCloudBalance, useCloudRunner, useComparisons } from '../../state/CloudProvider';
 import { Chip } from '../../ui/bits';
 import { Pill, tap } from '../../ui/controls';
+import { FindingsBox } from '../../ui/FindingsBox';
 import { Icon } from '../../ui/Icon';
 import { RetailerBadge } from '../../ui/RetailerBadge';
 import { ScreenHeader } from '../../ui/ScreenHeader';
 import { colors, fonts, money, radius, shadow } from '../../ui/theme';
+import { useComparisonPdf } from '../../ui/useComparisonPdf';
 import { useNow } from '../../ui/useNow';
 
 /**
@@ -39,6 +42,7 @@ export default function PhoneVsCloudScreen() {
   const lists = useAppState((s) => s.lists);
   const runner = useCloudRunner();
   const all = useComparisons();
+  const pdf = useComparisonPdf();
   const balance = useCloudBalance();
   const askOnce = useAskForNotificationsOnce();
   const now = useNow(30_000);
@@ -228,11 +232,51 @@ export default function PhoneVsCloudScreen() {
 
         {finished.length ? (
           <>
+            <View style={styles.card}>
+              <Text style={styles.title} accessibilityRole="header">
+                Share every run
+              </Text>
+              <Text style={styles.small}>
+                One PDF of {finished.length === 1 ? 'the run' : `all ${finished.length} runs`} on this phone: the totals across them, a table of the runs, then each run store by
+                store, with every product each side read, what went wrong and why.
+              </Text>
+              <FindingsBox label="Findings for the report" placeholder="What the runs showed, for the team: at the top of the PDF." />
+              <Pill
+                label={pdf.busy ? 'Making the PDF…' : `Share all runs (${finished.length})`}
+                accessibilityLabel={`Share all runs as a PDF: ${finished.length}`}
+                icon="share"
+                variant="orange"
+                busy={pdf.busy}
+                onPress={() => {
+                  tap();
+                  void pdf.share('all', finished);
+                }}
+                style={styles.alignStart}
+              />
+              {pdf.problem ? (
+                <Text style={styles.bad} selectable accessibilityLiveRegion="polite">
+                  {pdf.problem}
+                </Text>
+              ) : null}
+            </View>
             <View style={styles.sectionRow}>
               <Text style={styles.section} accessibilityRole="header">
                 Comparisons
               </Text>
-              <Pressable accessibilityRole="button" hitSlop={12} onPress={() => finished.forEach((c) => runner.removeComparison(c.id))}>
+              <Pressable
+                accessibilityRole="button"
+                hitSlop={12}
+                onPress={() =>
+                  Alert.alert(
+                    `Clear ${finished.length === 1 ? 'this run' : `these ${finished.length} runs`}?`,
+                    'Their results and your findings about them go from this phone. The report’s own findings stay.',
+                    [
+                      { text: 'Keep them', style: 'cancel' },
+                      { text: 'Clear', style: 'destructive', onPress: () => finished.forEach((c) => runner.removeComparison(c.id)) },
+                    ],
+                  )
+                }
+              >
                 <Text style={styles.link}>Clear</Text>
               </Pressable>
             </View>
@@ -274,6 +318,7 @@ function ComparisonCard({ comparison: c, now }: { comparison: Comparison; now: n
   const summary = comparisonSummary(c);
   const status = comparisonStatus(c);
   const same = summary.prices.find((p) => p.side === 'scripted');
+  const problems = comparisonProblems(c).length;
   return (
     <Pressable
       accessibilityRole="button"
@@ -289,6 +334,7 @@ function ComparisonCard({ comparison: c, now }: { comparison: Comparison; now: n
             {whenLabel(c.createdAt, now)}
             {status !== 'done' ? ` · ${status}` : ''}
             {same?.both ? ` · same price ${same.same} of ${same.both}` : ''}
+            {problems ? ` · ${problems} ${problems === 1 ? 'problem' : 'problems'}` : ''}
           </Text>
         </View>
         <Icon name="forward" color={colors.faint} />
@@ -352,6 +398,7 @@ const styles = StyleSheet.create({
   body: { fontFamily: fonts.body, fontSize: 15, lineHeight: 21, color: colors.ink },
   small: { flexShrink: 1, fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: colors.muted },
   warn: { fontFamily: fonts.medium, fontSize: 14, lineHeight: 19, color: colors.amber },
+  bad: { fontFamily: fonts.medium, fontSize: 14, lineHeight: 19, color: colors.red },
   storeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   storeName: { fontFamily: fonts.semibold, fontSize: 15, color: colors.ink },
   link: { fontFamily: fonts.semibold, fontSize: 14, color: colors.orangeText },
