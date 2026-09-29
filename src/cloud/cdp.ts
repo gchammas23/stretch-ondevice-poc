@@ -257,6 +257,23 @@ export interface Cookie {
 }
 
 /**
+ * A cookie to set (Network.setCookie): for a whole site with `domain` (".target.com"), or for one host with `url`
+ * alone, as a site's own host-only cookie is.
+ */
+export interface CookieParam {
+  name: string;
+  value: string;
+  domain?: string;
+  url?: string;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: 'Strict' | 'Lax' | 'None';
+  /** Seconds since 1970; none: gone when the browser closes. */
+  expires?: number;
+}
+
+/**
  * The browser's page, attached with its own session (flattened: its commands carry the session's id). Meters the data
  * its requests move, and keeps the requests whose address `watch` accepts.
  *
@@ -465,6 +482,14 @@ export class PageSession {
   async cookies(urls: string[]): Promise<Cookie[]> {
     const res = await this.send<{ cookies?: Cookie[] }>('Network.getCookies', { urls });
     return Array.isArray(res.cookies) ? res.cookies : [];
+  }
+
+  /** Sets cookies in the browser's jar. One the browser refuses (a malformed value, say) fails the lot. */
+  async setCookies(cookies: CookieParam[]): Promise<void> {
+    for (const cookie of cookies) {
+      const res = await this.send<{ success?: boolean }>('Network.setCookie', { path: '/', ...cookie });
+      if (res.success === false) throw new CdpError('Network.setCookie', `${cookie.name} was refused`);
+    }
   }
 
   /** A watched request's answer, as text. */

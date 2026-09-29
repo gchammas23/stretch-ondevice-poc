@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { moneyFromText } from '../onDevice/json';
 import { sameStoreId } from '../onDevice/storeIdentity';
 import { parseSize } from '../pricing/sizes';
-import { ITEMS_PER_TERM } from './config';
+import { AGENT_ITEMS_PER_TERM } from './config';
 import type { CloudItem } from './jobs';
 
 // Pure TypeScript: the agent engine's side of a job. One Browser Use agent run per retailer is told, in words, to set
@@ -12,19 +12,26 @@ import type { CloudItem } from './jobs';
 
 export type AgentRetailer = 'walmart' | 'target';
 
-const SITES: Record<AgentRetailer, { name: string; host: string; storeStep: (id: string) => string; itemId: string }> = {
+/**
+ * Each site: its store step (straight to the store's own page, rather than through a store locator: Target serves
+ * target.com/sl/<name>/<number> for any name, checked 2026-09-29), its search page for a term (opened directly rather
+ * than typed into its search box), and where its item numbers are.
+ */
+const SITES: Record<AgentRetailer, { name: string; host: string; storeStep: (id: string) => string; search: (term: string) => string; itemId: string }> = {
   walmart: {
     name: 'Walmart',
     host: 'https://www.walmart.com',
     storeStep: (id) =>
       `Open https://www.walmart.com/store/${id}, Walmart's own page for store ${id}, and make it your store with its "Make this my store" button. If the page says it is your store already, go on.`,
+    search: (term) => `https://www.walmart.com/search?q=${encodeURIComponent(term)}`,
     itemId: "Walmart's item number (in the product's link, after /ip/)",
   },
   target: {
     name: 'Target',
     host: 'https://www.target.com',
     storeStep: (id) =>
-      `Open Target's own page for store ${id} (find it with Target's store locator, https://www.target.com/store-locator/find-stores) and make it your store with its "Shop this store" or "Make this my store" button.`,
+      `Open https://www.target.com/sl/store/${id}, Target's own page for store ${id}, and make it your store with its "Shop this store" button. If the page says it is your store already, go on.`,
+    search: (term) => `https://www.target.com/s?searchTerm=${encodeURIComponent(term)}`,
     itemId: "Target's item number, the TCIN (in the product's link, after /A-)",
   },
 };
@@ -43,8 +50,8 @@ export function agentTask(retailer: AgentRetailer, storeId: string, terms: strin
   return [
     `You are checking grocery prices at one ${site.name} store, number ${storeId}.`,
     `1. ${site.storeStep(storeId)}`,
-    `2. Search ${site.host.replace('https://www.', '')} for each of these terms, one at a time: ${terms.map((t) => JSON.stringify(t)).join(', ')}.`,
-    `3. For each term, read the products on the first page of results: at most ${ITEMS_PER_TERM} per term, in the order shown.`,
+    `2. Search for each of these terms, one at a time, by opening its search page directly: ${terms.map((t) => `${JSON.stringify(t)} at ${site.search(t)}`).join(', ')}.`,
+    `3. For each term, read the first ${AGENT_ITEMS_PER_TERM} products on its results page, in the order shown: no more, and don't open the products' own pages.`,
     'If a human-verification check appears (such as "Robot or human?" or a "Press & Hold" button), do not try to solve it. Wait about 30 seconds without doing anything. If it is still there, stop and return exactly {"blocked": true}.',
     'Return ONLY JSON, with no other text before or after it, in this form:',
     example(retailer, storeId, terms[0] ?? 'milk'),
@@ -63,7 +70,7 @@ export function followUpTask(retailer: AgentRetailer, storeId: string, terms: st
     'Do not search again: use what you already found.',
     'Reply with ONLY the JSON, nothing before or after it, in this form:',
     example(retailer, storeId, terms[0] ?? 'milk'),
-    `Include at most ${ITEMS_PER_TERM} items per term. If a human-verification check stopped you, reply with exactly {"blocked": true}.`,
+    `Include at most ${AGENT_ITEMS_PER_TERM} items per term. If a human-verification check stopped you, reply with exactly {"blocked": true}.`,
   ].join('\n');
 }
 
@@ -142,7 +149,7 @@ const absolute = (url: string | undefined, host: string) => (!url ? undefined : 
 /**
  * Reads an agent run's answer against the job: `{"blocked": true}`, or the retailer, store and items asked for, each
  * item validated on its own (invalid ones are dropped; all of them invalid makes the answer invalid). At most
- * ITEMS_PER_TERM items are kept per term.
+ * AGENT_ITEMS_PER_TERM items are kept per term.
  */
 export function readAgentAnswer(raw: string | undefined, output: unknown, job: { retailer: AgentRetailer; storeId: string; terms: string[] }): AgentReading {
   const value = output !== undefined && output !== null && typeof output === 'object' ? output : raw ? extractJson(raw) : undefined;
@@ -166,7 +173,7 @@ export function readAgentAnswer(raw: string | undefined, output: unknown, job: {
     const said = item.data.term?.toLowerCase();
     const term = job.terms.find((t) => t.toLowerCase() === said) ?? (job.terms.length === 1 ? job.terms[0] : '');
     const list = (byTerm[term] ??= []);
-    if (list.length >= ITEMS_PER_TERM || list.some((i) => i.itemId === item.data.itemId)) continue;
+    if (list.length >= AGENT_ITEMS_PER_TERM || list.some((i) => i.itemId === item.data.itemId)) continue;
     const size = item.data.size ?? parseSize(item.data.name)?.text;
     const url = absolute(item.data.url, host);
     list.push({

@@ -6,9 +6,9 @@ import { JSDOM } from 'jsdom';
 import { agentTask, extractJson, followUpTask, readAgentAnswer } from '../src/cloud/agent';
 import { BrowserUseApi, BrowserUseError } from '../src/cloud/browserUse';
 import { browserSocketUrl, CdpClosed, CdpConnection, CdpError, CdpTimeout, decodeBase64, PageSession, resolveSocketUrl, versionUrl, type SocketLike } from '../src/cloud/cdp';
-import { MAX_RUN_COST_USD } from '../src/cloud/config';
+import { AGENT_MODEL_PARAMS, MAX_RUN_COST_USD } from '../src/cloud/config';
 import { pxBlockedAnswer, pxForm, PX_SNAPSHOT, waitOutCheck } from '../src/cloud/perimeterx';
-import { decodeEntities, parseRedsky, redskySearchUrl, replayScript } from '../src/cloud/target';
+import { cookieStore, decodeEntities, FIND_SHOP_BUTTON, parseRedsky, readStorePage, redskySearchUrl, replayScript, storePageUrl, targetStoreCookies } from '../src/cloud/target';
 import { FIND_STORE_BUTTON, parseWalmartProductPage, parseWalmartSearch, READ_SEARCH_DATA, walmartItem } from '../src/cloud/walmart';
 import { walmartNextData } from '../src/onDevice/parsers';
 
@@ -235,16 +235,28 @@ function fakeSocket() {
   const job = { retailer: 'walmart' as const, storeId: '5260', terms: ['milk', 'eggs'] };
   const answer = (items: unknown[], extra: object = {}) => JSON.stringify({ retailer: 'walmart', storeId: '5260', storeConfirmed: true, items, ...extra });
 
-  await t('agent: the task sets the store on the retailer’s own page, searches each term, asks for JSON only, never solves a check', () => {
+  await t('agent: the task goes straight to the store’s own page and each term’s search page, asks for 10 products and JSON only, never solves a check', () => {
     const task = agentTask('walmart', '5260', ['milk', 'eggs']);
-    for (const words of ['https://www.walmart.com/store/5260', '"milk", "eggs"', 'Return ONLY JSON', 'do not try to solve it', '{"blocked": true}', 'at most 20 per term', '"storeConfirmed"']) {
+    for (const words of [
+      'https://www.walmart.com/store/5260',
+      '"milk" at https://www.walmart.com/search?q=milk, "eggs" at https://www.walmart.com/search?q=eggs',
+      'Return ONLY JSON',
+      'do not try to solve it',
+      '{"blocked": true}',
+      'read the first 10 products',
+      '"storeConfirmed"',
+    ]) {
       assert.ok(task.includes(words), words);
     }
-    assert.ok(agentTask('target', '1375', ['milk']).includes("Target's own page for store 1375"));
+    const target = agentTask('target', '1375', ['whole milk']);
+    for (const words of ['Open https://www.target.com/sl/store/1375, Target\'s own page for store 1375', '"Shop this store"', '"whole milk" at https://www.target.com/s?searchTerm=whole%20milk']) {
+      assert.ok(target.includes(words), words);
+    }
+    assert.ok(!target.includes('store-locator'), 'no store locator to search');
     assert.ok(followUpTask('walmart', '5260', ['milk'], 'it was not JSON').includes('(it was not JSON)'));
   });
 
-  await t('agent answer: validated with zod, products by term, prices as numbers, invalid items dropped, 20 a term at most', () => {
+  await t('agent answer: validated with zod, products by term, prices as numbers, invalid items dropped, 10 a term at most', () => {
     const items = [
       { term: 'milk', name: 'Great Value Whole Milk, 1 gal', price: 3.32, unitPrice: '2.6 ¢/fl oz', size: '1 gal', itemId: '10450114', url: '/ip/10450114' },
       { term: 'MILK', name: 'Lactaid Whole Milk, 96 oz', price: '$6.38', itemId: 23619910, url: 'https://www.walmart.com/ip/23619910' },
@@ -263,7 +275,7 @@ function fakeSocket() {
     assert.deepEqual(got.byTerm.milk[1].size, '96 oz', 'a size it didn’t give comes from the name');
     assert.deepEqual(got.byTerm.eggs.map((i) => [i.itemId, i.price]), [['145051970', null]]);
     const many = readAgentAnswer(answer(Array.from({ length: 30 }, (_, i) => ({ term: 'milk', name: `Milk ${i}`, price: i, itemId: String(i) }))), undefined, job);
-    assert.equal(many.kind === 'ok' && many.byTerm.milk.length, 20);
+    assert.equal(many.kind === 'ok' && many.byTerm.milk.length, 10);
   });
 
   await t('agent answer: JSON in a code fence or among words is found; the store it answered for is checked', () => {
@@ -314,8 +326,12 @@ function fakeSocket() {
     assert.deepEqual(JSON.parse(calls[1].init.body), { proxyCountryCode: 'us', timeout: 10, metadata: { app: 'stretch-poc', job: 'j1' } });
     await api.stopBrowser('b1');
     assert.deepEqual([calls[2].init.method, calls[2].url, JSON.parse(calls[2].init.body)], ['PATCH', 'https://api.browser-use.com/api/v4/browsers/b1', { action: 'stop' }]);
-    await api.createRun({ task: 'x', model: 'gpt-5.6-luna', maxCostUsd: MAX_RUN_COST_USD, sessionId: 's0' });
-    assert.deepEqual(JSON.parse(calls[3].init.body), { task: 'x', model: 'gpt-5.6-luna', maxCostUsd: 0.75, sessionId: 's0' }, 'a cost cap on every run');
+    await api.createRun({ task: 'x', model: 'gpt-5.6-luna', modelParams: AGENT_MODEL_PARAMS, maxCostUsd: MAX_RUN_COST_USD, sessionId: 's0' });
+    assert.deepEqual(
+      JSON.parse(calls[3].init.body),
+      { task: 'x', model: 'gpt-5.6-luna', modelParams: { reasoning: { effort: 'medium' } }, maxCostUsd: 0.75, sessionId: 's0' },
+      'a cost cap on every run, and less thinking a step than Browser Use’s "xhigh"',
+    );
     await api.activeBrowsers({ label: { app: 'stretch-poc' } });
     assert.equal(calls[4].url, 'https://api.browser-use.com/api/v4/browsers?filterBy=active&pageSize=50&metadata=app%3Dstretch-poc');
   });
@@ -544,6 +560,53 @@ function fakeSocket() {
     w.fetch = async () => ({ status: 435, text: async () => fixture('target-redsky-px-435.json') });
     const blocked = await w.eval(replayScript(url));
     assert.equal(pxBlockedAnswer(blocked.status, blocked.text), true);
+  });
+
+  // --- Target's store, set on its site --------------------------------------------------------------------
+
+  await t('target store: its cookie’s store; its own page (the real one, cut down) read for its name, ZIP, state and place', () => {
+    // As a real browser had it for a new visitor in San Francisco, 2026-09-29.
+    assert.equal(cookieStore('DSI_2766|DSN_San%20Francisco%20Central|DSZ_94103'), '2766');
+    assert.deepEqual([cookieStore('DSN_x|DSZ_1'), cookieStore(undefined), cookieStore('DSI_|DSN_x')], [undefined, undefined, undefined]);
+    assert.equal(storePageUrl('1072'), 'https://www.target.com/sl/store/1072', 'any name before the number serves the store’s page');
+    const page = inPage(fixture('target-store-2641.html'), 'https://www.target.com/sl/store/2641');
+    assert.deepEqual({ ...page.eval(readStorePage('2641')) }, { id: '2641', name: 'Salt Lake City', zip: '84101', state: 'UT', lat: 40.744916, lon: -111.901664 });
+    assert.equal(page.eval(readStorePage('1072')), null, 'another store’s page isn’t this one’s');
+    // Without its page data: the ZIP and state from the address it shows.
+    const shown = inPage('<html><body><div data-test="@store-locator/StoreInfo"><p>Salt Lake City, UT 84101-3053</p></div><script>x = {"store_id":"2641"}</script></body></html>', 'https://www.target.com/sl/store/2641');
+    const got = shown.eval(readStorePage('2641'));
+    assert.deepEqual([got.zip, got.state, got.name, got.lat], ['84101', 'UT', undefined, undefined]);
+  });
+
+  await t('target store: its cookies written as the real site writes them, the store’s place included when its page gave it', () => {
+    const now = Date.UTC(2026, 8, 29, 12);
+    const cookies = targetStoreCookies({ id: '2641', name: 'Salt Lake City', zip: '84101', state: 'UT', lat: 40.744916, lon: -111.901664 }, now);
+    const year = now / 1000 + 365 * 24 * 3600;
+    assert.deepEqual(cookies, [
+      { name: 'fiatsCookie', value: 'DSI_2641|DSN_Salt%20Lake%20City|DSZ_84101', domain: '.target.com', path: '/', secure: true, sameSite: 'Lax', expires: year },
+      { name: 'sddStore', value: 'DSI_2641|DSN_Salt%20Lake%20City|DSZ_84101', domain: '.target.com', path: '/' },
+      { name: 'UserLocation', value: '84101|40.745|-111.902|UT|US', domain: '.target.com', path: '/', secure: true, sameSite: 'Lax', expires: year },
+      { name: 'GuestLocation', value: '84101|40.745|-111.902|UT|US', url: 'https://www.target.com/', path: '/', secure: true, expires: now / 1000 + 24 * 3600 },
+    ]);
+    assert.equal(cookieStore(cookies[0].value), '2641');
+    assert.deepEqual(
+      targetStoreCookies({ id: '2641', name: 'Salt Lake City', zip: '84101' }, now).map((c) => c.name),
+      ['fiatsCookie', 'sddStore'],
+      'no place without one',
+    );
+  });
+
+  await t('in the page: Target’s “Shop this store” found by its data-test, else by its words; none is null', () => {
+    const w = inPage(fixture('target-store-2641.html'), 'https://www.target.com/sl/store/2641');
+    w.HTMLElement.prototype.scrollIntoView = () => {};
+    w.HTMLElement.prototype.getBoundingClientRect = () => ({ left: 40, top: 200, width: 160, height: 40 });
+    assert.deepEqual({ ...w.eval(FIND_SHOP_BUTTON) }, { x: 120, y: 220 });
+    const worded = inPage('<html><body><button>Directions</button><button> Make this my store </button></body></html>', 'https://www.target.com/sl/store/2641');
+    worded.HTMLElement.prototype.scrollIntoView = () => {};
+    worded.HTMLElement.prototype.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 40 });
+    assert.deepEqual({ ...worded.eval(FIND_SHOP_BUTTON) }, { x: 50, y: 20 });
+    const none = inPage('<html><body><button>Directions</button></body></html>', 'https://www.target.com/sl/store/2641');
+    assert.equal(none.eval(FIND_SHOP_BUTTON), null);
   });
 
   finished = true;

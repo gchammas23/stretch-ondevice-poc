@@ -438,6 +438,15 @@ export interface SearchOutcome {
   bytesSaved?: number;
   /** The store the prices are for, as far as the search showed it. */
   store?: KnownStore;
+  /**
+   * The store the answer itself says its prices are for, where its products' prices name a store (Target's
+   * price.location_id), and each product's own, by its id (see storesInAnswer). Undefined when they don't: then only
+   * the request says which store was asked for.
+   */
+  pricedFor?: string;
+  itemStores?: Record<string, string>;
+  /** The store the page's own search request asked for, before the app put the chosen store in it. */
+  siteStore?: string;
   /** When each part of the search happened, for the speed test's timeline. */
   timing?: SearchTiming;
   /** How its list was read: with the store's profile, or by the general reader (and whether a profile missed). */

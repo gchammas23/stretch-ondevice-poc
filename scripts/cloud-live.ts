@@ -10,8 +10,9 @@
 //                                                                the scripted Walmart flow (~4¢ a term), and with
 //                                                                --product the top result's own page, as a spot check
 //   npx tsx scripts/cloud-live.ts target --store 1375 --terms milk [--compare 2766]
-//                                                                the Target spike: its own search request replayed
-//                                                                with the store; --compare asks a second store too
+//                                                                Target: the store set on its site ("Shop this store"),
+//                                                                then its own search request replayed; --compare sets
+//                                                                and asks a second store too
 //   npx tsx scripts/cloud-live.ts job --engine agent --walmart 5260 --terms milk
 //                                                                a whole job through the app's runner (scripted or
 //                                                                agent; --target 1375 adds Target), as the app runs it
@@ -129,12 +130,13 @@ function context(results: TermResult[], set: string[], checks: { n: number }): F
     stopped: () => false,
     onTerm: (r) => {
       results.push(r);
-      console.log(`  "${r.term}": ${r.status}${r.reason ? ` (${r.reason})` : ''}, ${r.found ?? 0} products, page store ${r.pageStoreId ?? '?'}${r.storeMatches === false ? ' — NOT the store asked for' : ''}`);
+      const site = r.siteStoreId ? `, the site's own request asked for ${r.siteStoreId}` : '';
+      console.log(`  "${r.term}": ${r.status}${r.reason ? ` (${r.reason})` : ''}, ${r.found ?? 0} products, page store ${r.pageStoreId ?? '?'}${site}${r.storeMatches === false ? ' — NOT the store asked for' : ''}`);
       for (const i of r.items.slice(0, 3)) console.log(`     ${i.price ?? '—'}  ${i.name}${i.unitPrice ? ` (${i.unitPrice})` : ''}`);
     },
-    onStoreSet: (how) => {
-      set.push(how);
-      console.log(`  store set: ${how}`);
+    onStoreSet: (how, picked) => {
+      set.push(picked ? `${how} over ${picked}` : how);
+      console.log(`  store set: ${how}${picked ? ` (the site had picked store ${picked} by itself)` : ''}`);
     },
     onCheck: () => {
       checks.n++;
@@ -213,13 +215,14 @@ async function walmart(api: BrowserUseApi) {
   });
 }
 
-/** The Target spike: its page's own redsky request, replayed with the store (and a second store, to compare). */
+/** Target: the store set on its site, then the page's own redsky request replayed (and a second store's, to compare). */
 async function target(api: BrowserUseApi) {
   const store = arg('store');
   if (!store) throw new Error('--store is needed (a Target store number, e.g. 1375)');
   const compare = arg('compare');
   const words = terms();
-  const before = await begin(api, 'target', 0.03 + 0.003 * words.length * (compare ? 2 : 1));
+  // A store page and a search page (about 3¢ at most), then a small answer a term; twice with --compare.
+  const before = await begin(api, 'target', (0.03 + 0.003 * words.length) * (compare ? 2 : 1));
   const results: TermResult[] = [];
   const other: TermResult[] = [];
   const set: string[] = [];
@@ -230,7 +233,7 @@ async function target(api: BrowserUseApi) {
     try {
       const out = await targetFlow(page, store, words, context(results, set, checks));
       console.log(`Target (store ${store}): ${out.status}${'reason' in out ? ` (${out.reason})` : ''}`);
-      // The page's own answer, for the store the site picked: saved, to replace the hand-built fixture.
+      // The page's own first search answer: saved, to replace the hand-built fixture (its prices say whose they are).
       const req = page.requests.find((r) => /plp_search/.test(r.url) && r.status === 200);
       if (req) {
         const body = await page.responseBody(req.requestId).catch(() => '');
@@ -243,7 +246,7 @@ async function target(api: BrowserUseApi) {
         }
       }
       if (compare && out.status === 'done') {
-        const again = await targetFlow(page, compare, words.slice(0, 1), context(other, [], checks));
+        const again = await targetFlow(page, compare, words.slice(0, 1), context(other, set, checks));
         console.log(`Target (store ${compare}): ${again.status}`);
         const a = results[0]?.items ?? [];
         const bItems = other[0]?.items ?? [];
@@ -262,7 +265,7 @@ async function target(api: BrowserUseApi) {
   log({
     at: new Date().toISOString(),
     step: 'target',
-    detail: { spike, store, compare, terms: words, browser: run.id, outcome: run.value, error: run.error, checks: checks.n, ...own, results: [...results, ...other].map((r) => ({ term: r.term, status: r.status, reason: r.reason, found: r.found, pageStoreId: r.pageStoreId, storeMatches: r.storeMatches })) },
+    detail: { spike, store, compare, terms: words, browser: run.id, outcome: run.value, error: run.error, checks: checks.n, storeSet: set, ...own, results: [...results, ...other].map((r) => ({ term: r.term, status: r.status, reason: r.reason, found: r.found, pageStoreId: r.pageStoreId, siteStoreId: r.siteStoreId, storeMatches: r.storeMatches })) },
     reportedUsd: run.cost.usd,
     balanceBefore: before,
     balanceAfter: await balanceAfter(api),

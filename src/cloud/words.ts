@@ -20,6 +20,8 @@ const REASONS: Record<string, string> = {
   challenge: 'a “Robot or human?” check that didn’t clear in 45 s',
   store_not_set: 'pressing “Make this my store” didn’t change the store',
   no_store_button: 'its store page had no “Make this my store” button',
+  no_store_page: 'the store’s own page on the site didn’t load as that store’s',
+  target_store_not_set: 'Target kept a store of its own choosing: the one asked for couldn’t be set on its site',
   data_budget: `it moved over ${MAX_MB_PER_BROWSER} MB, the limit for one browser`,
   no_page_data: 'the search page had no data to read',
   no_search_results: 'the page’s data had no search results',
@@ -134,8 +136,9 @@ export function costWords(usd: number): string {
 
 /**
  * What a job may cost before it starts: a scripted browser's pages at the measured 2.6 MB each (Walmart's home and
- * store pages, then a page per term; Target's one page, then a small answer per term) through the $5/GB proxy, plus a
- * little browser time; an agent run at most its cap.
+ * store pages, then a page per term; Target's store page and one search page, then a small answer per term) through the
+ * $5/GB proxy, plus a little browser time; an agent run at most its cap. A store kept from its last run skips its
+ * store pages, so this is the most a store's pages cost.
  */
 export function estimate(req: Pick<JobRequest, 'terms' | 'retailers'>): { usd: number; capped: boolean } {
   const n = req.terms.length;
@@ -146,7 +149,7 @@ export function estimate(req: Pick<JobRequest, 'terms' | 'retailers'>): { usd: n
       usd += MAX_RUN_COST_USD;
       capped = true;
     } else if (r.via === 'browser') {
-      const mb = r.retailerId === 'walmart' ? (2 + n) * MB_PER_PAGE : MB_PER_PAGE + n * MB_PER_REDSKY;
+      const mb = r.retailerId === 'walmart' ? (2 + n) * MB_PER_PAGE : 2 * MB_PER_PAGE + n * MB_PER_REDSKY;
       usd += (mb / 1000) * PROXY_USD_PER_GB + 0.001;
     }
   }

@@ -208,10 +208,11 @@ export class BrowserUseApi {
    * Starts an agent run. `sessionId` continues an earlier run's conversation (and reuses its browser, while it lives).
    * `maxCostUsd` is the run's own cost cap.
    */
-  async createRun(req: { task: string; model: string; maxCostUsd?: number; sessionId?: string }): Promise<AgentRun> {
+  async createRun(req: { task: string; model: string; modelParams?: Record<string, unknown>; maxCostUsd?: number; sessionId?: string }): Promise<AgentRun> {
     const json = await this.call('POST', `${API_V4}/runs`, {
       task: req.task,
       model: req.model,
+      ...(req.modelParams ? { modelParams: req.modelParams } : {}),
       ...(req.maxCostUsd ? { maxCostUsd: req.maxCostUsd } : {}),
       ...(req.sessionId ? { sessionId: req.sessionId } : {}),
     });

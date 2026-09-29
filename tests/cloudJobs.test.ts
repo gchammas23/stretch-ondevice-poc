@@ -22,12 +22,13 @@ import {
   type TermResult,
 } from '../src/cloud/jobs';
 import { cloudRetailers, cloudStoreId, planRetailers, viaFor } from '../src/cloud/plan';
+import { targetFlow } from '../src/cloud/target';
 import { walmartFlow } from '../src/cloud/walmart';
-import { estimate, jobNotice, problemWords, retailerLine } from '../src/cloud/words';
+import { estimate, jobNotice, problemWords, reasonWords, retailerLine } from '../src/cloud/words';
 import { BUNDLED_CONFIG } from '../src/onDevice/retailers';
 import { AppStore, CLOUD_OFF } from '../src/state/appStore';
 import { phoneChoices, steadyChoices, storeChoices } from '../src/state/storeChoices';
-import { clock, fakeBrowserUse, FakePage, flowContext, makeRunner, memory, tick, walmartJob } from './cloudKit';
+import { clock, fakeBrowserUse, FakePage, FakeTargetPage, flowContext, makeRunner, memory, tick, walmartJob } from './cloudKit';
 
 // Cloud jobs: the per-retailer state machine, the guardrails, what the switch changes (and, off, doesn't), and the
 // runner end to end against a simulated Browser Use API and simulated pages. No live site, no credit.
@@ -334,6 +335,60 @@ process.on('exit', (code) => {
     assert.deepEqual([stuck.navigations.filter((u) => u.includes('/search')).length, stuckResults.map((r) => r.storeMatches)], [2, [false]]);
   });
 
+  await t('target flow: a new browser: the site’s pick (2766) replaced with “Shop this store” on the store’s own page; its search asks for 1375, and every answer is 1375’s', async () => {
+    const page = new FakeTargetPage();
+    const results: TermResult[] = [];
+    const ctx = flowContext(results);
+    assert.deepEqual(await targetFlow(page, '1375', ['milk', 'eggs'], ctx), { status: 'done' });
+    assert.deepEqual(page.navigations, ['https://www.target.com/sl/store/1375', 'https://www.target.com/s?searchTerm=milk']);
+    assert.deepEqual(ctx.set, ['button over 2766']);
+    assert.deepEqual(results.map((r) => [r.term, r.status, r.pageStoreId, r.storeMatches, r.siteStoreId]), [
+      ['milk', 'done', '1375', true, '1375'],
+      ['eggs', 'done', '1375', true, '1375'],
+    ]);
+    assert.equal(page.setCookieCalls.length, 0, 'the button did it: no cookies of the app’s');
+  });
+
+  await t('target flow: kept in a saved profile: straight to the search; a press that doesn’t take: the store’s cookies set from its page', async () => {
+    const kept = new FakeTargetPage({ profile: '1375' });
+    const keptCtx = flowContext([]);
+    assert.deepEqual(await targetFlow(kept, '1375', ['milk'], keptCtx), { status: 'done' });
+    assert.deepEqual([keptCtx.set, kept.navigations], [['kept'], ['https://www.target.com/s?searchTerm=milk']]);
+
+    const broken = new FakeTargetPage({ button: 'broken' });
+    const results: TermResult[] = [];
+    const ctx = flowContext(results);
+    assert.deepEqual(await targetFlow(broken, '1375', ['milk'], ctx), { status: 'done' });
+    assert.deepEqual([ctx.set, results[0].pageStoreId, results[0].storeMatches], [['cookie over 2766'], '1375', true]);
+    assert.deepEqual(
+      broken.setCookieCalls[0].map((c) => `${c.name}=${c.value}`),
+      ['fiatsCookie=DSI_1375|DSN_Store%201375|DSZ_55408', 'sddStore=DSI_1375|DSN_Store%201375|DSZ_55408', 'UserLocation=55408|44.948|-93.298|MN|US', 'GuestLocation=55408|44.948|-93.298|MN|US'],
+    );
+    // No button either: the same.
+    const none = flowContext([]);
+    assert.deepEqual(await targetFlow(new FakeTargetPage({ button: 'none' }), '1375', ['milk'], none), { status: 'done' });
+    assert.deepEqual(none.set, ['cookie over 2766']);
+  });
+
+  await t('target flow: never another store’s prices: a site that won’t keep the store fails after a second go; no store page, or one without its details, fails at once', async () => {
+    const forgets = new FakeTargetPage({ forgets: true });
+    const results: TermResult[] = [];
+    const out = await targetFlow(forgets, '1375', ['milk'], flowContext(results));
+    assert.deepEqual(out, { status: 'failed', reason: 'target_store_not_set', detail: 'after it was set, Target’s search page still asked for store 2766' });
+    assert.deepEqual([forgets.navigations.filter((u) => u.includes('/sl/')).length, results.length], [2, 0], 'set twice, nothing read');
+
+    const noPage = await targetFlow(new FakeTargetPage({ stores: { '1375': null } }), '1375', ['milk'], flowContext([]));
+    assert.deepEqual(noPage, { status: 'failed', reason: 'no_store_page', detail: 'https://www.target.com/sl/store/1375 wasn’t store 1375’s page' });
+
+    const vague = await targetFlow(new FakeTargetPage({ button: 'broken', stores: { '1375': { id: '1375' } } }), '1375', ['milk'], flowContext([]));
+    assert.deepEqual(vague, {
+      status: 'failed',
+      reason: 'target_store_not_set',
+      detail: '“Shop this store” was pressed, but the store cookie didn’t change, and the page didn’t say the store’s name and ZIP',
+    });
+    assert.match(reasonWords('target_store_not_set'), /couldn’t be set on its site/);
+  });
+
   // --- The runner, end to end ------------------------------------------------------------------------------------
 
   await t('runner: refuses a job below $1 of credit, without a key, when the credit can’t be read, or a third at once; nothing is created', async () => {
@@ -544,6 +599,11 @@ process.on('exit', (code) => {
     assert.deepEqual(walmart.runs, { r1: 0.21, r2: 0.04 });
     assert.equal(api.tasks.length, 2);
     assert.deepEqual([api.tasks[0].model, api.tasks[0].maxCostUsd, api.tasks[1].sessionId], ['gpt-5.6-luna', 0.75, 's1']);
+    assert.deepEqual(
+      api.tasks.map((t) => (t as { modelParams?: unknown }).modelParams),
+      [{ reasoning: { effort: 'medium' } }, { reasoning: { effort: 'medium' } }],
+      'the run and its follow-up think less a step than Browser Use’s default',
+    );
     assert.match(api.tasks[1].task, /not the JSON I asked for \(it was not JSON\)/);
     await tick(20);
     assert.ok(api.stopped.has('agent-browser'), 'the session’s browser is stopped once the app is done with it');

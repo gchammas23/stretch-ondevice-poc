@@ -17,7 +17,17 @@ import { parseProductPage, type ProductDetails } from './productPage';
 import { observationOf, ProfileBook, STALE_MISSES, whereWords } from './profiles';
 import { applyTemplate, chainIds, learnChain, learnTemplate, looksRelevant, mentionsQuery, replayPayload, swapIds, type ReplayTemplate } from './replay';
 import { bytesText, reasonWords, seconds } from './scrapeFeed';
-import { mergeStores, parseStoreLabel, pinStoreInRequest, sameStoreId, storeFromFinder, storeIdFromPageData, storeIdFromRequest, storeLine } from './storeIdentity';
+import {
+  mergeStores,
+  parseStoreLabel,
+  pinStoreInRequest,
+  sameStoreId,
+  storeFromFinder,
+  storeIdFromPageData,
+  storeIdFromRequest,
+  storeLine,
+  storesInAnswer,
+} from './storeIdentity';
 import { nearbyList, sortNearest, withMiles, type LatLng, type NearbyStore, type StoreCard, type ZipTie } from './storeLocator';
 import { reportAttempt, reportNote } from './telemetry';
 import { SpanLog, type LoadTiming, type ReplayTiming, type SearchTiming } from './timing';
@@ -96,6 +106,16 @@ type StrategyResult = ParseResult & {
   store?: KnownStore;
   /** The request that brought the products, for the price X-ray. */
   request?: { method: string; url: string };
+  /** The store the answer's own prices name, and each product's (see storesInAnswer). */
+  answer?: { pricedFor: string; items: Record<string, string> };
+  /** The store the page's own search request asked for, before the chosen store went in it. */
+  siteStore?: string;
+};
+
+/** What an answer's prices say about their store, and what the page asked for by itself, for a result. */
+const whose = (text: string | undefined, storeId: string, siteStore: string | undefined): Pick<StrategyResult, 'answer' | 'siteStore'> => {
+  const answer = storeId ? storesInAnswer(text, storeId) : undefined;
+  return { ...(answer ? { answer } : {}), ...(siteStore ? { siteStore } : {}) };
 };
 
 export interface SearchOptions {
@@ -492,6 +512,7 @@ export function createRetailerSearch(
         ...(bytesSaved > 0 ? { bytesSaved } : {}),
         store: mergeStores(id ? { id } : undefined, page),
         request: { method: sent.method, url: sent.url },
+        ...whose(res.text, storeId, lane.seenStore?.id),
       };
     };
 
@@ -603,7 +624,14 @@ export function createRetailerSearch(
     lane.replayMisses = 0;
     const id = storeId || storeIdFromRequest(second)?.id;
     const page = lane.seenStore && (!lane.seenStore.id || !id || sameStoreId(lane.seenStore.id, id)) ? lane.seenStore : undefined;
-    return { ...parsed, via: 'replay', bytes, store: mergeStores(id ? { id } : undefined, page), request: { method: second.method, url: second.url } };
+    return {
+      ...parsed,
+      via: 'replay',
+      bytes,
+      store: mergeStores(id ? { id } : undefined, page),
+      request: { method: second.method, url: second.url },
+      ...whose(got.text, storeId, lane.seenStore?.id),
+    };
   }
 
   async function searchViaWebView(cfg: RetailerConfig, query: string, storeId: string, opts: SearchOptions, run: Run): Promise<StrategyResult> {
@@ -789,7 +817,9 @@ export function createRetailerSearch(
       if (pinned) return pinned;
     }
     const asked = parsed.origin?.kind === 'response' && parsed.origin.request ? parsed.origin.request : { method: 'GET', url };
-    return { ...parsed, via: 'page', bytes: payload.bytes, store, request: { method: asked.method, url: asked.url } };
+    const origin = parsed.origin;
+    const answered = origin?.kind === 'response' ? payload.sources?.find((src) => src.request === origin.request)?.text : undefined;
+    return { ...parsed, via: 'page', bytes: payload.bytes, store, request: { method: asked.method, url: asked.url }, ...whose(answered, storeId, id) };
   }
 
   const runStrategy = (strategy: Strategy, cfg: RetailerConfig, query: string, storeId: string, opts: SearchOptions, run: Run): Promise<StrategyResult> => {
@@ -946,6 +976,8 @@ export function createRetailerSearch(
           bytes: result.bytes,
           ...(result.bytesSaved ? { bytesSaved: result.bytesSaved } : {}),
           store: result.store,
+          ...(result.answer ? { pricedFor: result.answer.pricedFor, itemStores: result.answer.items } : {}),
+          ...(result.siteStore ? { siteStore: result.siteStore } : {}),
           timing: timing(),
           ...(reader ? { reader } : {}),
         };

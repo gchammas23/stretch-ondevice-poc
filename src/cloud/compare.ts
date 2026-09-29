@@ -16,6 +16,7 @@ import {
   type RetailerStatus,
   type TermResult,
 } from './jobs';
+import { sameStoreId } from '../onDevice/storeIdentity';
 import { costWords, estimate, problemWords, reasonWords, RETAILER_NAMES } from './words';
 
 // Pure TypeScript: Phone vs. cloud. The same terms at the same stores (Walmart's and Target's, as set in Your stores),
@@ -189,6 +190,8 @@ export interface SideFigures {
   /** The cloud browser started from the store's saved profile: kept from an earlier run, or made for this one. */
   profile?: RetailerRun['profile'];
   storeSet?: RetailerRun['storeSet'];
+  /** The store the site had picked for the cloud browser by itself, before the one asked for was set. */
+  sitePicked?: string;
 }
 
 const median = (xs: number[]): number | undefined => {
@@ -241,7 +244,18 @@ export function sideFigures(side: CompareSide, run: RetailerRun): SideFigures {
     checkSeen: !!run.checkSeen || run.results.some((r) => r.status === 'blocked'),
     ...(run.profile ? { profile: run.profile } : {}),
     ...(run.storeSet ? { storeSet: run.storeSet } : {}),
+    ...(run.sitePicked ? { sitePicked: run.sitePicked } : {}),
   };
+}
+
+/**
+ * How a side's store was set, when there's something to say: kept from its last run, or set over the one the site
+ * had picked by itself. "the site had picked store 2930; 1072 set in its store cookies".
+ */
+export function storeSetWords(f: Pick<SideFigures, 'storeSet' | 'sitePicked'>, storeId: string): string {
+  if (f.storeSet === 'kept') return 'store kept from its last run';
+  if (!f.sitePicked || (f.storeSet !== 'button' && f.storeSet !== 'cookie')) return '';
+  return `the site had picked store ${f.sitePicked}; ${storeId} set ${f.storeSet === 'cookie' ? 'in its store cookies' : 'with its button'}`;
 }
 
 /**
@@ -300,7 +314,7 @@ export interface TermMatch {
   term: string;
   phone?: TermResult;
   cloud?: TermResult;
-  /** Products both kept (up to 20 a side), by the retailer's item number; how many had the same price. */
+  /** Products both kept (up to 20 a side, the agent's 10), by the retailer's item number; how many had the same price. */
   both: number;
   same: number;
   /** Products both kept that a side priced for another store (CloudItem.pricedAt): left out of `both`. */
@@ -504,14 +518,16 @@ export function comparisonProblems(c: Comparison): Problem[] {
       }
       for (const t of run.results) {
         if (t.status !== 'done') out.push({ side, retailerId, term: t.term, kind: t.status, words: sideReasonWords(side, t.reason) || t.status, ...(t.detail ? { detail: t.detail } : {}) });
-        else if (t.storeMatches === false) {
-          out.push({ side, retailerId, term: t.term, kind: 'other_store', words: `its data priced store ${t.pageStoreId ?? '?'}, not ${run.storeId}: those prices aren’t the store’s` });
-        } else {
+        else {
+          // What the site's own page asked for, when that was another store: how it came to price one.
+          const asked = t.siteStoreId && !sameStoreId(t.siteStoreId, run.storeId) ? { detail: `The site’s own page asked for store ${t.siteStoreId} by itself; ${run.storeId} was asked for.` } : {};
           const elsewhere = t.items.filter((i) => i.pricedAt);
-          if (elsewhere.length) {
+          if (t.storeMatches === false) {
+            out.push({ side, retailerId, term: t.term, kind: 'other_store', words: `its data priced store ${t.pageStoreId ?? '?'}, not ${run.storeId}: those prices aren’t the store’s`, ...asked });
+          } else if (elsewhere.length) {
             const stores = [...new Set(elsewhere.map((i) => i.pricedAt!))].join(', ');
             const count = `${elsewhere.length} of its ${t.items.length} products ${elsewhere.length === 1 ? 'was' : 'were'}`;
-            out.push({ side, retailerId, term: t.term, kind: 'mixed_store', words: `${count} priced for store ${stores}, not ${run.storeId}: left out of the price comparison` });
+            out.push({ side, retailerId, term: t.term, kind: 'mixed_store', words: `${count} priced for store ${stores}, not ${run.storeId}: left out of the price comparison`, ...asked });
           }
         }
       }
@@ -551,7 +567,7 @@ export interface ProductRow {
   cells: Partial<Record<CompareSide, ProductCell>>;
 }
 
-/** One search at one store: each side's result, and every product any side kept (up to 20 a side), lined up. */
+/** One search at one store: each side's result, and every product any side kept (up to 20 a side, the agent's 10), lined up. */
 export interface TermProducts {
   term: string;
   results: Partial<Record<CompareSide, TermResult>>;
@@ -763,7 +779,7 @@ export function linkWords(f: Pick<SideFigures, 'linkBytes' | 'linkMs'>): string 
  * from this phone · 5.2 MB through the proxy, 12 KB of results to this phone · $0.04 · not counted: 3.1 MB and 27 s
  * driving it from this phone".
  */
-export function sideFigureWords(f: SideFigures): string {
+export function sideFigureWords(f: SideFigures, storeId = ''): string {
   const data =
     f.side === 'phone'
       ? f.phoneBytes !== undefined
@@ -777,7 +793,7 @@ export function sideFigureWords(f: SideFigures): string {
     timeWords(f),
     data,
     cost,
-    f.storeSet === 'kept' ? 'store kept from its last run' : '',
+    storeSetWords(f, storeId),
     link ? `not counted: ${link}` : '',
   ]
     .filter(Boolean)
@@ -854,7 +870,8 @@ export function comparisonText(c: Comparison, heading: string): string {
       const run = sideRun(c, side, r.retailerId);
       if (!run) continue;
       const f = sideFigures(side, run);
-      lines.push(`- ${SIDE_NAMES[side]}: ${sideStatusWords(f, r.storeId)}${sideFigureWords(f) ? ` · ${sideFigureWords(f)}` : ''}`);
+      const figures = sideFigureWords(f, r.storeId);
+      lines.push(`- ${SIDE_NAMES[side]}: ${sideStatusWords(f, r.storeId)}${figures ? ` · ${figures}` : ''}`);
     }
     for (const side of ['scripted', 'agent'] as const) {
       if (!c.sides[side]) continue;

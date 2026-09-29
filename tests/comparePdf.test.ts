@@ -191,7 +191,7 @@ const pdfInput = (list: Comparison[], extra: Partial<PdfInput> = {}): PdfInput =
     const phone = side('s1', one, 'phone', { target: { status: 'done', results: [done('milk', milk, { storeMatches: true, pageStoreId: '1072', ms: 5000, bytes: 900_000, at: 6000 })], started: 1000, ended: 6000 } });
     let cloud: CloudJob = { ...newJob(comparisonJobs(one).find((x) => x.side === 'scripted')!.request, 's1-scripted', 1000), compare: { id: 's1', side: 'scripted' } };
     cloud = applyToJob(cloud, 'target', { type: 'start', at: 1000 });
-    cloud = applyToJob(cloud, 'target', { type: 'storeSet', how: 'request', linkMs: 4000 });
+    cloud = applyToJob(cloud, 'target', { type: 'storeSet', how: 'cookie', linkMs: 4000, picked: '2930' });
     const read = [milk[0], { ...milk[1], price: 2.99, pricedAt: '1086' }];
     cloud = applyToJob(cloud, 'target', { type: 'term', result: done('milk', read, { storeMatches: true, pageStoreId: '1072', ms: 12_000, linkMs: 5000, at: 31_000 }) });
     cloud = applyToJob(cloud, 'target', { type: 'bytes', bytes: 2_000_000, wireBytes: 9_000_000, linkMs: 9000, rttMs: 150, commands: 30 });
@@ -205,7 +205,7 @@ const pdfInput = (list: Comparison[], extra: Partial<PdfInput> = {}): PdfInput =
       '7 s <span class="tag">Server estimate</span><br><span class="small">12 s measured from this phone</span>',
       '<td class="label">Left out: driving it from this phone</td><td class=""><span class="dash">–</span></td><td class="">9.0 MB, 9 s</td>',
       ' of results</td>',
-      '<td class="">In each request</td>',
+      '<td class="">Set in its store cookies (the site had picked 2930)</td>',
       '<td class="elsewhere">$2.99<br><span class="small">store 1086’s price</span></td>',
       'Some prices another store’s',
       '1 more on both was priced for another store, and not compared.',

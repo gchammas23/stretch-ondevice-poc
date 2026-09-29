@@ -1,4 +1,4 @@
-import type { Cookie, SeenRequest } from './cdp';
+import type { Cookie, CookieParam, SeenRequest } from './cdp';
 import type { RetailerRun, TermResult } from './jobs';
 import { pxForm, PX_SNAPSHOT, waitOutCheck, type PageSnapshot, type PxForm } from './perimeterx';
 
@@ -14,6 +14,8 @@ export interface FlowPage {
   evaluate<T>(expression: string, opts?: { world?: 'isolated' | 'main'; timeoutMs?: number }): Promise<T>;
   click(x: number, y: number): Promise<void>;
   cookies(urls: string[]): Promise<Cookie[]>;
+  /** Sets cookies in the browser's jar, as a site's own script would. */
+  setCookies(cookies: CookieParam[]): Promise<void>;
   watchRequests(accept: (url: string) => boolean): void;
   responseBody(requestId: string): Promise<string>;
 }
@@ -25,13 +27,14 @@ export interface FlowContext {
   /** The job was cancelled, or the app is giving up on this browser: the flow stops at its next step. */
   stopped(): boolean;
   onTerm(result: TermResult): void;
-  onStoreSet(how: NonNullable<RetailerRun['storeSet']>): void;
+  /** The store is set, and how; `picked`: the store the site had picked for this browser by itself, before. */
+  onStoreSet(how: NonNullable<RetailerRun['storeSet']>, picked?: string): void;
   onCheck(): void;
   /** Megabytes the page may move before the flow stops (see MAX_MB_PER_BROWSER). */
   maxMb: number;
 }
 
-export type FlowOutcome = { status: 'done' } | { status: 'blocked'; reason: string } | { status: 'failed'; reason: string };
+export type FlowOutcome = { status: 'done' } | { status: 'blocked'; reason: string; detail?: string } | { status: 'failed'; reason: string; detail?: string };
 
 /** Thrown between steps once the job no longer wants this flow. */
 export class FlowStopped extends Error {

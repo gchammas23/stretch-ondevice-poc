@@ -36,12 +36,21 @@ export const MAX_MB_PER_BROWSER = 40;
  * input token). One constant, to change in one place.
  */
 export const AGENT_MODEL = 'gpt-5.6-luna';
+/**
+ * How hard the agent's model thinks before each step: its `reasoning.effort`, sent as the run's modelParams. Browser
+ * Use runs gpt-5.6-luna at "xhigh" unless told otherwise (its API reference, checked 2026-09-29), slow for a task of
+ * opening pages and reading prices: a Target run took about 7 minutes. "medium" is a middle ground; "low" would be
+ * faster still, and less careful.
+ */
+export const AGENT_MODEL_PARAMS = { reasoning: { effort: 'medium' } } as const;
 /** Each agent run's own cost cap (the run's `maxCostUsd`): Browser Use stops the run past it. */
 export const MAX_RUN_COST_USD = 0.75;
 /** Agent runs are polled this often while the app is open. */
 export const POLL_MS = 10_000;
-/** An agent returns at most this many products per search term. */
+/** Products kept per search term: the cloud browser's and this phone's, for Phone vs. cloud. */
 export const ITEMS_PER_TERM = 20;
+/** Products an agent is asked for per search term: fewer than the others keep, since reading each one takes it time. */
+export const AGENT_ITEMS_PER_TERM = 10;
 
 /**
  * Traffic saved by not loading these, blocked by file type only (Network.setBlockedURLs). Never by host:
