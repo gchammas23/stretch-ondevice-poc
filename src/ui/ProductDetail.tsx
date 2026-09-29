@@ -4,6 +4,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, useW
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ListItem } from '../lists/types';
 import { queryKey } from '../lists/types';
+import type { Nutrition } from '../onDevice/nutrition';
 import type { ProductDetails } from '../onDevice/productPage';
 import { onRetailerSite } from '../onDevice/retailerSearch';
 import { storeLine } from '../onDevice/storeIdentity';
@@ -21,6 +22,7 @@ import { Chip, SaleChip, Sparkline } from './bits';
 import { Pill, ProductThumb, tap } from './controls';
 import { deviceWord } from './device';
 import { Icon } from './Icon';
+import { NutritionLabel } from './NutritionLabel';
 import { RetailerBadge } from './RetailerBadge';
 import { ScreenHeader } from './ScreenHeader';
 import { colors, fonts, money, radius, shadow } from './theme';
@@ -96,6 +98,25 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
   const exact = item?.item.exact;
   const isExact = !!exact && exact.retailerId === retailerId && exact.productId === product.id;
   const gtin = product.gtin ?? details?.gtin;
+
+  // Nutrition Facts: the store's page first; when it has none, Open Food Facts by the barcode, once the page is read.
+  const [byBarcode, setByBarcode] = useState<{ gtin: string; value: Nutrition | null } | null>(null);
+  const pageNutrition = details?.nutrition;
+  const pageRead = live.state !== 'reading';
+  useEffect(() => {
+    if (!pageRead || pageNutrition || !gtin) return;
+    let alive = true;
+    void search.lookupNutrition(gtin).then((value) => {
+      if (!alive) return;
+      setByBarcode({ gtin, value });
+      if (value) announce('Found its nutrition facts on Open Food Facts');
+    });
+    return () => {
+      alive = false;
+    };
+  }, [pageRead, pageNutrition, gtin, search]);
+  const offNutrition = byBarcode?.gtin === gtin ? byBarcode?.value : null;
+  const nutrition = pageNutrition ?? offNutrition ?? undefined;
 
   const sizes = compareSizes([{ retailerId, product }, ...elsewhere]);
   const mine: SizeNote | undefined = sizes[retailerId];
@@ -381,6 +402,19 @@ export function ProductDetail({ retailerId, product, result, elsewhere, openElse
           )}
           {gtin ? <Text style={styles.small}>Barcode {gtin}</Text> : null}
         </Section>
+
+        {nutrition ? (
+          <Section icon="heartPulse" title="Nutrition facts">
+            <NutritionLabel nutrition={nutrition} />
+            <Text style={styles.small}>
+              {pageNutrition
+                ? `From ${name}’s page for this product.`
+                : `${live.state === 'done' ? `${name}’s page didn’t list them` : `They couldn’t be read from ${name}’s page`}, so they’re from Open Food Facts, a public database, by the barcode. It’s filled in by volunteers, and may not match this exact package.`}
+              {nutrition.per100 ? ` It has no serving size for this product, so the amounts are per 100 ${nutrition.per100}.` : ''}
+              {nutrition.dvWorkedOut ? ` ${pageNutrition ? 'Some' : 'The'} % Daily Values were worked out on this phone from the FDA’s daily values.` : ''}
+            </Text>
+          </Section>
+        ) : null}
       </ScrollView>
     </View>
   );
