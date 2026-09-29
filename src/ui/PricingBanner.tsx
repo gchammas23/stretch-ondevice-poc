@@ -2,6 +2,7 @@ import { router, usePathname } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { comparisonNotice } from '../cloud/compare';
 import { cloudRunner } from '../cloud/runner';
 import { jobNotice } from '../cloud/words';
 import { dayOf } from '../onDevice/adPage';
@@ -121,6 +122,17 @@ export function PricingBanner() {
     [],
   );
 
+  // A Phone vs. cloud comparison finished: its notification says so too.
+  useEffect(
+    () =>
+      cloudRunner.onCompared((comparison) => {
+        if (where.current === `/phone-vs-cloud/${comparison.id}`) return;
+        const { title, body } = comparisonNotice(comparison);
+        setNote({ href: `/phone-vs-cloud/${comparison.id}`, title, body, icon: 'cloud' });
+      }),
+    [],
+  );
+
   useEffect(() => {
     if (!note) return;
     announce(`${note.title}. ${note.spoken ?? note.body}`);
@@ -149,7 +161,15 @@ export function PricingBanner() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${note.title}. ${note.spoken ?? note.body}`}
-          accessibilityHint={note.icon === 'sparkle' ? 'Opens Find a store for this list' : note.icon === 'cloud' ? 'Opens the cloud search' : 'Opens the watchlist'}
+          accessibilityHint={
+            note.icon === 'sparkle'
+              ? 'Opens Find a store for this list'
+              : note.icon === 'cloud'
+                ? note.href.startsWith('/phone-vs-cloud/')
+                  ? 'Opens the comparison'
+                  : 'Opens the cloud search'
+                : 'Opens the watchlist'
+          }
           onPress={() => {
             setNote(null);
             router.push(note.href);

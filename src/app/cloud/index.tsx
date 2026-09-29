@@ -1,16 +1,15 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AGENT_MODEL, browserUseKey, MAX_RUN_COST_USD, MAX_RUNNING_JOBS, MAX_TERMS, MIN_BALANCE_USD } from '../../cloud/config';
 import { CLOUD_RETAILERS, cleanTerms, jobCost, jobStatus, type CloudJob, type CloudRetailerId } from '../../cloud/jobs';
 import { cloudRetailers, cloudStoreId, planRetailers } from '../../cloud/plan';
-import { browserUseApi } from '../../cloud/runner';
 import { costWords, estimateWords, problemWords, RETAILER_NAMES, STATUS_WORDS } from '../../cloud/words';
 import { krogerApiConfigured } from '../../onDevice/krogerApi';
 import { whenLabel } from '../../pricing/receipt';
 import { useApp, useSettings } from '../../state/AppProvider';
-import { useCloudJobs, useCloudRunner, useSetCloudOn } from '../../state/CloudProvider';
+import { useCloudBalance, useCloudJobs, useCloudRunner, useSetCloudOn } from '../../state/CloudProvider';
 import { Chip } from '../../ui/bits';
 import { Pill, tap } from '../../ui/controls';
 import { Icon } from '../../ui/Icon';
@@ -21,30 +20,6 @@ import { useNow } from '../../ui/useNow';
 
 /** `terms`: search terms to start with, a line each (from a list's Find a store). */
 type Params = { terms?: string };
-
-/** The account's credit, read when the screen opens and on Refresh. */
-function useBalance() {
-  const [state, setState] = useState<{ usd?: number; sessions?: number; error?: string; loading: boolean }>(() => ({ loading: !!browserUseKey() }));
-  const read = useCallback(() => {
-    if (!browserUseKey()) return () => {};
-    let alive = true;
-    browserUseApi()
-      .account()
-      .then(
-        (account) => alive && setState({ usd: account.balanceUsd, sessions: account.activeSessions, loading: false }),
-        (e: unknown) => alive && setState({ error: e instanceof Error ? e.message : 'failed', loading: false }),
-      );
-    return () => {
-      alive = false;
-    };
-  }, []);
-  useEffect(read, [read]);
-  const refresh = useCallback(() => {
-    setState((s) => ({ ...s, loading: true }));
-    read();
-  }, [read]);
-  return { ...state, refresh };
-}
 
 /**
  * Cloud fetch: the switch, the engine, the account's credit, the stores searched, a new cloud search, and the searches
@@ -57,8 +32,10 @@ export default function CloudScreen() {
   const settings = useSettings();
   const cloud = settings.cloud;
   const runner = useCloudRunner();
-  const jobs = useCloudJobs();
-  const balance = useBalance();
+  // A comparison's sides are on Phone vs. cloud, not here.
+  const all = useCloudJobs();
+  const jobs = useMemo(() => all.filter((j) => !j.compare), [all]);
+  const balance = useCloudBalance();
   const now = useNow(30_000);
   const hasKey = !!browserUseKey();
   const krogerApi = krogerApiConfigured();
@@ -68,7 +45,8 @@ export default function CloudScreen() {
 
   const terms = cleanTerms(draft);
   const plan = planRetailers(picked, settings, krogerApi);
-  const running = jobs.filter((j) => jobStatus(j) === 'running').length;
+  // What the guardrail counts: every search using the cloud, a comparison's included.
+  const running = all.filter((j) => jobStatus(j) === 'running' && j.retailers.some((r) => r.via !== 'device')).length;
 
   const setCloudOn = useSetCloudOn();
   const setOn = (on: boolean) => {
@@ -211,7 +189,7 @@ export default function CloudScreen() {
             </Text>
           ) : null}
           <Pill
-            label={running >= MAX_RUNNING_JOBS ? `${running} searches running` : 'Search in the cloud'}
+            label={running >= MAX_RUNNING_JOBS ? (all.some((j) => j.compare && jobStatus(j) === 'running') ? 'A comparison is running' : `${running} searches running`) : 'Search in the cloud'}
             icon="cloud"
             variant="orange"
             busy={starting}
@@ -221,6 +199,20 @@ export default function CloudScreen() {
           />
           {!cloud.on ? <Text style={styles.meta}>Turn Cloud fetch on first.</Text> : null}
         </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityHint="Opens Phone vs. cloud"
+          onPress={() => router.push('/phone-vs-cloud')}
+          style={({ pressed }) => [styles.panel, styles.row, pressed && styles.pressed]}
+        >
+          <Icon name="phone" color={colors.orange} />
+          <View style={styles.flex}>
+            <Text style={styles.panelTitle}>Phone vs. cloud</Text>
+            <Text style={styles.meta}>The same searches at the same stores on this phone and in the cloud at once, side by side: prices, their store, time, data and cost. It works with Cloud fetch on or off.</Text>
+          </View>
+          <Icon name="forward" color={colors.faint} />
+        </Pressable>
 
         {jobs.length ? (
           <>

@@ -3,6 +3,7 @@ import { sameStoreId } from '../onDevice/storeIdentity';
 import { agentTask, followUpTask, readAgentAnswer, type AgentRetailer } from './agent';
 import { BrowserUseApi, BrowserUseError, TERMINAL_RUN, type RunStatus } from './browserUse';
 import { CdpClosed, CdpTimeout } from './cdp';
+import { checkComparison, comparisonJobs, comparisonOf, comparisonStatus, type CompareProblem, type CompareRequest, type Comparison } from './compare';
 import { AGENT_MODEL, BROWSER_LABEL, BROWSER_TIMEOUT_MIN, browserUseKey, MAX_MB_PER_BROWSER, MAX_RUN_COST_USD, POLL_MS } from './config';
 import { FlowStopped, type FlowContext, type FlowOutcome, type FlowPage } from './flow';
 import {
@@ -21,6 +22,7 @@ import {
   type RequestProblem,
   type RetailerRun,
   type RunEvent,
+  type TermResult,
 } from './jobs';
 import { targetFlow } from './target';
 import { walmartFlow } from './walmart';
@@ -30,7 +32,8 @@ import { walmartFlow } from './walmart';
 //   target.ts, and stopped in a finally block, which also reads what it cost;
 // - 'agent': a Browser Use agent run is started and polled every 10 s while the app is open, and on every launch or
 //   return to the app; an answer that isn't the JSON asked for gets one follow-up in its session;
-// - 'device': this phone's own search, as the app always does it (Kroger's official API).
+// - 'device': this phone's own search, as the app always does it (Kroger's official API; and in a Phone vs. cloud
+//   comparison, the phone's side: see compare.ts).
 // Every change is saved on the phone. When the app opens, browsers not known to be stopped are stopped again, and
 // whatever was running then is taken up: agent runs are polled and finished, anything else was cut off with the app
 // and is marked interrupted, to try again. No OS background task is used: work goes on only while the OS keeps the
@@ -40,19 +43,43 @@ import { walmartFlow } from './walmart';
 export interface LivePage extends FlowPage {
   alive(timeoutMs?: number): Promise<boolean>;
   close(): void;
+  /** About the data this phone moved driving the browser (see PageSession.wireBytes). */
+  readonly wireBytes?: number;
 }
 
-/** A term searched on this phone: its products, and the store its search said it priced. */
+/** A term searched on this phone: its products, the store its search said it priced, and what the search took. */
 export interface DeviceResult {
   items: CloudItem[];
   found: number;
   storeId?: string;
+  ms?: number;
+  bytes?: number;
+  how?: TermResult['how'];
+}
+
+/**
+ * A search on this phone that didn't work: why (the phone's own reason code: 'challenge', 'http_403', 'cooling_down'…),
+ * what the page showed, whether a store's defenses stopped it (a bot check, or a refusal), and what it took.
+ */
+export class DeviceSearchError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly detail?: string,
+    readonly info: { blocked?: boolean; ms?: number; bytes?: number } = {},
+  ) {
+    super(detail ?? reason);
+    this.name = 'DeviceSearchError';
+  }
 }
 
 export interface RunnerDeps {
   api: BrowserUseApi;
   connect(cdpUrl: string): Promise<LivePage>;
-  deviceSearch(retailerId: CloudRetailerId, term: string, storeId: string): Promise<DeviceResult>;
+  /**
+   * One search on this phone, through the app's own search. `test`: for a Phone vs. cloud comparison, so a bot check
+   * is noted, not shown, and the search counts as a test's (as the phone vs. server test's do).
+   */
+  deviceSearch(retailerId: CloudRetailerId, term: string, storeId: string, opts?: { test?: boolean }): Promise<DeviceResult>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   newId?: () => string;
@@ -62,6 +89,7 @@ export interface RunnerDeps {
 }
 
 export type StartResult = { ok: true; job: CloudJob } | ({ ok: false } & RequestProblem);
+export type CompareStartResult = { ok: true; comparison: Comparison } | ({ ok: false } & CompareProblem);
 
 const KEY = 'stretch.cloud.v1';
 export const CLOUD_STORAGE_KEY = KEY;
@@ -101,6 +129,7 @@ export class CloudRunner {
   private orphans: string[] = [];
   private listeners = new Set<() => void>();
   private finishedListeners = new Set<(job: CloudJob) => void>();
+  private comparedListeners = new Set<(comparison: Comparison) => void>();
   private live = new Map<string, Live>();
   private active = true;
   private backgroundedAt = -1;
@@ -148,6 +177,14 @@ export class CloudRunner {
     this.finishedListeners.add(listener);
     return () => {
       this.finishedListeners.delete(listener);
+    };
+  }
+
+  /** Called once for each Phone vs. cloud comparison that finishes (every side over), unless it was cancelled. */
+  onCompared(listener: (comparison: Comparison) => void): () => void {
+    this.comparedListeners.add(listener);
+    return () => {
+      this.comparedListeners.delete(listener);
     };
   }
 
@@ -238,6 +275,49 @@ export class CloudRunner {
       for (const r of again) void this.runRetailer(jobId, r.retailerId);
       return { ok: true, job: this.getJob(jobId)! };
     });
+  }
+
+  /**
+   * Starts a Phone vs. cloud comparison (see compare.ts): the same terms at the same stores, on this phone and in the
+   * cloud at once, a job for each side. Its cloud sides pass a job's guardrails together (the credit read first), and
+   * one comparison runs at a time.
+   */
+  startComparison(req: CompareRequest): Promise<CompareStartResult> {
+    return this.serial(async () => {
+      const d = this.d;
+      let balanceUsd: number | undefined;
+      let balanceError: string | undefined;
+      if (d.api.configured) {
+        try {
+          balanceUsd = (await d.api.account()).balanceUsd;
+        } catch (e) {
+          balanceError = e instanceof BrowserUseError ? (e.status ? `HTTP ${e.status}` : e.detail) : message(e);
+        }
+      }
+      const check = checkComparison(req, { jobs: this.jobs, hasKey: d.api.configured, balanceUsd, balanceError });
+      if (!check.ok) return check;
+      const id = d.newId();
+      const at = d.now();
+      // Its sides run together, so the credit's move isn't any one side's cost: each side's own costs are kept instead.
+      const jobs: CloudJob[] = comparisonJobs(req).map(({ side, request }) => ({ ...newJob(request, d.newId(), at), compare: { id, side }, ranAlone: false }));
+      this.jobs = trim([...jobs, ...this.jobs], this.orphans);
+      this.changed();
+      await this.saveNow();
+      for (const job of jobs) for (const r of job.retailers) void this.runRetailer(job.id, r.retailerId);
+      return { ok: true, comparison: comparisonOf(this.jobs, id)! };
+    });
+  }
+
+  /** Stops a comparison: every side still running is cancelled (see cancel). */
+  async cancelComparison(id: string): Promise<void> {
+    for (const job of this.jobs.filter((j) => j.compare?.id === id)) await this.cancel(job.id);
+  }
+
+  /** Removes a finished comparison from the phone, every side of it (see remove). */
+  removeComparison(id: string): void {
+    const sides = this.jobs.filter((j) => j.compare?.id === id);
+    if (sides.some((j) => jobStatus(j) === 'running')) return;
+    for (const job of sides) this.remove(job.id);
   }
 
   /** Stops a job: its browsers are stopped, its agent runs cancelled, and what came back so far stays. */
@@ -383,6 +463,13 @@ export class CloudRunner {
     this.update(jobId, (j) => ({ ...j, notifiedAt: this.d.now() }));
     const job = this.job(jobId);
     if (!job) return;
+    if (job.compare) {
+      // A comparison is news once, as its last side ends; one the user cancelled isn't news at all.
+      const comparison = comparisonOf(this.jobs, job.compare.id);
+      const status = comparison && comparisonStatus(comparison);
+      if (comparison && status !== 'running' && status !== 'cancelled') this.comparedListeners.forEach((listener) => listener(comparison));
+      return;
+    }
     // A job the user cancelled isn't news to them.
     if (jobStatus(job) !== 'cancelled') this.finishedListeners.forEach((listener) => listener(job));
     if (needsCloud(job)) void this.balanceAfter(jobId);
@@ -432,12 +519,24 @@ export class CloudRunner {
 
   private flowContext(jobId: string, retailerId: CloudRetailerId, live: Live): FlowContext {
     const d = this.d;
+    // Each search's time and data: since the search before it ended, or since the store was set.
+    let mark = { at: d.now(), bytes: live.page?.bytes ?? 0 };
+    const since = (): { ms: number; bytes: number } => {
+      const at = d.now();
+      const bytes = live.page?.bytes ?? 0;
+      const took = { ms: at - mark.at, bytes: Math.max(0, bytes - mark.bytes) };
+      mark = { at, bytes };
+      return took;
+    };
     return {
       sleep: d.sleep,
       now: d.now,
       stopped: () => live.stopped,
-      onTerm: (result) => this.apply(jobId, retailerId, { type: 'term', result }),
-      onStoreSet: (how) => this.apply(jobId, retailerId, { type: 'storeSet', how }),
+      onTerm: (result) => this.apply(jobId, retailerId, { type: 'term', result: { ...since(), ...result } }),
+      onStoreSet: (how) => {
+        since();
+        this.apply(jobId, retailerId, { type: 'storeSet', how });
+      },
       onCheck: () => this.apply(jobId, retailerId, { type: 'checkSeen' }),
       maxMb: MAX_MB_PER_BROWSER,
     };
@@ -491,11 +590,11 @@ export class CloudRunner {
       const terms = this.job(jobId)?.terms ?? [];
       const flow = retailerId === 'walmart' ? walmartFlow : targetFlow;
       const outcome = await flow(live.page, storeId, terms, this.flowContext(jobId, retailerId, live));
-      this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes });
+      this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes, wireBytes: live.page.wireBytes });
       this.endFlow(jobId, retailerId, outcome);
     } catch (e) {
       const at = d.now();
-      if (live.page) this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes });
+      if (live.page) this.apply(jobId, retailerId, { type: 'bytes', bytes: live.page.bytes, wireBytes: live.page.wireBytes });
       if (live.why === 'too_slow') this.apply(jobId, retailerId, { type: 'finish', status: 'failed', reason: 'too_slow', at });
       else if (live.stopped) {
         // Cancelled or interrupted: whoever stopped it said so.
@@ -675,24 +774,38 @@ export class CloudRunner {
     return new Promise((resolve) => this.activeWaiters.push(resolve));
   }
 
-  /** On this phone: each term through the app's own search (Kroger's official API, or Target's page). */
+  /**
+   * On this phone: each term through the app's own search (Kroger's official API, Target's page, or a comparison's
+   * phone side: see compare.ts). A store that only blocked is blocked.
+   */
   private async runDevice(jobId: string, retailerId: CloudRetailerId, storeId: string): Promise<void> {
     const d = this.d;
     const key = liveKey(jobId, retailerId);
     const live: Live = { stopped: false, startedAt: d.now() };
     this.live.set(key, live);
+    const test = !!this.job(jobId)?.compare;
     try {
       for (const term of this.job(jobId)?.terms ?? []) {
         await this.whenActive(live);
         if (live.stopped || this.retailer(jobId, retailerId)?.status !== 'running') return;
         const began = d.now();
         try {
-          const got = await d.deviceSearch(retailerId, term, storeId);
+          const got = await d.deviceSearch(retailerId, term, storeId, test ? { test } : undefined);
           // A ZIP code asks the API for its nearest store: whichever store it answers for is the one asked for.
           const matches = got.storeId ? /^\d{5}$/.test(storeId) || sameStoreId(got.storeId, storeId) : undefined;
           this.apply(jobId, retailerId, {
             type: 'term',
-            result: { term, status: 'done', items: got.items, found: got.found, ...(got.storeId ? { pageStoreId: got.storeId, storeMatches: matches } : {}), at: d.now() },
+            result: {
+              term,
+              status: 'done',
+              items: got.items,
+              found: got.found,
+              ...(got.storeId ? { pageStoreId: got.storeId, storeMatches: matches } : {}),
+              ms: got.ms ?? d.now() - began,
+              ...(got.bytes !== undefined ? { bytes: got.bytes } : {}),
+              ...(got.how ? { how: got.how } : {}),
+              at: d.now(),
+            },
           });
         } catch (e) {
           if (live.stopped) return;
@@ -701,10 +814,26 @@ export class CloudRunner {
             this.apply(jobId, retailerId, { type: 'interrupt', reason: 'app_slept', detail: message(e), at: d.now() });
             return;
           }
-          this.apply(jobId, retailerId, { type: 'term', result: { term, status: 'failed', items: [], reason: 'device_failed', detail: message(e), at: d.now() } });
+          const why = e instanceof DeviceSearchError ? e : undefined;
+          this.apply(jobId, retailerId, {
+            type: 'term',
+            result: {
+              term,
+              status: why?.info.blocked ? 'blocked' : 'failed',
+              items: [],
+              reason: why ? (why.info.blocked ? phoneBlockReason(why.reason) : why.reason) : 'device_failed',
+              detail: message(e),
+              ms: why?.info.ms ?? d.now() - began,
+              ...(why?.info.bytes !== undefined ? { bytes: why.info.bytes } : {}),
+              at: d.now(),
+            },
+          });
         }
       }
-      if (this.retailer(jobId, retailerId)?.status === 'running') this.endFlow(jobId, retailerId, { status: 'done' });
+      const results = this.retailer(jobId, retailerId)?.results ?? [];
+      const blocked = results.find((r) => r.status === 'blocked');
+      if (blocked && !results.some((r) => r.status === 'done')) this.apply(jobId, retailerId, { type: 'finish', status: 'blocked', reason: blocked.reason, at: d.now() });
+      else if (this.retailer(jobId, retailerId)?.status === 'running') this.endFlow(jobId, retailerId, { status: 'done' });
     } finally {
       this.live.delete(key);
     }
@@ -729,15 +858,27 @@ export class CloudRunner {
   }
 }
 
-/** Jobs kept: the newest JOBS_KEPT, never a running one. Browsers of the ones dropped go to `orphans` to be stopped. */
+/**
+ * Jobs kept: the newest JOBS_KEPT, never a running one, and a comparison whole (all its sides, or none). Browsers of
+ * the ones dropped go to `orphans` to be stopped.
+ */
 function trim(jobs: CloudJob[], orphans: string[]): CloudJob[] {
   if (jobs.length <= JOBS_KEPT) return jobs;
   const keep: CloudJob[] = [];
+  const kept = new Set<string>();
   for (const job of jobs) {
-    if (keep.length < JOBS_KEPT || jobStatus(job) === 'running') keep.push(job);
-    else for (const b of unstoppedBrowsers([job])) if (!orphans.includes(b.browserId)) orphans.push(b.browserId);
+    if (keep.length < JOBS_KEPT || jobStatus(job) === 'running' || (job.compare && kept.has(job.compare.id))) {
+      keep.push(job);
+      if (job.compare) kept.add(job.compare.id);
+    } else for (const b of unstoppedBrowsers([job])) if (!orphans.includes(b.browserId)) orphans.push(b.browserId);
   }
   return keep;
+}
+
+/** A phone search a store's defenses stopped, as a reason code: its HTTP status, a refusal, or a bot check. */
+function phoneBlockReason(reason: string): string {
+  if (/^http_\d{3}$/.test(reason)) return reason;
+  return reason === 'blocked' ? 'refused' : 'phone_check';
 }
 
 function readOrphans(raw: string | null): string[] {

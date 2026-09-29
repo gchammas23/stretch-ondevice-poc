@@ -2,6 +2,8 @@ import { router } from 'expo-router';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Share, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { comparisonNotice, comparisonStatus } from '../cloud/compare';
+import { browserUseKey } from '../cloud/config';
 import { bytesSavedToday, bytesToday, storeHealth, type StoreHealth } from '../onDevice/attemptLog';
 import { COVERAGE_WORDS, coverageCounts, coverageDetail, coverageText, type CoverageRow } from '../onDevice/coverage';
 import { summaryLine, versusSummary } from '../onDevice/phoneVsServer';
@@ -15,6 +17,7 @@ import { sessionText } from '../pricing/batteryCost';
 import { whenLabel } from '../pricing/receipt';
 import { useApp, useAttemptLog, useProfiles, useSettings, useStoreName } from '../state/AppProvider';
 import { useBattery } from '../state/battery';
+import { useComparisons } from '../state/CloudProvider';
 import { announce } from '../ui/a11y';
 import { Chip } from '../ui/bits';
 import { Pill, tap } from '../ui/controls';
@@ -135,6 +138,8 @@ export default function HealthScreen() {
         <CoolDownCard />
 
         <VersusCard />
+
+        <CloudVersusCard />
 
         <View style={styles.card}>
           <Text style={styles.title} accessibilityRole="header">
@@ -324,6 +329,43 @@ function VersusCard() {
           small
           variant="outline"
           onPress={() => router.push('/phone-vs-server')}
+        />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Phone vs. cloud: the last comparison, and the way to the screen. Only in a build with a Browser Use key (or with
+ * comparisons from one): without it there's nothing to compare against.
+ */
+function CloudVersusCard() {
+  const all = useComparisons();
+  const now = useNow(60_000);
+  if (!browserUseKey() && !all.length) return null;
+  const last = all[0];
+  const running = last && comparisonStatus(last) === 'running';
+  const said = last && !running ? comparisonNotice(last) : undefined;
+  return (
+    <View style={styles.card}>
+      <Text style={styles.title} accessibilityRole="header">
+        Phone vs. cloud
+      </Text>
+      <Text style={styles.small}>
+        {running
+          ? `Comparing “${last.terms.join('”, “')}” now.`
+          : said
+            ? `${said.body}. Compared ${whenLabel(last.createdAt, now)}.`
+            : `The same searches at your Walmart and Target stores, on this ${deviceWord} and in Browser Use’s cloud at once, side by side: prices, their store, time, data and cost.`}
+      </Text>
+      <View style={styles.row}>
+        <Pill
+          label={running ? 'Comparing now' : 'Open the comparison'}
+          accessibilityLabel={`${running ? 'Comparing now' : 'Open the comparison'}: phone vs. cloud`}
+          icon="cloud"
+          small
+          variant="outline"
+          onPress={() => router.push('/phone-vs-cloud')}
         />
       </View>
     </View>

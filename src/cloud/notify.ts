@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import { comparisonNotice, type Comparison } from './compare';
 import type { CloudJob } from './jobs';
 import { jobNotice } from './words';
 
@@ -47,8 +48,22 @@ export async function notifyJobDone(job: CloudJob): Promise<void> {
   }
 }
 
+/** A Phone vs. cloud comparison is over: a local notification now, which opens the comparison when tapped. */
+export async function notifyComparisonDone(comparison: Comparison): Promise<void> {
+  try {
+    const N = await notifications();
+    const { title, body } = comparisonNotice(comparison);
+    await N.scheduleNotificationAsync({
+      content: { title, body, data: { url: `/phone-vs-cloud/${comparison.id}` } },
+      trigger: Platform.OS === 'android' ? { channelId: CHANNEL } : null,
+    });
+  } catch {
+    // No permission, or no notifications here: the app's own banner still says it.
+  }
+}
+
 /**
- * Opens a job's screen when its notification is tapped: now, and once for the tap that opened the app. Returns a
+ * Opens a job's (or a comparison's) screen when its notification is tapped: now, and once for the tap that opened the app. Returns a
  * function that stops listening.
  */
 export function openJobsFromNotifications(open: (url: string) => void): () => void {
@@ -56,7 +71,7 @@ export function openJobsFromNotifications(open: (url: string) => void): () => vo
   let remove: (() => void) | null = null;
   const route = (data: unknown) => {
     const url = typeof data === 'object' && data !== null ? (data as { url?: unknown }).url : undefined;
-    if (typeof url === 'string' && url.startsWith('/cloud/')) open(url);
+    if (typeof url === 'string' && (url.startsWith('/cloud/') || url.startsWith('/phone-vs-cloud/'))) open(url);
   };
   void notifications()
     .then((N) => {

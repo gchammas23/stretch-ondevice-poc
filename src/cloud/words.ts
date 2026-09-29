@@ -42,6 +42,12 @@ const REASONS: Record<string, string> = {
   cancelled: 'you cancelled it',
   no_results: 'no search found anything',
   error: 'something went wrong',
+  // This phone's own searches (a comparison's phone side, or Kroger's API).
+  device_failed: 'the search on this phone failed',
+  phone_check: 'a bot check on this phone (noted, not shown: nobody pressed it)',
+  refused: 'the store refused the page',
+  polite_limit: 'this phone’s searches an hour at the store were used up',
+  cooling_down: 'the store is cooling down after a block on this phone',
 };
 
 /** Why a retailer is blocked, failed or interrupted, in words. */

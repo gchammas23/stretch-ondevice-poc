@@ -40,7 +40,7 @@ export function CloudSearchCard({ terms, from, of }: { terms: string[]; from: Cl
   const plan = planRetailers(picked, settings, krogerApiConfigured());
   if (!plan.retailers.some((r) => r.via !== 'device')) return null;
   const key = clean.map((t) => t.toLowerCase()).join('\n');
-  const latest = jobs.find((j) => j.engine === cloud.engine && now - j.createdAt < RECENT_MS && j.terms.map((t) => t.toLowerCase()).join('\n') === key);
+  const latest = jobs.find((j) => !j.compare && j.engine === cloud.engine && now - j.createdAt < RECENT_MS && j.terms.map((t) => t.toLowerCase()).join('\n') === key);
   const running = latest && jobStatus(latest) === 'running';
   const names = cloudRetailers(cloud).filter((id) => picked.includes(id)).map((id) => RETAILER_NAMES[id]).join(' and ');
 
