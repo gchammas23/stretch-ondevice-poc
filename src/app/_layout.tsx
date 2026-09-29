@@ -13,6 +13,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { WebViewFetcherProvider } from '../onDevice/WebViewFetcher';
 import { AppProvider, useAppState } from '../state/AppProvider';
+import { CloudProvider } from '../state/CloudProvider';
 import { PricingBanner } from '../ui/PricingBanner';
 import { colors } from '../ui/theme';
 
@@ -40,7 +41,8 @@ export default function RootLayout() {
       {/* The WebView lanes sit above the navigation stack, so a bot check or store visit can cover any screen. */}
       <WebViewFetcherProvider>
         <AppProvider onReady={onReady}>
-          {fontsReady ? <AppStack /> : null}
+          {/* Cloud jobs run whatever screen is open (see src/cloud). */}
+          <CloudProvider>{fontsReady ? <AppStack /> : null}</CloudProvider>
         </AppProvider>
       </WebViewFetcherProvider>
       <StatusBar style="dark" />

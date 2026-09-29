@@ -32,6 +32,7 @@ import { scorecard, scorecardText, SPEED_ITEMS, SPEED_TEST, speedProfile, speedP
 import { bytesText } from '../onDevice/scrapeFeed';
 import { useApp, usePricingRun, useSettings, useStoreChoices } from '../state/AppProvider';
 import { batteryMeter, useBattery } from '../state/battery';
+import { useSetCloudOn } from '../state/CloudProvider';
 import { Pill } from '../ui/controls';
 import { deviceWord } from '../ui/device';
 import { ScreenHeader } from '../ui/ScreenHeader';
@@ -114,6 +115,7 @@ export default function DiagnosticsScreen() {
             <Pill label="Store health: which stores work, and how often" icon="heartPulse" small variant="outline" onPress={() => router.push('/health')} style={styles.alignStart} />
             <Pill label="What servers would cost instead" icon="phone" small variant="outline" onPress={() => router.push('/cost')} style={styles.alignStart} />
             <Pill label="Results report: one page to share, as a PDF" icon="share" small variant="outline" onPress={() => router.push('/report')} style={styles.alignStart} />
+            <CloudFetchSwitch />
             <StartOver />
             <SpeedTest />
             <BatteryTest />
@@ -558,6 +560,35 @@ function StatusBarEnd({ test, step }: { test: Measurement; step: number }) {
       {typed && !typed.ok ? <Text style={styles.warn}>{typedProblemText(typed.why, phone, step, deviceWord)}</Text> : null}
       {typedEnd === undefined ? <Text style={styles.meta}>Type it as soon as the test ends: the battery keeps going down.</Text> : null}
     </>
+  );
+}
+
+/** Cloud fetch: Walmart and Target through Browser Use's cloud browsers instead of this phone. Off by default. */
+function CloudFetchSwitch() {
+  const on = useSettings().cloud.on;
+  const setCloudOn = useSetCloudOn();
+  return (
+    <View style={styles.panel}>
+      <View style={styles.panelRow}>
+        <View style={styles.flex}>
+          <Text style={styles.panelTitle} accessibilityRole="header">
+            Cloud fetch
+          </Text>
+          <Text style={styles.meta}>
+            Walmart and Target through Browser Use’s cloud browsers instead of this {deviceWord}, as searches that run in the background, with a
+            notification when they’re done. Kroger stays on its official API. Off: nothing changes.
+          </Text>
+        </View>
+        <Switch
+          value={on}
+          onValueChange={(v) => void setCloudOn(v)}
+          trackColor={{ true: colors.orange, false: colors.faint }}
+          thumbColor="#FFFFFF"
+          accessibilityLabel="Cloud fetch"
+        />
+      </View>
+      <Pill label="Engine, credit, stores and cloud searches" icon="cloud" small variant="outline" onPress={() => router.push('/cloud')} style={styles.alignStart} />
+    </View>
   );
 }
 

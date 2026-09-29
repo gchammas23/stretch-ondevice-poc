@@ -1,0 +1,27 @@
+{
+  "_note": "A product page's __NEXT_DATA__, cut down to the paths walmart_store_test.py reads (props.pageProps.initialData.data.product.priceInfo.currentPrice, and \"storeId\" values anywhere in the page). Built by hand around the real search page's figures for this item at store 3081 (walmart-search-milk.json): this server's request for the real page got the \"Robot or human?\" page (walmart-blocked.html).",
+  "props": {
+    "pageProps": {
+      "initialData": {
+        "data": {
+          "product": {
+            "usItemId": "10450114",
+            "name": "Great Value Whole Vitamin D Milk, Gallon, 128 fl oz",
+            "priceInfo": {
+              "currentPrice": { "price": 3.32, "priceString": "$3.32" },
+              "unitPrice": { "price": 0.026, "priceString": "2.6 ¢/fl oz" }
+            },
+            "fulfillmentOptions": [
+              { "type": "PICKUP", "storeId": "3081", "availabilityStatus": "IN_STOCK" },
+              { "type": "DELIVERY", "storeId": "3081", "availabilityStatus": "IN_STOCK" }
+            ]
+          }
+        },
+        "pageMetadata": {
+          "location": { "postalCode": "95829", "stateOrProvinceCode": "CA", "city": "Sacramento", "storeId": "3081" }
+        }
+      }
+    }
+  },
+  "page": "/ip/[...seoItemId]"
+}

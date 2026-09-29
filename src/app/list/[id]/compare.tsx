@@ -37,6 +37,7 @@ import { DriveRow, feesVerdictText, PickCard, Segmented, SplitCard, StoreRow, ve
 import { colors, fonts, money, radius, shadow } from '../../../ui/theme';
 import { useToday } from '../../../ui/useNow';
 import { useScreenTimes } from '../../../ui/useScreenTimes';
+import { CloudSearchCard } from '../../../ui/CloudSearchCard';
 
 export default function CompareScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -159,6 +160,8 @@ function Compare({ list }: { list: GroceryList }) {
             <Pill label="Choose stores" small variant="dark" onPress={() => router.push('/stores')} style={styles.alignStart} />
           </View>
         ) : null}
+        {/* Cloud fetch on: Walmart and Target are searched in the cloud, from here. Off: nothing. */}
+        <CloudSearchCard terms={listQueries(list)} from={{ kind: 'list', listId: list.id }} of="this list" />
         {run ? (
           <LiveBanner
             run={run}

@@ -1,3 +1,4 @@
+import type { CloudRetailerId, Engine } from '../cloud/jobs';
 import type { ParsedItem } from '../lists/parse';
 import { queryKey, type ExactRef, type GroceryList, type ItemPrefs, type ListItem, type Trip, type TripRecord } from '../lists/types';
 import { isObj } from '../onDevice/json';
@@ -117,6 +118,41 @@ export interface Settings {
   countCoupons: boolean;
   /** Shopping in store, the Shop here checklist is in the order of a walk through the store, by aisle (see aisles.ts). */
   sortByAisle: boolean;
+  /** Cloud fetch (src/cloud): off to start, and then nothing about the app changes. */
+  cloud: CloudSettings;
+}
+
+/**
+ * Cloud fetch: Walmart and Target read through Browser Use's cloud browsers instead of on this phone, as background
+ * jobs. Kroger stays on its official API either way.
+ */
+export interface CloudSettings {
+  on: boolean;
+  /** 'scripted': the app drives a cloud browser itself. 'agent': a Browser Use agent does it from a task in words. */
+  engine: Engine;
+  /** Target in scripted mode: a cloud browser, or this phone as before (if its cloud spike fails; see the README). */
+  targetScripted: 'cloud' | 'device';
+  /** Store numbers for cloud searches, used where Your stores has none: Walmart's, Target's, Kroger's locationId. */
+  storeIds: Partial<Record<CloudRetailerId, string>>;
+  /** Notifications were asked for, once, when the switch was first turned on. */
+  askedNotifications: boolean;
+}
+
+export const CLOUD_OFF: CloudSettings = { on: false, engine: 'scripted', targetScripted: 'cloud', storeIds: {}, askedNotifications: false };
+
+/** Saved cloud settings, keeping only valid values. */
+function readCloud(v: unknown): CloudSettings {
+  if (!isObj(v)) return CLOUD_OFF;
+  const ids = isObj(v.storeIds) ? v.storeIds : {};
+  const storeIds: CloudSettings['storeIds'] = {};
+  for (const id of ['walmart', 'target', 'kroger'] as const) if (typeof ids[id] === 'string' && ids[id]) storeIds[id] = ids[id] as string;
+  return {
+    on: v.on === true,
+    engine: v.engine === 'agent' ? 'agent' : 'scripted',
+    targetScripted: v.targetScripted === 'device' ? 'device' : 'cloud',
+    storeIds,
+    askedNotifications: v.askedNotifications === true,
+  };
 }
 
 /** A product whose price the user wants to hear about when it drops. */
@@ -244,6 +280,7 @@ export class AppStore {
       onlinePlans: {},
       countCoupons: false,
       sortByAisle: true,
+      cloud: CLOUD_OFF,
     },
     usuals: {},
     trips: [],
@@ -322,6 +359,7 @@ export class AppStore {
         onlinePlans: flags(settings.onlinePlans, (v): v is boolean => v === true),
         countCoupons: settings.countCoupons === true,
         sortByAisle: settings.sortByAisle !== false,
+        cloud: readCloud(settings.cloud),
       },
       usuals,
       trips,
@@ -609,6 +647,20 @@ export class AppStore {
   /** Whether clipped coupons come off stores' totals. */
   setCountCoupons(on: boolean): void {
     this.setSettings({ countCoupons: on });
+  }
+
+  /** Cloud fetch's settings: the switch, the engine, where Target goes in scripted mode. */
+  setCloud(patch: Partial<Omit<CloudSettings, 'storeIds'>>): void {
+    this.setSettings({ cloud: { ...this.state.settings.cloud, ...patch } });
+  }
+
+  /** A store number typed for cloud searches, where Your stores has none; empty removes it. */
+  setCloudStoreId(retailerId: CloudRetailerId, storeId: string): void {
+    const storeIds = { ...this.state.settings.cloud.storeIds };
+    const clean = storeId.trim();
+    if (clean) storeIds[retailerId] = clean;
+    else delete storeIds[retailerId];
+    this.setSettings({ cloud: { ...this.state.settings.cloud, storeIds } });
   }
 
   /** The user signed in to the retailer's site in the app: its searches now carry their account. */

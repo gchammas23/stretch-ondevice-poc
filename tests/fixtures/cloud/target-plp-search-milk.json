@@ -1,0 +1,142 @@
+{
+  "_note": "Built by hand in the shape of redsky's plp_search_v2 answer (data.search.products[] with tcin, item.product_description.title, item.enrichment, price.current_retail / reg_retail / location_id), as public scrapers of target.com document it. NOT a capture: redsky answered the cloud machine this was built on with PerimeterX's HTTP 435 (target-redsky-px-435.json). Replace it with a real answer from scripts/cloud-live.ts once the spike runs.",
+  "data": {
+    "search": {
+      "search_response": {
+        "typed_metadata": { "count": 24, "current_page": 1, "keyword": "milk", "offset": 0, "total_pages": 13, "total_results": 302 }
+      },
+      "products": [
+        {
+          "__typename": "ProductSummary",
+          "tcin": "13276134",
+          "original_tcin": "13276134",
+          "is_sponsored_sku": false,
+          "item": {
+            "dpci": "288-01-0003",
+            "primary_barcode": "085239049262",
+            "product_description": { "title": "Whole Milk - 1gal - Good &#38; Gather&#8482;" },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/whole-milk-1gal-good-38-gather-8482/-/A-13276134",
+              "images": { "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_ab3fc39c-3cfd-4a5c-bb05-7a1a4a78ea35" }
+            },
+            "primary_brand": { "name": "Good & Gather" }
+          },
+          "price": {
+            "current_retail": 3.69,
+            "reg_retail": 3.69,
+            "formatted_current_price": "$3.69",
+            "formatted_current_price_type": "reg",
+            "formatted_unit_price": "$0.03",
+            "formatted_unit_price_suffix": "/fluid ounce",
+            "location_id": 2766
+          },
+          "fulfillment": {
+            "store_options": [{ "location_id": "2766", "location_name": "San Francisco Central", "order_pickup": { "availability_status": "IN_STOCK" } }]
+          }
+        },
+        {
+          "__typename": "ProductSummary",
+          "tcin": "13276131",
+          "is_sponsored_sku": false,
+          "item": {
+            "product_description": { "title": "2% Reduced Fat Milk - 1gal - Good &#38; Gather&#8482;" },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/2-reduced-fat-milk-1gal-good-38-gather-8482/-/A-13276131",
+              "images": { "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_2f8c0c55-b4a2-4a0a-9e8f-1a9e0e0b6a11" }
+            }
+          },
+          "price": {
+            "current_retail": 3.69,
+            "reg_retail": 3.69,
+            "formatted_current_price": "$3.69",
+            "formatted_current_price_type": "reg",
+            "formatted_unit_price": "$0.03",
+            "formatted_unit_price_suffix": "/fluid ounce",
+            "location_id": 2766
+          },
+          "fulfillment": {
+            "store_options": [{ "location_id": "2766", "location_name": "San Francisco Central", "order_pickup": { "availability_status": "IN_STOCK" } }]
+          }
+        },
+        {
+          "__typename": "ProductSummary",
+          "tcin": "54469418",
+          "is_sponsored_sku": true,
+          "item": {
+            "product_description": { "title": "Horizon Organic Whole Milk - 0.5gal" },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/horizon-organic-whole-milk-0-5gal/-/A-54469418",
+              "images": { "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_5d1c2f2a-0b7e-4c1e-9a53-4b5f6c7d8e9f" }
+            }
+          },
+          "price": {
+            "current_retail": 5.29,
+            "reg_retail": 5.29,
+            "formatted_current_price": "$5.29",
+            "formatted_current_price_type": "reg",
+            "formatted_unit_price": "$0.08",
+            "formatted_unit_price_suffix": "/fluid ounce",
+            "location_id": 2766
+          }
+        },
+        {
+          "__typename": "ProductSummary",
+          "tcin": "84220341",
+          "is_sponsored_sku": false,
+          "item": {
+            "product_description": { "title": "fairlife Lactose-Free 2% Reduced Fat Ultra-Filtered Milk - 52 fl oz" },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/fairlife-lactose-free-2-reduced-fat-ultra-filtered-milk-52-fl-oz/-/A-84220341",
+              "images": { "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d" }
+            }
+          },
+          "price": {
+            "current_retail": 4.49,
+            "reg_retail": 5.19,
+            "formatted_current_price": "$4.49",
+            "formatted_current_price_type": "sale",
+            "formatted_comparison_price": "$5.19",
+            "formatted_unit_price": "$0.09",
+            "formatted_unit_price_suffix": "/fluid ounce",
+            "location_id": 2766
+          },
+          "fulfillment": {
+            "store_options": [{ "location_id": "2766", "location_name": "San Francisco Central", "order_pickup": { "availability_status": "UNAVAILABLE" } }]
+          }
+        },
+        {
+          "__typename": "ProductSummary",
+          "tcin": "78025470",
+          "is_sponsored_sku": false,
+          "item": {
+            "product_description": { "title": "Silk Unsweetened Almond Milk - 0.5gal" },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/silk-unsweetened-almond-milk-0-5gal/-/A-78025470",
+              "images": { "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_0f1e2d3c-4b5a-4968-8776-655443322110" }
+            }
+          },
+          "price": {
+            "current_retail_min": 3.49,
+            "current_retail_max": 3.99,
+            "formatted_current_price": "$3.49 - $3.99",
+            "formatted_current_price_type": "reg",
+            "location_id": "2766"
+          }
+        },
+        {
+          "__typename": "ProductSummary",
+          "tcin": "13276134",
+          "is_sponsored_sku": false,
+          "item": { "product_description": { "title": "Whole Milk - 1gal - Good &#38; Gather&#8482;" } },
+          "price": { "current_retail": 3.69, "location_id": 2766 }
+        },
+        {
+          "__typename": "ProductSummary",
+          "is_sponsored_sku": false,
+          "item": { "product_description": { "title": "A tile with no TCIN" } },
+          "price": { "current_retail": 1.0, "location_id": 2766 }
+        }
+      ]
+    }
+  }
+}

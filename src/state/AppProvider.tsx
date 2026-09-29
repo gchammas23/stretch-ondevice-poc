@@ -6,6 +6,7 @@ import { AppState as RNAppState } from 'react-native';
 import type { GroceryList } from '../lists/types';
 import { queryKey } from '../lists/types';
 import type { WeeklyAd } from '../onDevice/adPage';
+import { cloudRunner } from '../cloud/runner';
 import { AttemptLog } from '../onDevice/attemptLog';
 import type { Coupon, CouponList } from '../onDevice/couponPage';
 import { CoverageCheck } from '../onDevice/coverage';
@@ -648,6 +649,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
 
   const forgetPrices = useCallback(() => {
     // Nothing running adds to what's erased: runs are forgotten, searches, checks and reads under way keep nothing.
+    // Cloud jobs are stopped (their browsers too) and forgotten.
+    void cloudRunner.clear();
     engine.reset();
     search.reset();
     priceEvidence.clear();
