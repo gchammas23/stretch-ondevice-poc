@@ -115,6 +115,8 @@ export interface Settings {
    * user's choice, off to start: coupons show beside prices either way.
    */
   countCoupons: boolean;
+  /** Shopping in store, the Shop here checklist is in the order of a walk through the store, by aisle (see aisles.ts). */
+  sortByAisle: boolean;
 }
 
 /** A product whose price the user wants to hear about when it drops. */
@@ -241,6 +243,7 @@ export class AppStore {
       shopMode: 'store',
       onlinePlans: {},
       countCoupons: false,
+      sortByAisle: true,
     },
     usuals: {},
     trips: [],
@@ -318,6 +321,7 @@ export class AppStore {
         shopMode: SHOP_MODES.includes(settings.shopMode) ? settings.shopMode : 'store',
         onlinePlans: flags(settings.onlinePlans, (v): v is boolean => v === true),
         countCoupons: settings.countCoupons === true,
+        sortByAisle: settings.sortByAisle !== false,
       },
       usuals,
       trips,
@@ -622,6 +626,11 @@ export class AppStore {
 
   setLightPages(on: boolean): void {
     this.setSettings({ lightPages: on });
+  }
+
+  /** Whether the Shop here checklist goes by aisle, or keeps the list's order. */
+  setSortByAisle(on: boolean): void {
+    this.setSettings({ sortByAisle: on });
   }
 
   setRulesUrl(url: string): void {

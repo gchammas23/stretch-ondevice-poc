@@ -308,6 +308,8 @@ async function storesFromJson(url: string, zip: string, timeoutMs: number, origi
 export interface SearchHooks {
   /** A search for `query` gave products at the store before (in the phone's saved prices, say). */
   worked?: (retailerId: string, query: string) => boolean;
+  /** A product's own page was read (for the product page, the price truth check or presenter mode): what it said. */
+  readPage?: (retailerId: string, product: Product, details: ProductDetails) => void;
 }
 
 /** A page this small (its elements, and its words) with no product data is nearly empty: see 'tiny_page'. */
@@ -1171,6 +1173,7 @@ export function createRetailerSearch(
     const pending = reading.get(url);
     if (pending) return pending;
 
+    const mine = epoch;
     const read = (async () => {
       // One page load at a time at each store: a page load of the store's own searches goes first.
       const storeLane = pool.lane(cfg.id, cfg.name);
@@ -1187,6 +1190,8 @@ export function createRetailerSearch(
         });
         const value = parseProductPage(payload, product);
         details.set(url, { at: Date.now(), value });
+        // What the page said is kept (where the product is in the store), unless everything was forgotten meanwhile.
+        if (mine === epoch) hooks.readPage?.(cfg.id, product, value);
         record({ retailerId: cfg.id, kind: 'product', strategy: 'webview', ok: value.count > 0, ms: Date.now() - t0, bytes: payload.bytes });
         const data = payload.bytes ? ` · ${bytesText(payload.bytes)}` : '';
         log(cfg, 'product page', value.count > 0, `${value.count} ${value.count === 1 ? 'detail' : 'details'} · ${seconds(Date.now() - t0)}${data}`);

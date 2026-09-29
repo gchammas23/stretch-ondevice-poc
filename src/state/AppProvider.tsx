@@ -23,6 +23,7 @@ import { useRetailerSearch, type RetailerSearch } from '../onDevice/useRetailerS
 import { useWebViewPool } from '../onDevice/WebViewFetcher';
 import type { WebViewPool } from '../onDevice/webviewPool';
 import { adDue, adTarget } from '../pricing/ads';
+import { AisleBook } from '../pricing/aisles';
 import { compareStores, couponListsFor, type Comparison } from '../pricing/comparison';
 import { couponsDue, couponTarget } from '../pricing/coupons';
 import { FeeBook, figuresOf } from '../pricing/feeBook';
@@ -51,8 +52,9 @@ const COUPONS_KEY = 'stretch.coupons.v1';
 const VERSUS_KEY = 'stretch.versus.v1';
 const PROFILES_KEY = 'stretch.profiles.v1';
 const TRUTH_KEY = 'stretch.truth.v1';
+const AISLES_KEY = 'stretch.aisles.v1';
 /** Every key the app saves under, for erasing it all. */
-export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY];
+export const STORAGE_KEYS = ['stretch.app.v1', PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY, AISLES_KEY];
 
 /** The connection counts as down for the pricing engine's words this long after the last of its failures. */
 const DROP_FRESH_MS = 60_000;
@@ -94,6 +96,8 @@ interface AppContextValue {
   truth: TruthBook;
   /** Where each store's results are, learned from its searches (see profiles.ts), and what they taught so far. */
   profiles: ProfileBook;
+  /** Where products are in each store, beyond what searches read: what their pages said, and the user's notes. */
+  aisles: AisleBook;
   /**
    * Searches each store (the compared ones, or all, see versusIds) two ways: its page in this phone's browser, then a
    * plain request as a server sends. Bot checks are reported, not shown; both count toward each store's hour.
@@ -136,7 +140,8 @@ interface AppContextValue {
   pool: WebViewPool;
   /**
    * Saved prices and history, what was read from store pages, the search log and the last checks go (Forget prices and
-   * history); lists stay. Searches running now keep nothing, and lists are priced afresh.
+   * history); lists, and where the user noted things are in stores, stay. Searches running now keep nothing, and lists
+   * are priced afresh.
    */
   forgetPrices: () => void;
   /**
@@ -184,6 +189,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
   const [fees] = useState(() => new FeeBook());
   const [ads] = useState(() => new ReadBook<WeeklyAd>(isWeeklyAd));
   const [coupons] = useState(() => new ReadBook<CouponList>(isCouponList));
+  const [aisles] = useState(() => new AisleBook());
   const [dropListeners] = useState(() => new Set<(items: WatchItem[]) => void>());
   // Its search is set below, before anything can be priced (nothing renders until the saved state has loaded).
   const [engine] = useState(() => new PricingEngine(() => Promise.reject(new Error('not_ready')), cache));
@@ -195,6 +201,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       const tail = `|${queryKey(query)}`;
       return cache.list().some(([key, hit]) => key.startsWith(`${retailerId}|`) && key.endsWith(tail) && hit.products.length > 0);
     },
+    // Where a product's own page puts it in the store is kept, for the Shop here checklist.
+    readPage: (retailerId, product, details) => aisles.notePage(retailerId, product, { aisle: details.aisle, department: details.department }),
   }));
   const custom = useSyncExternalStore(store.subscribe, () => store.getState().settings.customRetailers);
   const rulesUrl = useSyncExternalStore(store.subscribe, () => store.getState().settings.rulesUrl);
@@ -321,8 +329,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     let alive = true;
     (async () => {
       await store.hydrate(AsyncStorage);
-      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead, profilesRead, truthRead] = await Promise.all(
-        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY].map((k) =>
+      const [prices, past, health, covered, feesRead, adsRead, couponsRead, versusRead, profilesRead, truthRead, aislesRead] = await Promise.all(
+        [PRICES_KEY, HISTORY_KEY, HEALTH_KEY, COVERAGE_KEY, FEES_KEY, ADS_KEY, COUPONS_KEY, VERSUS_KEY, PROFILES_KEY, TRUTH_KEY, AISLES_KEY].map((k) =>
           AsyncStorage.getItem(k).catch(() => null),
         ),
       );
@@ -340,12 +348,13 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       fees.hydrate(feesRead);
       ads.hydrate(adsRead);
       coupons.hydrate(couponsRead);
+      aisles.hydrate(aislesRead);
       if (alive) setReady(true);
     })();
     return () => {
       alive = false;
     };
-  }, [store, cache, history, log, coverage, versus, truth, fees, ads, coupons]);
+  }, [store, cache, history, log, coverage, versus, truth, fees, ads, coupons, aisles]);
 
   useEffect(() => {
     const save = (key: string, data: () => string) => () => AsyncStorage.setItem(key, data()).catch(() => {});
@@ -360,6 +369,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       { subscribe: fees.subscribe, write: save(FEES_KEY, () => fees.serialize()), ms: 1500 },
       { subscribe: ads.subscribe, write: save(ADS_KEY, () => ads.serialize()), ms: 1500 },
       { subscribe: coupons.subscribe, write: save(COUPONS_KEY, () => coupons.serialize()), ms: 1500 },
+      { subscribe: aisles.subscribe, write: save(AISLES_KEY, () => aisles.serialize()), ms: 1500 },
     ].map((w) => ({ ...w, timer: debounced(w.write, w.ms) }));
     const unsubscribe = writers.map((w) => w.subscribe(w.timer.schedule));
     // Write everything before the app is suspended.
@@ -377,7 +387,7 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
       writers.forEach((w) => w.timer.cancel());
       sub.remove();
     };
-  }, [cache, history, log, coverage, versus, truth, fees, ads, coupons, store, engine]);
+  }, [cache, history, log, coverage, versus, truth, fees, ads, coupons, aisles, store, engine]);
 
   // Coming back to the app after a while fetches the rules file again, so a fixed store is picked up.
   useEffect(() => {
@@ -650,7 +660,8 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     fees.clear();
     ads.clear();
     coupons.clear();
-  }, [engine, search, cache, history, log, coverage, versus, truth, fees, ads, coupons]);
+    aisles.forgetPages();
+  }, [engine, search, cache, history, log, coverage, versus, truth, fees, ads, coupons, aisles]);
 
   const startOver = useCallback(async () => {
     forgetPrices();
@@ -659,18 +670,19 @@ export function AppProvider({ children, onReady }: { children: React.ReactNode; 
     pool.feed.clear();
     storeTuner.reset();
     parserProfiles.clear();
+    aisles.clear();
     // Saves the fresh state under its own key; the others are removed outright.
     store.reset();
     await AsyncStorage.multiRemove(STORAGE_KEYS.filter((k) => k !== 'stretch.app.v1')).catch(() => {});
-  }, [forgetPrices, pool, store]);
+  }, [forgetPrices, pool, store, aisles]);
 
   const value = useMemo(
     () => ({
-      store, engine, cache, history, log, coverage, versus, truth, profiles: parserProfiles, search, bundle, rules, checkRules, runCoverage, runVersus,
-      fees, checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, forgetPrices, startOver,
+      store, engine, cache, history, log, coverage, versus, truth, profiles: parserProfiles, aisles, search, bundle, rules, checkRules, runCoverage,
+      runVersus, fees, checkFees, ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, forgetPrices, startOver,
     }),
     [
-      store, engine, cache, history, log, coverage, versus, truth, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
+      store, engine, cache, history, log, coverage, versus, truth, aisles, search, bundle, rules, checkRules, runCoverage, runVersus, fees, checkFees,
       ads, coupons, checkAds, checkCoupons, clipCoupons, viewCoupons, signInAt, onDrops, pool, forgetPrices, startOver,
     ],
   );
@@ -719,6 +731,13 @@ export function useHistory(): PriceHistory {
   const { history } = useApp();
   useSyncExternalStore(history.subscribe, () => history.version);
   return history;
+}
+
+/** Re-renders when a product's place in a store is read from its page, or noted. */
+export function useAisles(): AisleBook {
+  const { aisles } = useApp();
+  useSyncExternalStore(aisles.subscribe, () => aisles.version);
+  return aisles;
 }
 
 /** Re-renders when a store's profile is learned, matched, missed or reset. */

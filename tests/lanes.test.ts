@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import { priceEvidence } from '../src/onDevice/evidence';
+import { ProfileBook } from '../src/onDevice/profiles';
 import { createRetailerSearch, SearchFailed } from '../src/onDevice/retailerSearch';
 import { BUNDLED_CONFIG } from '../src/onDevice/retailers';
 import { StoreTuner } from '../src/onDevice/tuning';
@@ -635,6 +636,31 @@ const t = async (name: string, fn: () => unknown) => { await fn(); passed++; log
     lane.closeBrowse();
     await viewing;
     await assert.rejects(searcher.viewProduct(example, 'https://ads.example.org/p/1'), (e: any) => e.reason === 'other_site', 'only the store’s own pages');
+  });
+
+  await t('product page: where it puts the product in the store is handed on; not once everything was forgotten', async () => {
+    const pool = new WebViewPool();
+    const lane = pool.lane(PAGE_LANE, 'Pages');
+    let last = -1;
+    lane.subscribe(() => {
+      const s = lane.getSnapshot();
+      if (!s || s.phase !== 'hidden' || s.id === last) return;
+      last = s.id;
+      const id = /\/p\/(\d+)/.exec(s.url)![1];
+      const page = { product: { id: `p-${id}`, name: 'Brand milk', price: 2, productLocation: [{ displayValue: 'D34' }] } };
+      setTimeout(() => lane.receive(JSON.stringify({ nonce: nonceOf(s.script), kind: 'data', href: s.url, sources: [{ label: 'response https://www.example.com/api/p', text: JSON.stringify(page) }] })), 5);
+    });
+    const heard: [string, string, string | undefined][] = [];
+    const searcher = createRetailerSearch(pool, 'test', new StoreTuner(), new ProfileBook(), {
+      readPage: (retailerId, product, details) => heard.push([retailerId, product.id, details.aisle]),
+    });
+    const product = { retailer: 'example', storeId: '12', id: 'p-9', name: 'Brand milk', price: 2, url: 'https://www.example.com/p/9' };
+    assert.equal((await searcher.readProduct(example, product)).aisle, 'D34');
+    assert.deepEqual(heard, [['example', 'p-9', 'D34']]);
+    const later = searcher.readProduct(example, { ...product, id: 'p-10', url: 'https://www.example.com/p/10' });
+    searcher.reset();
+    await later.catch(() => {});
+    assert.deepEqual(heard, [['example', 'p-9', 'D34']], 'a read under way when everything was forgotten keeps nothing');
   });
 
   await t('live view: every search lands in the feed, in words; while it’s open every page change is news', async () => {

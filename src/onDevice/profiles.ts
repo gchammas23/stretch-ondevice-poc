@@ -263,7 +263,7 @@ export const parserProfiles = new ProfileBook();
 /** Fields merged over the searches a profile was learned from: each field's ways, the latest search's first. */
 function mergeFields(all: ProfileFields[]): ProfileFields {
   const out: ProfileFields = { name: [], price: [] };
-  const keys = ['id', 'name', 'price', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored'] as const;
+  const keys = ['id', 'name', 'price', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored', 'place', 'department'] as const;
   for (const key of keys) {
     const ways: string[][] = [];
     for (const f of [...all].reverse()) {
@@ -292,7 +292,7 @@ function isSource(v: unknown): v is ProfileSource {
 
 function isFields(v: unknown): v is ProfileFields {
   if (!isRecord(v) || !isWays(v.name) || !isWays(v.price)) return false;
-  const optional = ['id', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored'];
+  const optional = ['id', 'was', 'member', 'unit', 'link', 'image', 'stock', 'gtin', 'sponsored', 'place', 'department'];
   return optional.every((k) => optWays(v[k])) && (v.memberLabel === undefined || typeof v.memberLabel === 'string');
 }
 
